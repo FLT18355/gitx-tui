@@ -1,0 +1,21 @@
+# gitx-tui 配置文件
+# 这个文件是随项目发布的默认配置。运行后，人家会把它写到
+# ~/.config/gitx-tui/config.toml，之后的改动都在设置页里完成。
+
+# Catppuccin 风味：latte / frappe / macchiato / mocha
+theme = "mocha"
+
+# 公开 API 与发行版下载的加速地址
+proxy = "https://v4.gh-proxy.org"
+
+# 仓库列表缓存有效期，单位秒
+repos_ttl_secs = 300
+
+# 仓库详情与发行版缓存有效期，单位秒
+detail_ttl_secs = 900
+
+# 搜索结果缓存有效期，单位秒
+search_ttl_secs = 600
+
+# 最近搜索，最多保存 8 条
+search_history = []
