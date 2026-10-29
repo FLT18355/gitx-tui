@@ -74,7 +74,30 @@ impl Cache {
         Ok(())
     }
 
-    pub fn stats(&self) -> CacheStats {
+    pub fn clear_prefixes(&self, prefixes: &[&str]) -> std::io::Result<CacheStats> {
+        let mut removed = CacheStats::default();
+        let Ok(entries) = fs::read_dir(&self.dir) else {
+            return Ok(removed);
+        };
+        for entry in entries.flatten() {
+            let path = entry.path();
+            if path.extension().and_then(|ext| ext.to_str()) != Some("json") {
+                continue;
+            }
+            let stem = entry.file_name();
+            let stem = stem.to_string_lossy();
+            if prefixes.iter().any(|prefix| stem.starts_with(prefix)) {
+                let size = entry.metadata().map(|meta| meta.len()).unwrap_or(0);
+                if fs::remove_file(&path).is_ok() {
+                    removed.files += 1;
+                    removed.bytes += size;
+                }
+            }
+        }
+        Ok(removed)
+    }
+
+    pub fn stats_prefixes(&self, prefixes: &[&str]) -> CacheStats {
         let mut stats = CacheStats::default();
         let Ok(entries) = fs::read_dir(&self.dir) else {
             return stats;
@@ -84,6 +107,11 @@ impl Cache {
             if path.extension().and_then(|ext| ext.to_str()) != Some("json") {
                 continue;
             }
+            let stem = entry.file_name();
+            let stem = stem.to_string_lossy();
+            if !prefixes.iter().any(|prefix| stem.starts_with(prefix)) {
+                continue;
+            }
             let Ok(meta) = entry.metadata() else {
                 continue;
             };
@@ -91,6 +119,14 @@ impl Cache {
             stats.bytes += meta.len();
         }
         stats
+    }
+
+    pub fn stats(&self) -> CacheStats {
+        self.stats_prefixes(&[""])
+    }
+
+    pub fn dir(&self) -> &std::path::Path {
+        &self.dir
     }
 
     fn file(&self, key: &str) -> PathBuf {

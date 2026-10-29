@@ -22,6 +22,7 @@ pub enum Page {
     Account,
     Settings,
     Repo,
+    Actions,
 }
 
 impl Page {
@@ -32,7 +33,7 @@ impl Page {
             Self::Search => Some(2),
             Self::Account => Some(3),
             Self::Settings => Some(4),
-            Self::Repo => None,
+            Self::Repo | Self::Actions => None,
         }
     }
 
@@ -54,6 +55,7 @@ impl Page {
             Self::Account => "账号喵~",
             Self::Settings => "设置喵~",
             Self::Repo => "仓库详情喵~",
+            Self::Actions => "工作流喵~",
         }
     }
 }
@@ -63,6 +65,7 @@ pub enum Overlay {
     Help,
     Languages,
     EditRepo,
+    Cache,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -133,6 +136,12 @@ pub enum Action {
     EditRepoRow(usize),
     SaveRepoEdit,
     RefreshRateLimit,
+    OpenActions,
+    SelectActionRun(usize),
+    OpenCacheManager,
+    ClearCacheGroup(usize),
+    SelectCacheRow(usize),
+    OpenCacheDir,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -236,6 +245,45 @@ struct PendingDetail {
     at: Instant,
 }
 
+#[derive(Clone, Copy)]
+pub struct CacheGroup {
+    pub label: &'static str,
+    pub prefixes: &'static [&'static str],
+}
+
+pub fn cache_groups() -> Vec<CacheGroup> {
+    vec![
+        CacheGroup {
+            label: "仓库列表",
+            prefixes: &["repos_"],
+        },
+        CacheGroup {
+            label: "星星收藏",
+            prefixes: &["starred_"],
+        },
+        CacheGroup {
+            label: "搜索记录",
+            prefixes: &["search_"],
+        },
+        CacheGroup {
+            label: "仓库详情",
+            prefixes: &["repo_", "releases_", "tree_", "readme_"],
+        },
+        CacheGroup {
+            label: "工作流",
+            prefixes: &["actions_"],
+        },
+        CacheGroup {
+            label: "账号与额度",
+            prefixes: &["user", "rate_limit"],
+        },
+        CacheGroup {
+            label: "全部缓存",
+            prefixes: &[""],
+        },
+    ]
+}
+
 #[derive(Clone)]
 pub struct RepoEdit {
     pub full_name: String,
@@ -335,6 +383,15 @@ enum Msg {
     },
     RateLimit(Result<crate::model::RateLimit, String>),
     RepoUpdated(Result<Repo, String>),
+    ActionRuns {
+        name: String,
+        result: Result<Vec<crate::model::WorkflowRun>, String>,
+    },
+    ActionJobs {
+        name: String,
+        run_id: u64,
+        result: Result<Vec<crate::model::WorkflowJob>, String>,
+    },
 }
 
 pub struct App {
@@ -348,6 +405,18 @@ pub struct App {
     pub rate_limit: Option<RateLimit>,
     pub rate_loading: bool,
     pub rate_fetched_at: Option<i64>,
+    pub action_repo: Option<String>,
+    pub action_runs: Vec<crate::model::WorkflowRun>,
+    pub action_runs_loading: bool,
+    pub action_runs_fetched_at: Option<i64>,
+    pub action_selected: usize,
+    pub action_jobs: Vec<crate::model::WorkflowJob>,
+    pub action_jobs_loading: Option<u64>,
+    pub action_jobs_for: Option<u64>,
+    pub action_jobs_fetched_at: Option<i64>,
+    pub action_jobs_scroll: u16,
+    pub action_jobs_scroll_max: u16,
+    pub cache_row: usize,
     pub page: Page,
     pub return_page: Page,
     pub overlay: Option<Overlay>,
@@ -456,6 +525,18 @@ impl App {
             rate_limit: None,
             rate_loading: false,
             rate_fetched_at: None,
+            action_repo: None,
+            action_runs: Vec::new(),
+            action_runs_loading: false,
+            action_runs_fetched_at: None,
+            action_selected: 0,
+            action_jobs: Vec::new(),
+            action_jobs_loading: None,
+            action_jobs_for: None,
+            action_jobs_fetched_at: None,
+            action_jobs_scroll: 0,
+            action_jobs_scroll_max: 0,
+            cache_row: 0,
             page: Page::Repositories,
             return_page: Page::Repositories,
             overlay: None,
@@ -898,6 +979,59 @@ impl App {
                     }
                 }
             }
+            Msg::ActionRuns { name, result } => {
+                self.action_runs_loading = false;
+                if self.action_repo.as_deref() != Some(name.as_str()) {
+                    return;
+                }
+                match result {
+                    Ok(runs) => {
+                        let _ = self.cache.save(&actions_cache_key(&name), &runs);
+                        self.action_runs = runs;
+                        self.action_runs_fetched_at = Some(now_epoch());
+                        self.action_selected = self
+                            .action_selected
+                            .min(self.action_runs.len().saturating_sub(1));
+                        self.refresh_cache_stats();
+                        self.schedule_action_jobs(false);
+                    }
+                    Err(error) => {
+                        if self.page == Page::Actions {
+                            self.set_status(StatusKind::Error, &error);
+                        }
+                    }
+                }
+            }
+            Msg::ActionJobs {
+                name,
+                run_id,
+                result,
+            } => {
+                if self.action_jobs_loading == Some(run_id) {
+                    self.action_jobs_loading = None;
+                }
+                if self.action_repo.as_deref() != Some(name.as_str()) {
+                    return;
+                }
+                match result {
+                    Ok(jobs) => {
+                        let _ = self.cache.save(&action_jobs_cache_key(run_id), &jobs);
+                        if self.selected_action_run().map(|run| run.id) == Some(run_id) {
+                            self.action_jobs = jobs;
+                            self.action_jobs_for = Some(run_id);
+                            self.action_jobs_fetched_at = Some(now_epoch());
+                            self.action_jobs_scroll = 0;
+                            self.action_jobs_scroll_max = 0;
+                        }
+                        self.refresh_cache_stats();
+                    }
+                    Err(error) => {
+                        if self.page == Page::Actions {
+                            self.set_status(StatusKind::Error, &error);
+                        }
+                    }
+                }
+            }
             Msg::DownloadProgress {
                 id,
                 received,
@@ -994,6 +1128,228 @@ impl App {
         });
     }
 
+    pub fn open_actions(&mut self) {
+        let Some(repo) = self.page_repo.clone().or_else(|| self.selected_repo()) else {
+            self.set_status(
+                StatusKind::Info,
+                "先挑一个仓库嘛，人家才知道看哪个工作流喵~",
+            );
+            return;
+        };
+        let name = repo.display_full_name();
+        if self.action_repo.as_deref() != Some(name.as_str()) {
+            self.action_runs.clear();
+            self.action_runs_fetched_at = None;
+            self.action_selected = 0;
+            self.action_jobs.clear();
+            self.action_jobs_for = None;
+            self.action_jobs_fetched_at = None;
+            self.action_jobs_scroll = 0;
+            self.action_jobs_scroll_max = 0;
+        }
+        self.action_repo = Some(name.clone());
+        if self.page != Page::Actions {
+            self.return_page = if self.page == Page::Repo {
+                Page::Repo
+            } else {
+                self.current_list_page()
+            };
+        }
+        self.page = Page::Actions;
+        self.load_actions_cache();
+        self.fetch_action_runs(false);
+    }
+
+    fn load_actions_cache(&mut self) {
+        let Some(name) = self.action_repo.clone() else {
+            return;
+        };
+        if let Some(cached) = self
+            .cache
+            .load::<Vec<crate::model::WorkflowRun>>(&actions_cache_key(&name))
+        {
+            self.action_runs = cached.data;
+            self.action_runs_fetched_at = Some(cached.fetched_at);
+        }
+        self.action_selected = self
+            .action_selected
+            .min(self.action_runs.len().saturating_sub(1));
+        self.schedule_action_jobs(false);
+    }
+
+    fn fetch_action_runs(&mut self, force: bool) {
+        if self.action_runs_loading {
+            return;
+        }
+        let Some(name) = self.action_repo.clone() else {
+            return;
+        };
+        let fresh = self
+            .action_runs_fetched_at
+            .map(|at| now_epoch() - at <= self.config.detail_ttl_secs as i64)
+            .unwrap_or(false);
+        if !force && fresh {
+            return;
+        }
+        let private = self
+            .page_repo
+            .clone()
+            .or_else(|| self.selected_repo())
+            .map(|repo| repo.private)
+            .unwrap_or(false);
+        self.action_runs_loading = true;
+        let tx = self.tx.clone();
+        let client = self.client.clone();
+        std::thread::spawn(move || {
+            let result = client.action_runs(&name, private);
+            let _ = tx.send(Msg::ActionRuns { name, result });
+        });
+    }
+
+    pub fn selected_action_run(&self) -> Option<crate::model::WorkflowRun> {
+        self.action_runs.get(self.action_selected).cloned()
+    }
+
+    fn schedule_action_jobs(&mut self, force: bool) {
+        let Some(run) = self.selected_action_run() else {
+            self.action_jobs.clear();
+            self.action_jobs_for = None;
+            self.action_jobs_fetched_at = None;
+            return;
+        };
+        if self.action_jobs_for != Some(run.id) {
+            self.action_jobs.clear();
+            self.action_jobs_for = Some(run.id);
+            self.action_jobs_fetched_at = None;
+            self.action_jobs_scroll = 0;
+            self.action_jobs_scroll_max = 0;
+            if let Some(cached) = self
+                .cache
+                .load::<Vec<crate::model::WorkflowJob>>(&action_jobs_cache_key(run.id))
+            {
+                self.action_jobs = cached.data;
+                self.action_jobs_fetched_at = Some(cached.fetched_at);
+            }
+        }
+        let fresh = self
+            .action_jobs_fetched_at
+            .map(|at| now_epoch() - at <= self.config.detail_ttl_secs as i64)
+            .unwrap_or(false);
+        if force || !fresh {
+            self.fetch_action_jobs(run.id);
+        }
+    }
+
+    fn fetch_action_jobs(&mut self, run_id: u64) {
+        let Some(name) = self.action_repo.clone() else {
+            return;
+        };
+        if self.action_jobs_loading == Some(run_id) {
+            return;
+        }
+        let private = self
+            .page_repo
+            .clone()
+            .or_else(|| self.selected_repo())
+            .map(|repo| repo.private)
+            .unwrap_or(false);
+        self.action_jobs_loading = Some(run_id);
+        let tx = self.tx.clone();
+        let client = self.client.clone();
+        std::thread::spawn(move || {
+            let result = client.action_jobs(&name, run_id, private);
+            let _ = tx.send(Msg::ActionJobs {
+                name,
+                run_id,
+                result,
+            });
+        });
+    }
+
+    pub fn move_action_selection(&mut self, delta: i32) {
+        if self.action_runs.is_empty() {
+            return;
+        }
+        let next = (self.action_selected as i32 + delta).clamp(0, self.action_runs.len() as i32 - 1)
+            as usize;
+        if next != self.action_selected {
+            self.action_selected = next;
+            self.schedule_action_jobs(false);
+        }
+    }
+
+    pub fn select_action_run(&mut self, index: usize) {
+        if index < self.action_runs.len() {
+            self.action_selected = index;
+            self.schedule_action_jobs(false);
+        }
+    }
+
+    pub fn open_action_run(&mut self, index: Option<usize>) {
+        let run = index
+            .and_then(|index| self.action_runs.get(index).cloned())
+            .or_else(|| self.selected_action_run());
+        if let Some(run) = run {
+            self.open_url(&run.html_url);
+        }
+    }
+
+    pub fn open_cache_manager(&mut self) {
+        self.cache_row = 0;
+        self.overlay = Some(Overlay::Cache);
+        self.refresh_cache_stats();
+    }
+
+    pub fn move_cache_row(&mut self, delta: i32) {
+        let len = cache_groups().len();
+        self.cache_row = (self.cache_row as i32 + delta).clamp(0, len as i32 - 1) as usize;
+    }
+
+    pub fn clear_cache_group(&mut self, index: usize) {
+        let groups = cache_groups();
+        let Some(group) = groups.get(index) else {
+            return;
+        };
+        let result = if group.prefixes.contains(&"") {
+            self.cache.clear().map(|()| CacheStats {
+                files: self.cache_stats.files,
+                bytes: self.cache_stats.bytes,
+            })
+        } else {
+            self.cache.clear_prefixes(group.prefixes)
+        };
+        match result {
+            Ok(removed) => {
+                self.refresh_cache_stats();
+                self.set_status(
+                    StatusKind::Ok,
+                    &format!(
+                        "{}清掉啦，删了 {} 个文件、{} 喵~",
+                        group.label,
+                        removed.files,
+                        format::format_size(removed.bytes)
+                    ),
+                );
+            }
+            Err(error) => self.set_status(StatusKind::Error, &format!("缓存没清掉呢：{error}喵~")),
+        }
+    }
+
+    pub fn cache_group_stats(&self, index: usize) -> CacheStats {
+        cache_groups()
+            .get(index)
+            .map(|group| self.cache.stats_prefixes(group.prefixes))
+            .unwrap_or_default()
+    }
+
+    pub fn open_cache_dir(&mut self) {
+        let dir = self.cache.dir().display().to_string();
+        match open_external(&dir) {
+            Ok(()) => self.set_status(StatusKind::Ok, "缓存目录已经打开啦喵~"),
+            Err(error) => self.set_status(StatusKind::Error, &error),
+        }
+    }
+
     pub fn open_account(&mut self) {
         self.navigate(Page::Account);
         self.fetch_rate_limit(false);
@@ -1084,7 +1440,13 @@ impl App {
         }
         if edit.editing {
             match key.code {
-                KeyCode::Enter | KeyCode::Esc => edit.editing = false,
+                KeyCode::Enter | KeyCode::Char('\r') | KeyCode::Char('\n') => {
+                    edit.editing = false;
+                    if edit.row < 2 {
+                        edit.row += 1;
+                    }
+                }
+                KeyCode::Esc => edit.editing = false,
                 KeyCode::Backspace => match edit.row {
                     0 => edit.description.backspace(),
                     1 => edit.homepage.backspace(),
@@ -1149,7 +1511,7 @@ impl App {
                     edit.row = 4;
                 }
             }
-            KeyCode::Enter => match row {
+            KeyCode::Enter | KeyCode::Char('\r') | KeyCode::Char('\n') => match row {
                 0..=2 => {
                     if let Some(edit) = self.repo_edit.as_mut() {
                         edit.editing = true;
@@ -1171,6 +1533,21 @@ impl App {
         }
     }
 
+    fn handle_cache_key(&mut self, key: KeyEvent) {
+        match key.code {
+            KeyCode::Esc | KeyCode::Char('q') => self.overlay = None,
+            KeyCode::Up | KeyCode::Char('k') => self.move_cache_row(-1),
+            KeyCode::Down | KeyCode::Char('j') => self.move_cache_row(1),
+            KeyCode::Home | KeyCode::Char('g') => self.cache_row = 0,
+            KeyCode::End | KeyCode::Char('G') => {
+                self.cache_row = cache_groups().len().saturating_sub(1);
+            }
+            KeyCode::Enter => self.clear_cache_group(self.cache_row),
+            KeyCode::Char('o') => self.open_cache_dir(),
+            _ => {}
+        }
+    }
+
     pub fn tick(&mut self) {
         if let Some(pending) = self.pending_detail.take() {
             if pending.at.elapsed() >= Duration::from_millis(220) {
@@ -1187,6 +1564,12 @@ impl App {
         }
         if self.page == Page::Account && self.rate_loading {
             return Some("人家正在数 API 额度喵~...");
+        }
+        if self.page == Page::Actions && self.action_runs_loading {
+            return Some("人家正在翻工作流记录喵~...");
+        }
+        if self.page == Page::Actions && self.action_jobs_loading.is_some() {
+            return Some("人家正在读任务详情喵~...");
         }
         if self.repo_edit.as_ref().is_some_and(|edit| edit.saving) {
             return Some("人家正在把改动递给 GitHub 喵~...");
@@ -1905,6 +2288,10 @@ impl App {
                 self.fetch_user();
                 self.fetch_rate_limit(true);
             }
+            Page::Actions => {
+                self.fetch_action_runs(true);
+                self.schedule_action_jobs(true);
+            }
             Page::Settings => self.refresh_cache_stats(),
         }
     }
@@ -1986,6 +2373,17 @@ impl App {
     }
 
     pub fn go_back(&mut self) {
+        if self.page == Page::Actions {
+            self.search_focus = false;
+            if self.return_page == Page::Repo {
+                self.page = Page::Repo;
+            } else {
+                self.page = self.return_page;
+                self.page_repo = None;
+                self.schedule_selected_detail();
+            }
+            return;
+        }
         if self.page != Page::Repo {
             return;
         }
@@ -2433,6 +2831,10 @@ impl App {
             self.handle_repo_edit_key(key);
             return;
         }
+        if self.overlay == Some(Overlay::Cache) {
+            self.handle_cache_key(key);
+            return;
+        }
         if self.overlay == Some(Overlay::Languages) {
             match key.code {
                 KeyCode::Esc | KeyCode::Char('q') => self.overlay = None,
@@ -2538,12 +2940,20 @@ impl App {
             KeyCode::Char('5') => self.navigate(Page::Settings),
             KeyCode::Tab => self.navigate_next_page(),
             KeyCode::Esc => match self.page {
-                Page::Repo => self.go_back(),
+                Page::Repo | Page::Actions => self.go_back(),
                 Page::Settings | Page::Account => self.navigate(Page::Repositories),
                 _ => {}
             },
             KeyCode::Char('r') => self.refresh_current(),
-            KeyCode::Char('o') => self.open_current(),
+            KeyCode::Char('o') => {
+                if self.page == Page::Actions {
+                    self.open_action_run(None);
+                } else {
+                    self.open_current();
+                }
+            }
+            KeyCode::Char('a') => self.open_actions(),
+            KeyCode::Char('c') => self.open_cache_manager(),
             KeyCode::Char('y') => self.copy_clone(),
             KeyCode::Char('f') => self.toggle_current_star(),
             KeyCode::Char('e') => self.open_repo_edit(),
@@ -2559,6 +2969,7 @@ impl App {
                 Page::Settings => self.activate_settings_row(),
                 Page::Repo => self.open_current(),
                 Page::Account => self.open_profile(),
+                Page::Actions => self.open_action_run(None),
                 _ => self.open_repo_page(),
             },
             KeyCode::Up | KeyCode::Char('k') => self.key_up(),
@@ -2585,6 +2996,7 @@ impl App {
     fn key_up(&mut self) {
         match self.page {
             Page::Repo => self.scroll_repo_pane(-1),
+            Page::Actions => self.move_action_selection(-1),
             Page::Settings => self.settings_row = self.settings_row.saturating_sub(1),
             _ => self.move_selection(-1),
         }
@@ -2593,6 +3005,7 @@ impl App {
     fn key_down(&mut self) {
         match self.page {
             Page::Repo => self.scroll_repo_pane(1),
+            Page::Actions => self.move_action_selection(1),
             Page::Settings => self.settings_row = (self.settings_row + 1).min(9),
             _ => self.move_selection(1),
         }
@@ -2602,6 +3015,7 @@ impl App {
         match self.page {
             Page::Repo => self.set_repo_pane_scroll(0),
             Page::Settings => self.settings_row = 0,
+            Page::Actions => self.select_action_run(0),
             Page::Account => {}
             _ => self.first_list_page(),
         }
@@ -2611,6 +3025,9 @@ impl App {
         match self.page {
             Page::Repo => self.set_repo_pane_scroll(u16::MAX),
             Page::Settings => self.settings_row = 9,
+            Page::Actions => {
+                self.select_action_run(self.action_runs.len().saturating_sub(1));
+            }
             Page::Account => {}
             _ => self.last_list_page(),
         }
@@ -2619,6 +3036,9 @@ impl App {
     fn key_page_up(&mut self) {
         match self.page {
             Page::Repo => self.scroll_repo_pane(-10),
+            Page::Actions => {
+                self.action_jobs_scroll = self.action_jobs_scroll.saturating_sub(10);
+            }
             Page::Settings => self.settings_row = self.settings_row.saturating_sub(3),
             Page::Account => {}
             _ => self.prev_list_page(),
@@ -2628,6 +3048,10 @@ impl App {
     fn key_page_down(&mut self) {
         match self.page {
             Page::Repo => self.scroll_repo_pane(10),
+            Page::Actions => {
+                self.action_jobs_scroll =
+                    (self.action_jobs_scroll + 10).min(self.action_jobs_scroll_max);
+            }
             Page::Settings => self.settings_row = (self.settings_row + 3).min(9),
             Page::Account => {}
             _ => self.next_list_page(),
@@ -3093,6 +3517,15 @@ impl App {
             }
             Action::SaveRepoEdit => self.save_repo_edit(),
             Action::RefreshRateLimit => self.fetch_rate_limit(true),
+            Action::OpenActions => self.open_actions(),
+            Action::SelectActionRun(index) => self.select_action_run(index),
+            Action::OpenCacheManager => self.open_cache_manager(),
+            Action::ClearCacheGroup(index) => self.clear_cache_group(index),
+            Action::SelectCacheRow(index) => {
+                let last = cache_groups().len().saturating_sub(1);
+                self.cache_row = index.min(last);
+            }
+            Action::OpenCacheDir => self.open_cache_dir(),
         }
     }
 
@@ -3120,6 +3553,14 @@ fn tree_cache_key(name: &str, branch: &str) -> String {
 
 fn readme_cache_key(name: &str) -> String {
     format!("readme_{}", key_part(name))
+}
+
+fn actions_cache_key(name: &str) -> String {
+    format!("actions_{}", key_part(name))
+}
+
+fn action_jobs_cache_key(run_id: u64) -> String {
+    format!("actions_jobs_{run_id}")
 }
 
 fn safe_download_name(name: &str) -> String {

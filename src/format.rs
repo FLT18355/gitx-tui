@@ -68,6 +68,29 @@ pub fn relative_time(raw: &str) -> String {
     )
 }
 
+pub fn duration_label(start: &str, end: Option<&str>) -> Option<String> {
+    let start = OffsetDateTime::parse(start, &Rfc3339).ok()?;
+    let end = match end {
+        Some(raw) => OffsetDateTime::parse(raw, &Rfc3339).ok()?,
+        None => OffsetDateTime::now_utc(),
+    };
+    let seconds = (end - start).whole_seconds().max(0);
+    Some(short_duration(seconds))
+}
+
+pub fn short_duration(seconds: i64) -> String {
+    let seconds = seconds.max(0);
+    if seconds < 60 {
+        format!("{seconds} 秒")
+    } else if seconds < 3600 {
+        format!("{} 分 {} 秒", seconds / 60, seconds % 60)
+    } else if seconds < 86_400 {
+        format!("{} 小时 {} 分", seconds / 3600, seconds % 3600 / 60)
+    } else {
+        format!("{} 天 {} 小时", seconds / 86_400, seconds % 86_400 / 3600)
+    }
+}
+
 pub fn relative_epoch(then: i64, now: i64) -> String {
     let seconds = (now - then).max(0);
     if seconds < 60 {
@@ -350,6 +373,19 @@ mod tests {
         assert_eq!(countdown_epoch(now + 7200, now), "2 小时后");
         assert_eq!(reset_label(now + 125, now), "2 分钟后恢复");
         assert_eq!(reset_label(now - 1, now), "已经恢复");
+    }
+
+    #[test]
+    fn formats_workflow_durations() {
+        assert_eq!(short_duration(9), "9 秒");
+        assert_eq!(short_duration(125), "2 分 5 秒");
+        assert_eq!(short_duration(7_320), "2 小时 2 分");
+        assert_eq!(short_duration(93_600), "1 天 2 小时");
+        assert_eq!(
+            duration_label("2026-01-01T00:00:00Z", Some("2026-01-01T00:02:05Z")).as_deref(),
+            Some("2 分 5 秒")
+        );
+        assert_eq!(duration_label("not-a-date", None), None);
     }
 
     #[test]

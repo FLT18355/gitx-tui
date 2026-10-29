@@ -23,8 +23,9 @@
 - 收藏操作：在仓库页可以点赞或取消收藏，结果会同步到收藏页和缓存喵~
 - 自己的仓库：预览到 owner 是自己的仓库时，按 `e` 或点「编辑仓库」就能改简介、主页、主题、可见性和归档状态喵~保存会真实写回 GitHub喵~
 - 常用入口：主页、克隆地址、源码下载、议题、合并请求和工作流喵~
+- 工作流页：在仓库页按 `a` 或点「工作流」看当前仓库的 Actions 运行记录，左边挑 run，右边看 jobs 和 steps，`Enter` / `o` 去浏览器看日志喵~
 - 设置页：主题、预览开关、下载目录、代理地址和缓存时间都在这里改，并写入配置文件喵~
-- 缓存：仓库列表、收藏、搜索、仓库详情、文件树和 README 都存在本地，按有效期自动刷新喵~
+- 缓存：仓库列表、收藏、搜索、仓库详情、文件树、README 和工作流都存在本地，按有效期自动刷新喵~设置页或 `c` 可以分类清理喵~
 - 鼠标：单击选择、双击打开仓库页、滚轮滚动、点击标签、按钮、文件树、发行版资产和设置项喵~
 - 主题：Latte、Frappe、Macchiato、Mocha 四套 Catppuccin 主题，每套一个 TOML喵~
 
@@ -51,11 +52,21 @@ cargo build --release
 ./target/release/gitx-tui --theme latte
 ```
 
-安装到 Cargo 的 bin 目录：
+在仓库根目录跑本地的安装脚本，会 `cargo build --release` 后装到 `~/.local/bin` 喵~
+
+```bash
+./install.sh
+./install.sh --dir /some/bin   # 换安装目录
+./install.sh --debug           # 构建 debug 版，编译快一点
+```
+
+也可以交给 Cargo：
 
 ```bash
 cargo install --path .
 ```
+
+发布 tag `v*` 时，GitHub Actions 会自动构建 Linux/macOS/Windows 包并创建 Release喵~
 
 ## 页面与操作
 
@@ -65,8 +76,9 @@ cargo install --path .
 | 收藏 | 完整的 Starred 列表、统计、排序和详情 |
 | 搜索 | 搜索框、排序、历史记录、结果列表和详情 |
 | 账号 | 账号资料、仓库统计、GitHub API 核心/搜索/GraphQL 额度和恢复时间 |
-| 设置 | 配置文件路径、主题、预览开关、下载目录、代理、缓存 |
+| 设置 | 配置文件路径、主题、预览开关、下载目录、代理、缓存管理 |
 | 仓库详情 | 统计、文件树、右侧发行版下载和底部 README；自己的仓库可以编辑喵~ |
+| 工作流 | 当前仓库的 Actions 运行记录、任务与步骤状态，按 `Enter` 去浏览器喵~ |
 
 ### 键盘
 
@@ -78,9 +90,11 @@ cargo install --path .
 | `[` `]` | 上一页 / 下一页 |
 | `g` `G` | 第一页 / 最后一页（仓库页里是面板顶部 / 底部） |
 | `PgUp` `PgDn` | 列表翻页；仓库页里滚动面板 |
-| `Enter` | 打开仓库页；设置页里执行当前项；账号页打开主页；确认语言 |
+| `Enter` | 打开仓库页；设置页里执行当前项；账号页打开主页；工作流页打开 run；确认语言 |
 | `Esc` | 离开输入、关闭弹窗或返回列表 |
 | `/` | 聚焦搜索 |
+| `a` | 打开当前仓库的 Actions 工作流页 |
+| `c` | 打开缓存管理，按分类清理 |
 | `e` | 编辑自己的仓库（简介、主页、主题、可见性、归档） |
 | `f` | 收藏或取消收藏当前仓库 |
 | `l` | 在仓库页打开完整语言筛选 |
@@ -101,6 +115,8 @@ cargo install --path .
 - 点击排序标签、语言筛选、主题卡片和按钮喵~
 - 点击列表底部的上一页 / 下一页按钮翻页喵~
 - 点击自己的仓库页里的「编辑仓库」可以打开编辑弹窗喵~
+- 点击仓库页的「工作流」进入 Actions 页，点击运行记录切换 jobs，点击任务行去浏览器喵~
+- 点击缓存管理里的分类可以选中，再点「清掉选中」清理喵~
 - 点击文件树里的文件或目录会去 GitHub 打开喵~
 - 点击发行版资产会开始本地下载喵~
 - 滚轮滚动列表、文件树、发行版和 README 区域喵~
@@ -132,7 +148,7 @@ download_dir = "~/Downloads/gitx-tui"
 | `theme` | `latte`、`frappe`、`macchiato`、`mocha` |
 | `proxy` | 公开 API 与发行版下载的加速地址 |
 | `repos_ttl_secs` | 仓库和收藏列表的缓存时间，单位秒 |
-| `detail_ttl_secs` | 仓库详情、文件树、README 和发行版的缓存时间，单位秒 |
+| `detail_ttl_secs` | 仓库详情、文件树、README、发行版和 Actions 的缓存时间，单位秒 |
 | `search_ttl_secs` | 搜索结果的缓存时间，单位秒 |
 | `search_history` | 最近搜索，最多保留 8 条 |
 | `show_file_tree` | 是否在仓库页加载文件树，默认关闭 |
@@ -168,7 +184,7 @@ https://v4.gh-proxy.org/https://api.github.com/...
 https://v4.gh-proxy.org/https://github.com/...
 ```
 
-认证数据（`/user`、`/user/repos`、`/user/starred`、`/rate_limit`）、私有仓库详情、Star 操作和仓库编辑（`PATCH /repos/{owner}/{repo}`）直接访问 GitHub API喵~这样处理有两个原因：
+认证数据（`/user`、`/user/repos`、`/user/starred`、`/rate_limit`）、私有仓库详情、私有仓库的 Actions 接口、Star 操作和仓库编辑（`PATCH /repos/{owner}/{repo}`）直接访问 GitHub API喵~这样处理有两个原因：
 
 1. `gh` 的登录凭据不会发送给第三方代理喵~
 2. 公共代理不会转发 `Authorization`，也不适合承载私有仓库数据喵~
@@ -187,7 +203,7 @@ https://v4.gh-proxy.org/https://github.com/...
 
 ```text
 src/api.rs      GitHub API、gh 凭据、代理、直连回退和本地下载
-src/app.rs      页面状态、分页、账号额度、仓库编辑、异步消息和键鼠事件
+src/app.rs      页面状态、分页、账号额度、仓库编辑、工作流、缓存管理和异步消息
 src/cache.rs    JSON 缓存
 src/config.rs   配置加载与保存
 src/icons.rs    Nerd Font 图标
@@ -214,4 +230,6 @@ cargo clippy --all-targets -- -D warnings
 - 文件树会把仓库当前分支的树递归取下来，界面最多展示 1200 项喵~
 - README 采用轻量 Markdown 处理，不是完整渲染器喵~
 - 同一时间只下载一个发行版资产，下载完再点下一份喵~
+- 工作流页每个仓库只取最近 30 条运行记录，不是账号级全部记录喵~
+- 私有仓库的 Actions 记录需要 `gh` 登录凭据，没登录时会提示失败喵~
 - Star 操作会真实修改 GitHub 账号状态，点之前要想一下哦喵~

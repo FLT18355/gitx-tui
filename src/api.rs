@@ -1,7 +1,7 @@
 use crate::format::base64_decode;
 use crate::model::{
     RateLimit, ReadmeContent, Release, Repo, SearchOutcome, SearchResponse, SearchSort,
-    TreeResponse, User,
+    TreeResponse, User, WorkflowJob, WorkflowJobsResponse, WorkflowRun, WorkflowRunsResponse,
 };
 use serde::de::DeserializeOwned;
 use std::fs;
@@ -114,6 +114,31 @@ impl ApiClient {
         } else {
             Err(status_message(status, &body))
         }
+    }
+
+    pub fn action_runs(&self, full_name: &str, private: bool) -> Result<Vec<WorkflowRun>, String> {
+        let url = format!("{API}/repos/{full_name}/actions/runs?per_page=30");
+        let response: WorkflowRunsResponse = if private {
+            self.get_json(&url, true)?
+        } else {
+            self.get_public_with_fallback(&url)?
+        };
+        Ok(response.workflow_runs)
+    }
+
+    pub fn action_jobs(
+        &self,
+        full_name: &str,
+        run_id: u64,
+        private: bool,
+    ) -> Result<Vec<WorkflowJob>, String> {
+        let url = format!("{API}/repos/{full_name}/actions/runs/{run_id}/jobs?per_page=30");
+        let response: WorkflowJobsResponse = if private {
+            self.get_json(&url, true)?
+        } else {
+            self.get_public_with_fallback(&url)?
+        };
+        Ok(response.jobs)
     }
 
     pub fn search(&self, query: &str, sort: SearchSort) -> Result<SearchOutcome, String> {

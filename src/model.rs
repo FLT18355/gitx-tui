@@ -424,6 +424,172 @@ pub struct ReadmeContent {
     pub content: String,
 }
 
+pub fn conclusion_label(raw: &str) -> &str {
+    match raw {
+        "success" => "成功",
+        "failure" => "失败",
+        "cancelled" => "已取消",
+        "timed_out" => "超时",
+        "startup_failure" => "启动失败",
+        "skipped" => "已跳过",
+        "neutral" => "中性",
+        "action_required" => "需要处理",
+        "stale" => "已过期",
+        other => other,
+    }
+}
+
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct WorkflowStep {
+    #[serde(default)]
+    pub name: String,
+    #[serde(default)]
+    pub status: String,
+    #[serde(default)]
+    pub conclusion: Option<String>,
+    #[serde(default)]
+    pub number: u64,
+}
+
+impl WorkflowStep {
+    pub fn status_label(&self) -> &str {
+        match self.status.as_str() {
+            "completed" => self
+                .conclusion
+                .as_deref()
+                .map(conclusion_label)
+                .unwrap_or("已完成"),
+            "in_progress" => "进行中",
+            "queued" => "排队中",
+            "waiting" => "等待中",
+            "requested" => "已请求",
+            "pending" => "等待中",
+            _ => &self.status,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct WorkflowJob {
+    #[serde(default)]
+    pub id: u64,
+    #[serde(default)]
+    pub name: String,
+    #[serde(default)]
+    pub status: String,
+    #[serde(default)]
+    pub conclusion: Option<String>,
+    #[serde(default)]
+    pub started_at: Option<String>,
+    #[serde(default)]
+    pub completed_at: Option<String>,
+    #[serde(default)]
+    pub html_url: String,
+    #[serde(default)]
+    pub steps: Vec<WorkflowStep>,
+}
+
+impl WorkflowJob {
+    pub fn status_label(&self) -> &str {
+        match self.status.as_str() {
+            "completed" => self
+                .conclusion
+                .as_deref()
+                .map(conclusion_label)
+                .unwrap_or("已完成"),
+            "in_progress" => "进行中",
+            "queued" => "排队中",
+            "waiting" => "等待中",
+            "requested" => "已请求",
+            "pending" => "等待中",
+            _ => &self.status,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct WorkflowRun {
+    #[serde(default)]
+    pub id: u64,
+    #[serde(default)]
+    pub name: Option<String>,
+    #[serde(default)]
+    pub display_title: String,
+    #[serde(default)]
+    pub event: String,
+    #[serde(default)]
+    pub status: String,
+    #[serde(default)]
+    pub conclusion: Option<String>,
+    #[serde(default)]
+    pub head_branch: Option<String>,
+    #[serde(default)]
+    pub run_number: u64,
+    #[serde(default)]
+    pub html_url: String,
+    #[serde(default)]
+    pub created_at: String,
+    #[serde(default)]
+    pub updated_at: String,
+    #[serde(default)]
+    pub run_started_at: Option<String>,
+    #[serde(default)]
+    pub actor: Option<Owner>,
+}
+
+impl WorkflowRun {
+    pub fn workflow_name(&self) -> &str {
+        self.name
+            .as_deref()
+            .filter(|name| !name.trim().is_empty())
+            .unwrap_or("未命名工作流")
+    }
+
+    pub fn title(&self) -> &str {
+        if self.display_title.trim().is_empty() {
+            self.workflow_name()
+        } else {
+            &self.display_title
+        }
+    }
+
+    pub fn branch(&self) -> &str {
+        self.head_branch.as_deref().unwrap_or("")
+    }
+
+    pub fn status_label(&self) -> &str {
+        match self.status.as_str() {
+            "completed" => self
+                .conclusion
+                .as_deref()
+                .map(conclusion_label)
+                .unwrap_or("已完成"),
+            "in_progress" => "进行中",
+            "queued" => "排队中",
+            "waiting" => "等待中",
+            "requested" => "已请求",
+            "pending" => "等待中",
+            _ => &self.status,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct WorkflowRunsResponse {
+    #[serde(default)]
+    pub total_count: u64,
+    #[serde(default)]
+    pub workflow_runs: Vec<WorkflowRun>,
+}
+
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct WorkflowJobsResponse {
+    #[serde(default)]
+    pub total_count: u64,
+    #[serde(default)]
+    pub jobs: Vec<WorkflowJob>,
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -459,5 +625,57 @@ mod tests {
         assert_eq!(user.display_name(), "Meow");
         assert_eq!(user.plan.as_ref().unwrap().name, "pro");
         assert!(!user.joined_label().is_empty());
+    }
+
+    #[test]
+    fn parses_workflow_runs_and_jobs() {
+        let raw = r#"{
+            "total_count": 1,
+            "workflow_runs": [{
+                "id": 9001,
+                "name": "CI",
+                "display_title": "fix: 喵",
+                "event": "push",
+                "status": "completed",
+                "conclusion": "success",
+                "head_branch": "main",
+                "run_number": 12,
+                "html_url": "https://github.com/me/demo/actions/runs/9001",
+                "created_at": "2026-01-01T00:00:00Z",
+                "updated_at": "2026-01-01T00:02:00Z",
+                "run_started_at": "2026-01-01T00:00:10Z",
+                "actor": {"login": "me"}
+            }]
+        }"#;
+        let response: WorkflowRunsResponse = serde_json::from_str(raw).unwrap();
+        assert_eq!(response.total_count, 1);
+        let run = &response.workflow_runs[0];
+        assert_eq!(run.title(), "fix: 喵");
+        assert_eq!(run.branch(), "main");
+        assert_eq!(run.status_label(), "成功");
+        assert_eq!(run.conclusion.as_deref(), Some("success"));
+
+        let jobs = r#"{
+            "total_count": 1,
+            "jobs": [{
+                "id": 1,
+                "name": "build",
+                "status": "completed",
+                "conclusion": "failure",
+                "started_at": "2026-01-01T00:00:10Z",
+                "completed_at": "2026-01-01T00:01:10Z",
+                "html_url": "https://github.com/me/demo/actions/runs/9001/job/1",
+                "steps": [{
+                    "name": "checkout",
+                    "status": "completed",
+                    "conclusion": "success",
+                    "number": 1
+                }]
+            }]
+        }"#;
+        let response: WorkflowJobsResponse = serde_json::from_str(jobs).unwrap();
+        let job = &response.jobs[0];
+        assert_eq!(job.status_label(), "失败");
+        assert_eq!(job.steps[0].status_label(), "成功");
     }
 }

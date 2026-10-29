@@ -1,5 +1,6 @@
 use crate::app::{
     Action, App, HitBox, LayoutRects, Overlay, Page, RepoPane, StatusKind, TextInput, TtlKind,
+    cache_groups,
 };
 use crate::format;
 use crate::icons;
@@ -43,6 +44,7 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
         Page::Account => draw_account_page(frame, app, &theme, chunks[1], &mut hits),
         Page::Settings => draw_settings_page(frame, app, &theme, chunks[1], &mut hits),
         Page::Repo => draw_repo_page(frame, app, &theme, chunks[1], &mut hits),
+        Page::Actions => draw_actions_page(frame, app, &theme, chunks[1], &mut hits),
     }
     draw_footer(frame, app, &theme, chunks[2], &hits);
 
@@ -53,6 +55,7 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
         Some(Overlay::Help) => draw_help(frame, app, &theme, area, &mut hits),
         Some(Overlay::Languages) => draw_languages_overlay(frame, app, &theme, area, &mut hits),
         Some(Overlay::EditRepo) => draw_repo_edit_overlay(frame, app, &theme, area, &mut hits),
+        Some(Overlay::Cache) => draw_cache_overlay(frame, app, &theme, area, &mut hits),
         None => app.layout.overlay = Rect::default(),
     }
 
@@ -245,7 +248,10 @@ fn hints_for(page: Page) -> &'static str {
         Page::Search => "输入后回车    Esc 离开输入    j/k 挑    [ ] 翻页    Enter 打开喵~",
         Page::Account => "r 刷新账号和额度    Enter 打开主页    Esc 回仓库喵~",
         Page::Settings => "j/k 选    h/l 调    Enter 操作    Ctrl+S 保存    Esc 离开喵~",
-        Page::Repo => "Esc 返回    Tab 换面板    j/k 滚动    e 编辑自己的仓库    o 主页喵~",
+        Page::Repo => "Esc 返回    Tab 换面板    j/k 滚动    a 工作流    e 编辑自己    o 主页喵~",
+        Page::Actions => {
+            "j/k 挑运行    Enter 去浏览器    PgUp/PgDn 滚任务    r 刷新    Esc 返回喵~"
+        }
     }
 }
 
@@ -2188,7 +2194,7 @@ fn draw_repo_page(
         ),
         (
             icons::label(icons::COGS, "工作流喵~"),
-            Action::OpenExternal(format!("{}/actions", repo.html_url.trim_end_matches('/'))),
+            Action::OpenActions,
             false,
         ),
     ];
@@ -2252,6 +2258,500 @@ fn draw_repo_page(
         app.readme_scroll = 0;
         app.readme_scroll_max = 0;
     }
+}
+
+fn workflow_status_icon(status: &str, conclusion: Option<&str>) -> (&'static str, &'static str) {
+    match conclusion {
+        Some("success") => (icons::CHECK, "green"),
+        Some("failure" | "timed_out" | "cancelled" | "startup_failure" | "action_required") => {
+            (icons::WARNING, "red")
+        }
+        Some("skipped" | "neutral" | "stale") => (icons::INFO, "overlay0"),
+        _ => match status {
+            "in_progress" => (icons::CLOCK, "peach"),
+            "queued" | "waiting" | "requested" | "pending" => (icons::CLOCK, "overlay0"),
+            _ => (icons::INFO, "blue"),
+        },
+    }
+}
+
+fn draw_actions_page(
+    frame: &mut Frame,
+    app: &mut App,
+    theme: &Theme,
+    area: Rect,
+    hits: &mut Vec<HitBox>,
+) {
+    fill(frame, area, theme.color("base"));
+    let inner = Rect::new(
+        area.x + 2,
+        area.y + 1,
+        area.width.saturating_sub(4),
+        area.height.saturating_sub(2),
+    );
+    if inner.height < 8 {
+        draw_center_message(
+            frame,
+            theme,
+            inner,
+            "这里有点挤喵~",
+            "把终端拉大一点，人家才摆得下工作流页喵~",
+        );
+        return;
+    }
+
+    let back_label = icons::label(icons::BACK, "返回喵~");
+    let back_width = format::text_width(&back_label) as u16 + 2;
+    let back_rect = Rect::new(inner.x, inner.y, back_width, 1);
+    let back_hover = app.hover.as_ref() == Some(&Action::Back);
+    frame.render_widget(
+        Paragraph::new(back_label).style(if back_hover {
+            Style::default().fg(theme.color("blue"))
+        } else {
+            Style::default().fg(theme.color("subtext0"))
+        }),
+        back_rect,
+    );
+    register(hits, back_rect, Action::Back);
+
+    let refresh_label = icons::label(icons::REFRESH, "刷新喵~");
+    let refresh_width = format::text_width(&refresh_label) as u16 + 4;
+    draw_button(
+        frame,
+        app,
+        theme,
+        hits,
+        Rect::new(
+            inner.x + inner.width.saturating_sub(refresh_width),
+            inner.y,
+            refresh_width,
+            1,
+        ),
+        &refresh_label,
+        Action::Refresh,
+        false,
+    );
+
+    let repo = app
+        .action_repo
+        .clone()
+        .unwrap_or_else(|| "还没有选仓库".to_string());
+    let title = format!("{} 工作流喵~  {repo}", icons::COGS);
+    let title_width = inner.width.saturating_sub(back_width + refresh_width + 4) as usize;
+    frame.render_widget(
+        Paragraph::new(format::truncate(&title, title_width)).style(
+            Style::default()
+                .fg(theme.color("text"))
+                .add_modifier(Modifier::BOLD),
+        ),
+        Rect::new(inner.x + back_width + 2, inner.y, title_width as u16, 1),
+    );
+    frame.render_widget(
+        Paragraph::new("这里是当前仓库的 Actions 运行记录喵~")
+            .style(Style::default().fg(theme.color("subtext0"))),
+        Rect::new(inner.x, inner.y + 1, inner.width, 1),
+    );
+    fill(
+        frame,
+        Rect::new(inner.x, inner.y + 2, inner.width, 1),
+        theme.color("surface0"),
+    );
+
+    let content = Rect::new(
+        inner.x,
+        inner.y + 3,
+        inner.width,
+        inner.height.saturating_sub(3),
+    );
+    if content.height < 4 {
+        return;
+    }
+    let columns = Layout::horizontal([
+        Constraint::Percentage(44),
+        Constraint::Length(1),
+        Constraint::Min(24),
+    ])
+    .split(content);
+    draw_action_runs_panel(frame, app, theme, columns[0], hits);
+    draw_action_jobs_panel(frame, app, theme, columns[2], hits);
+}
+
+fn draw_action_runs_panel(
+    frame: &mut Frame,
+    app: &mut App,
+    theme: &Theme,
+    area: Rect,
+    hits: &mut Vec<HitBox>,
+) {
+    if area.width < 8 || area.height < 3 {
+        return;
+    }
+    fill(frame, area, theme.color("mantle"));
+    frame.render_widget(
+        Paragraph::new(icons::label(icons::COGS, "运行记录喵~")).style(
+            Style::default()
+                .fg(theme.color("text"))
+                .add_modifier(Modifier::BOLD),
+        ),
+        Rect::new(area.x + 1, area.y, area.width.saturating_sub(2), 1),
+    );
+    frame.render_widget(
+        Paragraph::new(format!("{} 条喵~", app.action_runs.len()))
+            .alignment(Alignment::Right)
+            .style(Style::default().fg(theme.color("overlay0"))),
+        Rect::new(area.x + 1, area.y, area.width.saturating_sub(2), 1),
+    );
+    fill(
+        frame,
+        Rect::new(area.x, area.y + 1, area.width, 1),
+        theme.color("surface0"),
+    );
+    let body = Rect::new(
+        area.x + 1,
+        area.y + 2,
+        area.width.saturating_sub(2),
+        area.height.saturating_sub(2),
+    );
+    if app.action_runs.is_empty() {
+        let (title, detail) = if app.action_runs_loading {
+            ("人家正在翻工作流记录喵~...", "第一次同步要等一小会儿哦喵~")
+        } else {
+            (
+                "还没有运行记录喵~",
+                "这个仓库还没跑过 Actions，或者人家没权限看喵~",
+            )
+        };
+        draw_center_message(frame, theme, body, title, detail);
+        return;
+    }
+
+    let rows = (body.height / 2).max(1) as usize;
+    let selected = app.action_selected.min(app.action_runs.len() - 1);
+    let start = selected.saturating_sub(rows - 1);
+    let end = (start + rows).min(app.action_runs.len());
+    for (offset, index) in (start..end).enumerate() {
+        let y = body.y + offset as u16 * 2;
+        if y + 1 >= body.y + body.height {
+            break;
+        }
+        let rect = Rect::new(body.x, y, body.width, 2);
+        if index == selected {
+            fill(frame, rect, theme.color("surface0"));
+        }
+        let run = &app.action_runs[index];
+        let (icon, color) = workflow_status_icon(&run.status, run.conclusion.as_deref());
+        let title_width = body.width.saturating_sub(5) as usize;
+        let title = Line::from(vec![
+            Span::styled(format!("{icon} "), Style::default().fg(theme.color(color))),
+            Span::styled(
+                format!("#{} ", run.run_number),
+                Style::default()
+                    .fg(theme.color("blue"))
+                    .add_modifier(Modifier::BOLD),
+            ),
+            Span::styled(
+                format::truncate(&format::clean_text(run.title()), title_width),
+                Style::default().fg(theme.color("text")),
+            ),
+        ]);
+        frame.render_widget(
+            Paragraph::new(title),
+            Rect::new(body.x + 1, y, body.width.saturating_sub(1), 1),
+        );
+        let event = if run.event.trim().is_empty() {
+            "手动"
+        } else {
+            run.event.as_str()
+        };
+        let branch = if run.branch().is_empty() {
+            "无分支"
+        } else {
+            run.branch()
+        };
+        let meta = format!(
+            "   {} · {} · {} · {}",
+            format::clean_text(event),
+            format::clean_text(branch),
+            run.status_label(),
+            format::relative_time(&run.created_at)
+        );
+        frame.render_widget(
+            Paragraph::new(format::truncate(&meta, body.width as usize))
+                .style(Style::default().fg(theme.color("overlay0"))),
+            Rect::new(body.x + 1, y + 1, body.width.saturating_sub(1), 1),
+        );
+        register(hits, rect, Action::SelectActionRun(index));
+    }
+}
+
+fn draw_action_jobs_panel(
+    frame: &mut Frame,
+    app: &mut App,
+    theme: &Theme,
+    area: Rect,
+    hits: &mut Vec<HitBox>,
+) {
+    if area.width < 8 || area.height < 3 {
+        return;
+    }
+    fill(frame, area, theme.color("mantle"));
+    let Some(run) = app.selected_action_run() else {
+        frame.render_widget(
+            Paragraph::new(icons::label(icons::CODE, "任务与步骤喵~")).style(
+                Style::default()
+                    .fg(theme.color("text"))
+                    .add_modifier(Modifier::BOLD),
+            ),
+            Rect::new(area.x + 1, area.y, area.width.saturating_sub(2), 1),
+        );
+        draw_center_message(
+            frame,
+            theme,
+            Rect::new(
+                area.x + 1,
+                area.y + 2,
+                area.width.saturating_sub(2),
+                area.height.saturating_sub(2),
+            ),
+            "先在左边挑一条运行记录喵~",
+            "挑好之后人家会把任务和步骤列出来喵~",
+        );
+        return;
+    };
+    frame.render_widget(
+        Paragraph::new(icons::label(icons::CODE, "任务与步骤喵~")).style(
+            Style::default()
+                .fg(theme.color("text"))
+                .add_modifier(Modifier::BOLD),
+        ),
+        Rect::new(area.x + 1, area.y, area.width.saturating_sub(2), 1),
+    );
+    frame.render_widget(
+        Paragraph::new(format::truncate(
+            &format!("#{} {}", run.run_number, format::clean_text(run.title())),
+            area.width.saturating_sub(2) as usize,
+        ))
+        .style(Style::default().fg(theme.color("overlay0"))),
+        Rect::new(area.x + 1, area.y + 1, area.width.saturating_sub(2), 1),
+    );
+    fill(
+        frame,
+        Rect::new(area.x, area.y + 2, area.width, 1),
+        theme.color("surface0"),
+    );
+    let body = Rect::new(
+        area.x + 1,
+        area.y + 3,
+        area.width.saturating_sub(2),
+        area.height.saturating_sub(3),
+    );
+    if app.action_jobs.is_empty() {
+        let (title, detail) = if app.action_jobs_loading == Some(run.id) {
+            ("人家正在读任务详情喵~...", "任务多的时候要等一小会儿哦喵~")
+        } else {
+            (
+                "还没有任务详情喵~",
+                "这条运行可能还在排队，或者接口没给任务喵~",
+            )
+        };
+        draw_center_message(frame, theme, body, title, detail);
+        return;
+    }
+
+    let mut lines: Vec<Line> = Vec::new();
+    let mut actions: Vec<(usize, Action)> = Vec::new();
+    for job in &app.action_jobs {
+        let (icon, color) = workflow_status_icon(&job.status, job.conclusion.as_deref());
+        let duration = job
+            .started_at
+            .as_deref()
+            .and_then(|start| format::duration_label(start, job.completed_at.as_deref()))
+            .unwrap_or_else(|| "未开始".to_string());
+        let name = format::truncate(
+            &format::clean_text(&job.name),
+            body.width.saturating_sub(20) as usize,
+        );
+        lines.push(Line::from(vec![
+            Span::styled(format!("{icon} "), Style::default().fg(theme.color(color))),
+            Span::styled(name, Style::default().fg(theme.color("text"))),
+            Span::styled(
+                format!("  {}  {}", job.status_label(), duration),
+                Style::default().fg(theme.color("overlay0")),
+            ),
+        ]));
+        if !job.html_url.is_empty() {
+            actions.push((lines.len() - 1, Action::OpenExternal(job.html_url.clone())));
+        }
+        for step in &job.steps {
+            let (step_icon, step_color) =
+                workflow_status_icon(&step.status, step.conclusion.as_deref());
+            lines.push(Line::from(vec![
+                Span::styled(
+                    format!("  {step_icon} "),
+                    Style::default().fg(theme.color(step_color)),
+                ),
+                Span::styled(
+                    format::truncate(
+                        &format::clean_text(&step.name),
+                        body.width.saturating_sub(16) as usize,
+                    ),
+                    Style::default().fg(theme.color("subtext0")),
+                ),
+                Span::styled(
+                    format!("  {}", step.status_label()),
+                    Style::default().fg(theme.color("overlay0")),
+                ),
+            ]));
+        }
+        lines.push(Line::default());
+    }
+    lines.push(Line::from(Span::styled(
+        "点任务行或按 Enter 去浏览器看完整日志喵~",
+        Style::default().fg(theme.color("overlay0")),
+    )));
+    app.action_jobs_scroll_max = lines.len().saturating_sub(body.height as usize) as u16;
+    app.action_jobs_scroll = app.action_jobs_scroll.min(app.action_jobs_scroll_max);
+    render_scrolled(
+        frame,
+        body,
+        lines,
+        actions,
+        app.action_jobs_scroll,
+        theme,
+        hits,
+    );
+}
+
+fn draw_cache_overlay(
+    frame: &mut Frame,
+    app: &mut App,
+    theme: &Theme,
+    area: Rect,
+    hits: &mut Vec<HitBox>,
+) {
+    let groups = cache_groups();
+    let width = area.width.saturating_sub(12).min(72);
+    let height = (groups.len() as u16 + 7).min(area.height.saturating_sub(4));
+    if width < 30 || height < 6 {
+        return;
+    }
+    let rect = Rect::new(
+        area.x + (area.width.saturating_sub(width)) / 2,
+        area.y + (area.height.saturating_sub(height)) / 2,
+        width,
+        height,
+    );
+    frame.render_widget(Clear, rect);
+    fill(frame, rect, theme.color("mantle"));
+    frame.render_widget(
+        Block::new()
+            .borders(Borders::ALL)
+            .border_style(Style::default().fg(theme.color("blue"))),
+        rect,
+    );
+    let inner = Rect::new(
+        rect.x + 2,
+        rect.y + 1,
+        rect.width.saturating_sub(4),
+        rect.height.saturating_sub(2),
+    );
+    frame.render_widget(
+        Paragraph::new(icons::label(icons::DATABASE, "缓存管理喵~")).style(
+            Style::default()
+                .fg(theme.color("text"))
+                .add_modifier(Modifier::BOLD),
+        ),
+        Rect::new(inner.x, inner.y, inner.width, 1),
+    );
+    frame.render_widget(
+        Paragraph::new(format!(
+            "共 {} 个文件 · {}喵~",
+            app.cache_stats.files,
+            format::format_size(app.cache_stats.bytes)
+        ))
+        .style(Style::default().fg(theme.color("subtext0"))),
+        Rect::new(inner.x, inner.y + 1, inner.width, 1),
+    );
+
+    let list_top = inner.y + 3;
+    let bottom = inner.y + inner.height.saturating_sub(1);
+    for (index, group) in groups.iter().enumerate() {
+        let y = list_top + index as u16;
+        if y >= bottom {
+            break;
+        }
+        let stats = app.cache_group_stats(index);
+        let selected = index == app.cache_row;
+        let row = Rect::new(inner.x, y, inner.width, 1);
+        if selected {
+            fill(frame, row, theme.color("surface0"));
+        }
+        let label = format!(
+            "{} {:<10}  {:>3} 个文件 · {}",
+            icons::DATABASE,
+            group.label,
+            stats.files,
+            format::format_size(stats.bytes)
+        );
+        frame.render_widget(
+            Paragraph::new(format::truncate(&label, inner.width as usize)).style(if selected {
+                Style::default()
+                    .fg(theme.color("blue"))
+                    .add_modifier(Modifier::BOLD)
+            } else {
+                Style::default().fg(theme.color("subtext0"))
+            }),
+            row,
+        );
+        register(hits, row, Action::SelectCacheRow(index));
+    }
+
+    let mut x = inner.x;
+    let clear_label = icons::label(icons::TRASH, "清掉选中喵~");
+    let clear_width = format::text_width(&clear_label) as u16 + 4;
+    if x + clear_width <= inner.x + inner.width {
+        draw_button(
+            frame,
+            app,
+            theme,
+            hits,
+            Rect::new(x, bottom, clear_width, 1),
+            &clear_label,
+            Action::ClearCacheGroup(app.cache_row),
+            false,
+        );
+        x += clear_width + 1;
+    }
+    let open_label = icons::label(icons::FOLDER_OPEN, "缓存目录喵~");
+    let open_width = format::text_width(&open_label) as u16 + 4;
+    if x + open_width <= inner.x + inner.width {
+        draw_button(
+            frame,
+            app,
+            theme,
+            hits,
+            Rect::new(x, bottom, open_width, 1),
+            &open_label,
+            Action::OpenCacheDir,
+            false,
+        );
+        x += open_width + 1;
+    }
+    let close_label = "关掉喵~";
+    let close_width = format::text_width(close_label) as u16 + 4;
+    if x + close_width <= inner.x + inner.width {
+        draw_button(
+            frame,
+            app,
+            theme,
+            hits,
+            Rect::new(x, bottom, close_width, 1),
+            close_label,
+            Action::CloseOverlay,
+            false,
+        );
+    }
+    app.layout.overlay = rect;
 }
 
 fn draw_file_tree_panel(
@@ -3143,6 +3643,21 @@ fn draw_settings_page(
         Rect::new(x, actions_y, clear_width, 1),
     );
     register(hits, Rect::new(x, actions_y, clear_width, 1), clear_action);
+    x += clear_width + 1;
+    let manage_label = icons::label(icons::DATABASE, "缓存管理喵~");
+    let manage_width = format::text_width(&manage_label) as u16 + 4;
+    if x + manage_width <= inner.x + inner.width {
+        draw_button(
+            frame,
+            app,
+            theme,
+            hits,
+            Rect::new(x, actions_y, manage_width, 1),
+            &manage_label,
+            Action::OpenCacheManager,
+            false,
+        );
+    }
     if app.config_dirty {
         frame.render_widget(
             Paragraph::new("有改动还没保存呢喵~")
@@ -3655,8 +4170,12 @@ fn draw_repo_edit_overlay(
             }),
             Rect::new(value_x, y, value_width, 1),
         );
-        if editing && !empty {
-            let cursor_x = value_x.saturating_add(cursor.min(value_width.saturating_sub(1)));
+        if editing {
+            let cursor_x = if empty {
+                value_x
+            } else {
+                value_x.saturating_add(cursor.min(value_width.saturating_sub(1)))
+            };
             frame.set_cursor_position(Position::new(cursor_x, y));
         }
         register(
@@ -3703,8 +4222,13 @@ fn draw_repo_edit_overlay(
         false,
     );
     if actions_y > inner.y + 2 {
+        let hint = if edit.editing {
+            "输入中：Enter 完成并下一项   Esc 结束编辑   Ctrl+S 保存喵~"
+        } else {
+            "j/k 选   Enter 编辑/切换   Ctrl+S 保存   Esc 关掉喵~"
+        };
         frame.render_widget(
-            Paragraph::new("j/k 选   Enter 改   Ctrl+S 保存   Esc 关掉喵~")
+            Paragraph::new(hint)
                 .alignment(Alignment::Right)
                 .style(Style::default().fg(theme.color("overlay0"))),
             Rect::new(inner.x, actions_y - 2, inner.width, 1),
@@ -3875,6 +4399,11 @@ fn draw_help(frame: &mut Frame, app: &mut App, theme: &Theme, area: Rect, hits: 
         ),
         ("找找喵~", "/ 去找仓库  Enter 开找  Esc 离开输入喵~"),
         ("账号喵~", "4 看账号信息，还能查 GitHub API 额度喵~"),
+        (
+            "工作流喵~",
+            "仓库页按 a 看 Actions，j/k 挑，Enter 去浏览器喵~",
+        ),
+        ("缓存喵~", "按 c 分类清理缓存，o 打开缓存目录喵~"),
         (
             "改设置喵~",
             "j / k 选  h / l 调  Enter 动手  Ctrl+S 保存喵~",
