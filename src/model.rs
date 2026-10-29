@@ -575,6 +575,44 @@ impl WorkflowRun {
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct Workflow {
+    #[serde(default)]
+    pub id: u64,
+    #[serde(default)]
+    pub name: String,
+    #[serde(default)]
+    pub path: String,
+    #[serde(default)]
+    pub state: String,
+    #[serde(default)]
+    pub html_url: String,
+}
+
+impl Workflow {
+    pub fn state_label(&self) -> &str {
+        match self.state.as_str() {
+            "active" => "启用",
+            "disabled_manually" => "已停用",
+            "disabled_inactivity" => "不活跃停用",
+            "deleted" => "已删除",
+            _ => &self.state,
+        }
+    }
+
+    pub fn file_name(&self) -> &str {
+        self.path.rsplit('/').next().unwrap_or(&self.path)
+    }
+}
+
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct WorkflowListResponse {
+    #[serde(default)]
+    pub total_count: u64,
+    #[serde(default)]
+    pub workflows: Vec<Workflow>,
+}
+
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct WorkflowRunsResponse {
     #[serde(default)]
     pub total_count: u64,
@@ -625,6 +663,25 @@ mod tests {
         assert_eq!(user.display_name(), "Meow");
         assert_eq!(user.plan.as_ref().unwrap().name, "pro");
         assert!(!user.joined_label().is_empty());
+    }
+
+    #[test]
+    fn parses_workflows() {
+        let raw = r#"{
+            "total_count": 1,
+            "workflows": [{
+                "id": 42,
+                "name": "Release",
+                "path": ".github/workflows/release.yml",
+                "state": "active",
+                "html_url": "https://github.com/me/demo/actions/workflows/release.yml"
+            }]
+        }"#;
+        let response: WorkflowListResponse = serde_json::from_str(raw).unwrap();
+        let workflow = &response.workflows[0];
+        assert_eq!(workflow.id, 42);
+        assert_eq!(workflow.file_name(), "release.yml");
+        assert_eq!(workflow.state_label(), "启用");
     }
 
     #[test]

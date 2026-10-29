@@ -56,6 +56,7 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
         Some(Overlay::Languages) => draw_languages_overlay(frame, app, &theme, area, &mut hits),
         Some(Overlay::EditRepo) => draw_repo_edit_overlay(frame, app, &theme, area, &mut hits),
         Some(Overlay::Cache) => draw_cache_overlay(frame, app, &theme, area, &mut hits),
+        Some(Overlay::RunWorkflow) => draw_workflow_overlay(frame, app, &theme, area, &mut hits),
         None => app.layout.overlay = Rect::default(),
     }
 
@@ -250,7 +251,7 @@ fn hints_for(page: Page) -> &'static str {
         Page::Settings => "j/k 选    h/l 调    Enter 操作    Ctrl+S 保存    Esc 离开喵~",
         Page::Repo => "Esc 返回    Tab 换面板    j/k 滚动    a 工作流    e 编辑自己    o 主页喵~",
         Page::Actions => {
-            "j/k 挑运行    Enter 去浏览器    PgUp/PgDn 滚任务    r 刷新    Esc 返回喵~"
+            "j/k 挑运行  Enter 去浏览器  R/x 运行工作流  PgUp/PgDn 滚任务  r 刷新  Esc 返回喵~"
         }
     }
 }
@@ -2316,35 +2317,51 @@ fn draw_actions_page(
 
     let refresh_label = icons::label(icons::REFRESH, "刷新喵~");
     let refresh_width = format::text_width(&refresh_label) as u16 + 4;
+    let refresh_x = inner.x + inner.width.saturating_sub(refresh_width);
     draw_button(
         frame,
         app,
         theme,
         hits,
-        Rect::new(
-            inner.x + inner.width.saturating_sub(refresh_width),
-            inner.y,
-            refresh_width,
-            1,
-        ),
+        Rect::new(refresh_x, inner.y, refresh_width, 1),
         &refresh_label,
         Action::Refresh,
         false,
     );
+
+    let run_label = icons::label(icons::PLAY, "运行工作流喵~");
+    let run_width = format::text_width(&run_label) as u16 + 4;
+    let run_x = refresh_x.saturating_sub(run_width + 1);
+    let title_x = inner.x + back_width + 2;
+    let title_end = if run_x > title_x {
+        draw_button(
+            frame,
+            app,
+            theme,
+            hits,
+            Rect::new(run_x, inner.y, run_width, 1),
+            &run_label,
+            Action::OpenWorkflowRunner,
+            true,
+        );
+        run_x
+    } else {
+        refresh_x
+    };
 
     let repo = app
         .action_repo
         .clone()
         .unwrap_or_else(|| "还没有选仓库".to_string());
     let title = format!("{} 工作流喵~  {repo}", icons::COGS);
-    let title_width = inner.width.saturating_sub(back_width + refresh_width + 4) as usize;
+    let title_width = title_end.saturating_sub(title_x + 1) as usize;
     frame.render_widget(
         Paragraph::new(format::truncate(&title, title_width)).style(
             Style::default()
                 .fg(theme.color("text"))
                 .add_modifier(Modifier::BOLD),
         ),
-        Rect::new(inner.x + back_width + 2, inner.y, title_width as u16, 1),
+        Rect::new(title_x, inner.y, title_width as u16, 1),
     );
     frame.render_widget(
         Paragraph::new("这里是当前仓库的 Actions 运行记录喵~")
@@ -2736,6 +2753,270 @@ fn draw_cache_overlay(
             false,
         );
         x += open_width + 1;
+    }
+    let close_label = "关掉喵~";
+    let close_width = format::text_width(close_label) as u16 + 4;
+    if x + close_width <= inner.x + inner.width {
+        draw_button(
+            frame,
+            app,
+            theme,
+            hits,
+            Rect::new(x, bottom, close_width, 1),
+            close_label,
+            Action::CloseOverlay,
+            false,
+        );
+    }
+    app.layout.overlay = rect;
+}
+
+#[allow(clippy::too_many_arguments)]
+fn draw_workflow_field(
+    frame: &mut Frame,
+    theme: &Theme,
+    hits: &mut Vec<HitBox>,
+    x: u16,
+    y: u16,
+    width: u16,
+    label: &str,
+    input: &TextInput,
+    editing: bool,
+    placeholder: &str,
+    action: Action,
+) {
+    let label_width = format::text_width(label) as u16;
+    frame.render_widget(
+        Paragraph::new(format::truncate(label, width as usize))
+            .style(Style::default().fg(theme.color("overlay0"))),
+        Rect::new(x, y, width, 1),
+    );
+    let input_x = x + label_width.saturating_add(2);
+    let input_width = width.saturating_sub(label_width.saturating_add(2));
+    let input_rect = Rect::new(input_x, y, input_width, 1);
+    if input_width > 0 {
+        fill(
+            frame,
+            input_rect,
+            if editing {
+                theme.color("surface1")
+            } else {
+                theme.color("surface0")
+            },
+        );
+        let empty = input.is_empty();
+        let shown = if empty {
+            placeholder.to_string()
+        } else {
+            input.value.clone()
+        };
+        frame.render_widget(
+            Paragraph::new(format::truncate(&shown, input_width as usize)).style(if empty {
+                Style::default().fg(theme.color("overlay0"))
+            } else {
+                Style::default().fg(theme.color("text"))
+            }),
+            input_rect,
+        );
+        if editing {
+            let cursor_x = if empty {
+                input_x
+            } else {
+                input_x + (input.cursor as u16).min(input_width.saturating_sub(1))
+            };
+            frame.set_cursor_position(Position::new(cursor_x, y));
+        }
+    }
+    register(hits, Rect::new(x, y, width, 1), action);
+}
+
+fn draw_workflow_overlay(
+    frame: &mut Frame,
+    app: &mut App,
+    theme: &Theme,
+    area: Rect,
+    hits: &mut Vec<HitBox>,
+) {
+    let width = area.width.saturating_sub(10).min(80);
+    let height = area.height.saturating_sub(6).min(26);
+    if width < 40 || height < 14 {
+        return;
+    }
+    let rect = Rect::new(
+        area.x + (area.width.saturating_sub(width)) / 2,
+        area.y + (area.height.saturating_sub(height)) / 2,
+        width,
+        height,
+    );
+    frame.render_widget(Clear, rect);
+    fill(frame, rect, theme.color("mantle"));
+    frame.render_widget(
+        Block::new()
+            .borders(Borders::ALL)
+            .border_style(Style::default().fg(theme.color("blue"))),
+        rect,
+    );
+    let inner = Rect::new(
+        rect.x + 2,
+        rect.y + 1,
+        rect.width.saturating_sub(4),
+        rect.height.saturating_sub(2),
+    );
+    frame.render_widget(
+        Paragraph::new(icons::label(icons::PLAY, "运行工作流喵~")).style(
+            Style::default()
+                .fg(theme.color("text"))
+                .add_modifier(Modifier::BOLD),
+        ),
+        Rect::new(inner.x, inner.y, inner.width, 1),
+    );
+    let repo = app
+        .action_repo
+        .clone()
+        .unwrap_or_else(|| "还没有选仓库".to_string());
+    frame.render_widget(
+        Paragraph::new(format::truncate(
+            &format!("{repo} · 只有支持 workflow_dispatch 的工作流才能手动运行喵~"),
+            inner.width as usize,
+        ))
+        .style(Style::default().fg(theme.color("subtext0"))),
+        Rect::new(inner.x, inner.y + 1, inner.width, 1),
+    );
+
+    let list_top = inner.y + 3;
+    let list_height = inner.height.saturating_sub(11).max(2);
+    let list_area = Rect::new(inner.x, list_top, inner.width, list_height);
+    if app.action_workflows.is_empty() {
+        let (title, detail) = if app.action_workflows_loading {
+            (
+                "人家正在取工作流列表喵~...",
+                "仓库里的 YAML 有点多的话要等一小会儿喵~",
+            )
+        } else {
+            (
+                "这个仓库还没有工作流喵~",
+                "先往 .github/workflows 里放一个 workflow_dispatch 吧喵~",
+            )
+        };
+        draw_center_message(frame, theme, list_area, title, detail);
+    } else {
+        let rows = list_height as usize;
+        let selected = app.workflow_selected.min(app.action_workflows.len() - 1);
+        let start = selected.saturating_sub(rows.saturating_sub(1));
+        let end = (start + rows).min(app.action_workflows.len());
+        for (offset, index) in (start..end).enumerate() {
+            let y = list_area.y + offset as u16;
+            let row = Rect::new(list_area.x, y, list_area.width, 1);
+            let workflow = &app.action_workflows[index];
+            if index == selected {
+                fill(frame, row, theme.color("surface0"));
+            }
+            let name = if workflow.name.trim().is_empty() {
+                workflow.file_name()
+            } else {
+                workflow.name.as_str()
+            };
+            let label = format!(
+                "{} {}  {}  {}",
+                icons::COGS,
+                format::clean_text(name),
+                workflow.state_label(),
+                format::clean_text(&workflow.path)
+            );
+            let style = if index == selected {
+                Style::default()
+                    .fg(theme.color("blue"))
+                    .add_modifier(Modifier::BOLD)
+            } else {
+                Style::default().fg(theme.color("subtext0"))
+            };
+            frame.render_widget(
+                Paragraph::new(format::truncate(&label, list_area.width as usize)).style(style),
+                row,
+            );
+            register(hits, row, Action::SelectWorkflow(index));
+        }
+    }
+
+    let ref_y = list_top + list_height + 1;
+    draw_workflow_field(
+        frame,
+        theme,
+        hits,
+        inner.x,
+        ref_y,
+        inner.width,
+        "分支/标签喵~",
+        &app.workflow_ref,
+        app.workflow_ref_editing,
+        "默认分支喵~",
+        Action::EditWorkflowRef,
+    );
+    draw_workflow_field(
+        frame,
+        theme,
+        hits,
+        inner.x,
+        ref_y + 1,
+        inner.width,
+        "inputs JSON喵~",
+        &app.workflow_inputs,
+        app.workflow_inputs_editing,
+        "{}",
+        Action::EditWorkflowInputs,
+    );
+
+    if let Some(error) = app.workflow_error.as_deref() {
+        frame.render_widget(
+            Paragraph::new(format::truncate(error, inner.width as usize))
+                .style(Style::default().fg(theme.color("red"))),
+            Rect::new(inner.x, ref_y + 2, inner.width, 1),
+        );
+    }
+    frame.render_widget(
+        Paragraph::new(format::truncate(
+            "j/k 挑  Tab 换输入框  Enter 运行  r 刷新列表  o 开工作流  Esc 关掉喵~",
+            inner.width as usize,
+        ))
+        .style(Style::default().fg(theme.color("overlay0"))),
+        Rect::new(inner.x, ref_y + 3, inner.width, 1),
+    );
+
+    let bottom = inner.y + inner.height.saturating_sub(1);
+    let mut x = inner.x;
+    let run_label = if app.workflow_running {
+        format!("{} 提交中喵~", app.spinner())
+    } else {
+        icons::label(icons::PLAY, "运行喵~")
+    };
+    let run_width = format::text_width(&run_label) as u16 + 4;
+    if x + run_width <= inner.x + inner.width {
+        draw_button(
+            frame,
+            app,
+            theme,
+            hits,
+            Rect::new(x, bottom, run_width, 1),
+            &run_label,
+            Action::RunWorkflow,
+            true,
+        );
+        x += run_width + 1;
+    }
+    let refresh_label = icons::label(icons::REFRESH, "刷新列表喵~");
+    let refresh_width = format::text_width(&refresh_label) as u16 + 4;
+    if x + refresh_width <= inner.x + inner.width {
+        draw_button(
+            frame,
+            app,
+            theme,
+            hits,
+            Rect::new(x, bottom, refresh_width, 1),
+            &refresh_label,
+            Action::RefreshWorkflows,
+            false,
+        );
+        x += refresh_width + 1;
     }
     let close_label = "关掉喵~";
     let close_width = format::text_width(close_label) as u16 + 4;
@@ -4401,7 +4682,7 @@ fn draw_help(frame: &mut Frame, app: &mut App, theme: &Theme, area: Rect, hits: 
         ("账号喵~", "4 看账号信息，还能查 GitHub API 额度喵~"),
         (
             "工作流喵~",
-            "仓库页按 a 看 Actions，j/k 挑，Enter 去浏览器喵~",
+            "仓库页按 a 看 Actions，R/x 跑工作流，Tab 填分支和 inputs 喵~",
         ),
         ("缓存喵~", "按 c 分类清理缓存，o 打开缓存目录喵~"),
         (

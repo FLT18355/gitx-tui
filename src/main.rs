@@ -112,6 +112,7 @@ fn print_help() {
   g / G               第一页 / 最后一页喵~\n\
   Enter               打开仓库页喵~\n\
   a                   看当前仓库的 Actions 工作流喵~\n\
+  R / x               在 Actions 页手动运行工作流喵~\n\
   c                   管理本地缓存喵~\n\
   e                   编辑自己的仓库喵~\n\
   o                   用浏览器打开主页喵~\n\

@@ -40,6 +40,7 @@ pub const CHECK_SQUARE: &str = "\u{f14a}";
 pub const SQUARE: &str = "\u{f096}";
 pub const STAR_EMPTY: &str = "\u{f006}";
 pub const COGS: &str = "\u{f085}";
+pub const PLAY: &str = "\u{f04b}";
 pub const PULL: &str = "\u{f126}";
 pub const DOWNLOAD_DIR: &str = "\u{f07c}";
 pub const CODE_FILE: &str = "\u{f1c9}";

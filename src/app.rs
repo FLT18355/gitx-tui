@@ -5,7 +5,7 @@ use crate::format::{self, base64};
 use crate::icons;
 use crate::model::{
     RateLimit, ReadmeContent, Release, Repo, RepoSort, SearchResponse, SearchSort, TreeResponse,
-    User, key_part,
+    User, Workflow, key_part,
 };
 use crate::theme::{FLAVORS, Theme};
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers, MouseButton, MouseEvent, MouseEventKind};
@@ -66,6 +66,7 @@ pub enum Overlay {
     Languages,
     EditRepo,
     Cache,
+    RunWorkflow,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -142,6 +143,12 @@ pub enum Action {
     ClearCacheGroup(usize),
     SelectCacheRow(usize),
     OpenCacheDir,
+    OpenWorkflowRunner,
+    SelectWorkflow(usize),
+    EditWorkflowRef,
+    EditWorkflowInputs,
+    RunWorkflow,
+    RefreshWorkflows,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -392,6 +399,16 @@ enum Msg {
         run_id: u64,
         result: Result<Vec<crate::model::WorkflowJob>, String>,
     },
+    Workflows {
+        name: String,
+        result: Result<Vec<Workflow>, String>,
+    },
+    WorkflowDispatched {
+        name: String,
+        workflow: String,
+        git_ref: String,
+        result: Result<(), String>,
+    },
 }
 
 pub struct App {
@@ -416,6 +433,16 @@ pub struct App {
     pub action_jobs_fetched_at: Option<i64>,
     pub action_jobs_scroll: u16,
     pub action_jobs_scroll_max: u16,
+    pub action_workflows: Vec<Workflow>,
+    pub action_workflows_loading: bool,
+    pub action_workflows_fetched_at: Option<i64>,
+    pub workflow_selected: usize,
+    pub workflow_ref: TextInput,
+    pub workflow_ref_editing: bool,
+    pub workflow_inputs: TextInput,
+    pub workflow_inputs_editing: bool,
+    pub workflow_running: bool,
+    pub workflow_error: Option<String>,
     pub cache_row: usize,
     pub page: Page,
     pub return_page: Page,
@@ -536,6 +563,16 @@ impl App {
             action_jobs_fetched_at: None,
             action_jobs_scroll: 0,
             action_jobs_scroll_max: 0,
+            action_workflows: Vec::new(),
+            action_workflows_loading: false,
+            action_workflows_fetched_at: None,
+            workflow_selected: 0,
+            workflow_ref: TextInput::new(""),
+            workflow_ref_editing: false,
+            workflow_inputs: TextInput::new("{}"),
+            workflow_inputs_editing: false,
+            workflow_running: false,
+            workflow_error: None,
             cache_row: 0,
             page: Page::Repositories,
             return_page: Page::Repositories,
@@ -1032,6 +1069,57 @@ impl App {
                     }
                 }
             }
+            Msg::Workflows { name, result } => {
+                self.action_workflows_loading = false;
+                if self.action_repo.as_deref() != Some(name.as_str()) {
+                    return;
+                }
+                match result {
+                    Ok(workflows) => {
+                        let _ = self.cache.save(&workflows_cache_key(&name), &workflows);
+                        self.action_workflows = workflows;
+                        self.action_workflows_fetched_at = Some(now_epoch());
+                        self.workflow_selected = self
+                            .workflow_selected
+                            .min(self.action_workflows.len().saturating_sub(1));
+                        self.workflow_error = None;
+                        self.refresh_cache_stats();
+                    }
+                    Err(error) => {
+                        self.workflow_error = Some(error.clone());
+                        self.set_status(StatusKind::Error, &error);
+                    }
+                }
+            }
+            Msg::WorkflowDispatched {
+                name,
+                workflow,
+                git_ref,
+                result,
+            } => {
+                self.workflow_running = false;
+                if self.action_repo.as_deref() != Some(name.as_str()) {
+                    return;
+                }
+                match result {
+                    Ok(()) => {
+                        self.overlay = None;
+                        self.workflow_ref_editing = false;
+                        self.workflow_error = None;
+                        self.set_status(
+                            StatusKind::Ok,
+                            &format!(
+                                "{workflow} 已经在 {git_ref} 上出发啦喵~等几秒按 r 刷新记录喵~"
+                            ),
+                        );
+                        self.fetch_action_runs(true);
+                    }
+                    Err(error) => {
+                        self.workflow_error = Some(error.clone());
+                        self.set_status(StatusKind::Error, &error);
+                    }
+                }
+            }
             Msg::DownloadProgress {
                 id,
                 received,
@@ -1146,6 +1234,10 @@ impl App {
             self.action_jobs_fetched_at = None;
             self.action_jobs_scroll = 0;
             self.action_jobs_scroll_max = 0;
+            self.action_workflows.clear();
+            self.action_workflows_fetched_at = None;
+            self.workflow_selected = 0;
+            self.workflow_error = None;
         }
         self.action_repo = Some(name.clone());
         if self.page != Page::Actions {
@@ -1291,6 +1383,234 @@ impl App {
             .or_else(|| self.selected_action_run());
         if let Some(run) = run {
             self.open_url(&run.html_url);
+        }
+    }
+
+    pub fn open_workflow_runner(&mut self) {
+        if self.action_repo.is_none() {
+            self.set_status(StatusKind::Info, "先打开一个仓库的工作流页嘛喵~");
+            return;
+        }
+        if !self.client.token_present() {
+            self.set_status(
+                StatusKind::Error,
+                "还没有登录 GitHub，跑不了工作流哦喵~先运行 gh auth login 吧喵~",
+            );
+            return;
+        }
+        let repo = self.page_repo.clone().or_else(|| self.selected_repo());
+        let branch = repo
+            .as_ref()
+            .map(|repo| repo.default_branch.clone())
+            .filter(|branch| !branch.trim().is_empty())
+            .or_else(|| {
+                self.selected_action_run().and_then(|run| {
+                    let branch = run.branch().to_string();
+                    (!branch.is_empty()).then_some(branch)
+                })
+            })
+            .unwrap_or_else(|| "main".to_string());
+        self.workflow_ref = TextInput::new(&branch);
+        self.workflow_ref_editing = false;
+        self.workflow_inputs = TextInput::new("{}");
+        self.workflow_inputs_editing = false;
+        self.workflow_running = false;
+        self.workflow_error = None;
+        self.overlay = Some(Overlay::RunWorkflow);
+        self.load_workflows_cache();
+        self.fetch_workflows(false);
+    }
+
+    fn load_workflows_cache(&mut self) {
+        let Some(name) = self.action_repo.clone() else {
+            return;
+        };
+        match self
+            .cache
+            .load::<Vec<Workflow>>(&workflows_cache_key(&name))
+        {
+            Some(cached) => {
+                self.action_workflows = cached.data;
+                self.action_workflows_fetched_at = Some(cached.fetched_at);
+            }
+            None => {
+                self.action_workflows.clear();
+                self.action_workflows_fetched_at = None;
+            }
+        }
+        self.workflow_selected = self
+            .workflow_selected
+            .min(self.action_workflows.len().saturating_sub(1));
+    }
+
+    fn fetch_workflows(&mut self, force: bool) {
+        if self.action_workflows_loading {
+            return;
+        }
+        let Some(name) = self.action_repo.clone() else {
+            return;
+        };
+        let fresh = self
+            .action_workflows_fetched_at
+            .map(|at| now_epoch() - at <= self.config.detail_ttl_secs as i64)
+            .unwrap_or(false);
+        if !force && fresh {
+            return;
+        }
+        let private = self
+            .page_repo
+            .clone()
+            .or_else(|| self.selected_repo())
+            .map(|repo| repo.private)
+            .unwrap_or(false);
+        self.action_workflows_loading = true;
+        let tx = self.tx.clone();
+        let client = self.client.clone();
+        std::thread::spawn(move || {
+            let result = client.workflows(&name, private);
+            let _ = tx.send(Msg::Workflows { name, result });
+        });
+    }
+
+    pub fn move_workflow_selection(&mut self, delta: i32) {
+        if self.action_workflows.is_empty() {
+            return;
+        }
+        self.workflow_selected = (self.workflow_selected as i32 + delta)
+            .clamp(0, self.action_workflows.len() as i32 - 1)
+            as usize;
+    }
+
+    pub fn selected_workflow(&self) -> Option<Workflow> {
+        self.action_workflows.get(self.workflow_selected).cloned()
+    }
+
+    pub fn dispatch_selected_workflow(&mut self) {
+        if self.workflow_running {
+            return;
+        }
+        let Some(name) = self.action_repo.clone() else {
+            self.set_status(StatusKind::Info, "先打开一个仓库的工作流页嘛喵~");
+            return;
+        };
+        let Some(workflow) = self.selected_workflow() else {
+            let error = if self.action_workflows_loading {
+                "工作流列表还在路上喵~稍等一下再按 Enter 吧喵~".to_string()
+            } else {
+                "这里还没有能运行的工作流喵~先往 .github/workflows 放一个吧喵~".to_string()
+            };
+            self.workflow_error = Some(error.clone());
+            self.set_status(StatusKind::Error, &error);
+            return;
+        };
+        let git_ref = self.workflow_ref.value.trim().to_string();
+        if git_ref.is_empty() {
+            self.workflow_error = Some("分支或标签不能空着喵~".to_string());
+            self.workflow_ref_editing = true;
+            return;
+        }
+        let inputs = match parse_workflow_inputs(&self.workflow_inputs.value) {
+            Ok(inputs) => inputs,
+            Err(error) => {
+                self.workflow_error = Some(error.clone());
+                self.workflow_inputs_editing = true;
+                return;
+            }
+        };
+        let workflow_name = if workflow.name.trim().is_empty() {
+            workflow.file_name().to_string()
+        } else {
+            workflow.name.clone()
+        };
+        self.workflow_running = true;
+        self.workflow_error = None;
+        let tx = self.tx.clone();
+        let client = self.client.clone();
+        std::thread::spawn(move || {
+            let result = client.dispatch_workflow(&name, workflow.id, &git_ref, inputs);
+            let _ = tx.send(Msg::WorkflowDispatched {
+                name,
+                workflow: workflow_name,
+                git_ref,
+                result,
+            });
+        });
+    }
+
+    fn handle_workflow_key(&mut self, key: KeyEvent) {
+        if self.workflow_running {
+            if matches!(key.code, KeyCode::Esc | KeyCode::Char('q')) {
+                self.overlay = None;
+            }
+            return;
+        }
+        if self.workflow_ref_editing {
+            match key.code {
+                KeyCode::Enter | KeyCode::Char('\r') | KeyCode::Char('\n') => {
+                    self.workflow_ref_editing = false;
+                }
+                KeyCode::Tab => {
+                    self.workflow_ref_editing = false;
+                    self.workflow_inputs_editing = true;
+                }
+                KeyCode::Esc => self.workflow_ref_editing = false,
+                KeyCode::Backspace => self.workflow_ref.backspace(),
+                KeyCode::Delete => self.workflow_ref.delete(),
+                KeyCode::Left => self.workflow_ref.left(),
+                KeyCode::Right => self.workflow_ref.right(),
+                KeyCode::Home => self.workflow_ref.home(),
+                KeyCode::End => self.workflow_ref.end(),
+                KeyCode::Char(ch) => self.workflow_ref.insert(ch),
+                _ => {}
+            }
+            return;
+        }
+        if self.workflow_inputs_editing {
+            match key.code {
+                KeyCode::Enter | KeyCode::Char('\r') | KeyCode::Char('\n') => {
+                    self.workflow_inputs_editing = false;
+                }
+                KeyCode::Tab => {
+                    self.workflow_inputs_editing = false;
+                    self.workflow_ref_editing = true;
+                }
+                KeyCode::Esc => self.workflow_inputs_editing = false,
+                KeyCode::Backspace => self.workflow_inputs.backspace(),
+                KeyCode::Delete => self.workflow_inputs.delete(),
+                KeyCode::Left => self.workflow_inputs.left(),
+                KeyCode::Right => self.workflow_inputs.right(),
+                KeyCode::Home => self.workflow_inputs.home(),
+                KeyCode::End => self.workflow_inputs.end(),
+                KeyCode::Char(ch) => self.workflow_inputs.insert(ch),
+                _ => {}
+            }
+            return;
+        }
+        match key.code {
+            KeyCode::Esc | KeyCode::Char('q') => {
+                self.overlay = None;
+                self.workflow_error = None;
+            }
+            KeyCode::Up | KeyCode::Char('k') => self.move_workflow_selection(-1),
+            KeyCode::Down | KeyCode::Char('j') => self.move_workflow_selection(1),
+            KeyCode::Home | KeyCode::Char('g') => self.workflow_selected = 0,
+            KeyCode::End | KeyCode::Char('G') => {
+                self.workflow_selected = self.action_workflows.len().saturating_sub(1);
+            }
+            KeyCode::Tab | KeyCode::Char('i') => {
+                self.workflow_ref_editing = true;
+                self.workflow_inputs_editing = false;
+            }
+            KeyCode::Enter | KeyCode::Char('\r') | KeyCode::Char('\n') => {
+                self.dispatch_selected_workflow();
+            }
+            KeyCode::Char('r') => self.fetch_workflows(true),
+            KeyCode::Char('o') => {
+                if let Some(workflow) = self.selected_workflow() {
+                    self.open_external_url(&workflow.html_url);
+                }
+            }
+            _ => {}
         }
     }
 
@@ -1570,6 +1890,12 @@ impl App {
         }
         if self.page == Page::Actions && self.action_jobs_loading.is_some() {
             return Some("人家正在读任务详情喵~...");
+        }
+        if self.workflow_running {
+            return Some("人家正在把工作流交给 GitHub 喵~...");
+        }
+        if self.action_workflows_loading && self.overlay == Some(Overlay::RunWorkflow) {
+            return Some("人家正在取工作流列表喵~...");
         }
         if self.repo_edit.as_ref().is_some_and(|edit| edit.saving) {
             return Some("人家正在把改动递给 GitHub 喵~...");
@@ -2835,6 +3161,10 @@ impl App {
             self.handle_cache_key(key);
             return;
         }
+        if self.overlay == Some(Overlay::RunWorkflow) {
+            self.handle_workflow_key(key);
+            return;
+        }
         if self.overlay == Some(Overlay::Languages) {
             match key.code {
                 KeyCode::Esc | KeyCode::Char('q') => self.overlay = None,
@@ -2953,6 +3283,9 @@ impl App {
                 }
             }
             KeyCode::Char('a') => self.open_actions(),
+            KeyCode::Char('R') | KeyCode::Char('x') if self.page == Page::Actions => {
+                self.open_workflow_runner()
+            }
             KeyCode::Char('c') => self.open_cache_manager(),
             KeyCode::Char('y') => self.copy_clone(),
             KeyCode::Char('f') => self.toggle_current_star(),
@@ -3385,6 +3718,20 @@ impl App {
             }
             return;
         }
+        if self.overlay == Some(Overlay::RunWorkflow) {
+            if self.workflow_ref_editing {
+                for ch in text.chars().filter(|ch| *ch != '\n' && *ch != '\r') {
+                    self.workflow_ref.insert(ch);
+                }
+                return;
+            }
+            if self.workflow_inputs_editing {
+                for ch in text.chars().filter(|ch| *ch != '\n' && *ch != '\r') {
+                    self.workflow_inputs.insert(ch);
+                }
+                return;
+            }
+        }
         if self.overlay.is_some() {
             return;
         }
@@ -3526,6 +3873,21 @@ impl App {
                 self.cache_row = index.min(last);
             }
             Action::OpenCacheDir => self.open_cache_dir(),
+            Action::OpenWorkflowRunner => self.open_workflow_runner(),
+            Action::SelectWorkflow(index) => {
+                let last = self.action_workflows.len().saturating_sub(1);
+                self.workflow_selected = index.min(last);
+            }
+            Action::EditWorkflowRef => {
+                self.workflow_ref_editing = true;
+                self.workflow_inputs_editing = false;
+            }
+            Action::EditWorkflowInputs => {
+                self.workflow_inputs_editing = true;
+                self.workflow_ref_editing = false;
+            }
+            Action::RunWorkflow => self.dispatch_selected_workflow(),
+            Action::RefreshWorkflows => self.fetch_workflows(true),
         }
     }
 
@@ -3561,6 +3923,26 @@ fn actions_cache_key(name: &str) -> String {
 
 fn action_jobs_cache_key(run_id: u64) -> String {
     format!("actions_jobs_{run_id}")
+}
+
+fn workflows_cache_key(name: &str) -> String {
+    format!("actions_workflows_{}", key_part(name))
+}
+
+fn parse_workflow_inputs(raw: &str) -> Result<Option<serde_json::Value>, String> {
+    let trimmed = raw.trim();
+    if trimmed.is_empty() || trimmed == "{}" {
+        return Ok(None);
+    }
+    let value: serde_json::Value = serde_json::from_str(trimmed)
+        .map_err(|err| format!("inputs 要写成 JSON 对象喵~（{err}）"))?;
+    match value {
+        serde_json::Value::Object(map) if !map.is_empty() => {
+            Ok(Some(serde_json::Value::Object(map)))
+        }
+        serde_json::Value::Object(_) => Ok(None),
+        _ => Err(r#"inputs 要写成 JSON 对象，比如 {"env":"prod"}喵~"#.to_string()),
+    }
 }
 
 fn safe_download_name(name: &str) -> String {
@@ -3737,6 +4119,18 @@ mod tests {
         let mut edit = RepoEdit::from_repo(&repo);
         edit.topics = TextInput::new("#Rust, cli  TUI");
         assert_eq!(edit.topics_list(), vec!["rust", "cli", "tui"]);
+    }
+
+    #[test]
+    fn workflow_inputs_must_be_json_object() {
+        assert!(parse_workflow_inputs("").unwrap().is_none());
+        assert!(parse_workflow_inputs("{}").unwrap().is_none());
+        let parsed = parse_workflow_inputs(r#"{"env":"prod","dry_run":"true"}"#)
+            .unwrap()
+            .unwrap();
+        assert_eq!(parsed["env"], "prod");
+        assert!(parse_workflow_inputs("[1,2]").is_err());
+        assert!(parse_workflow_inputs("env=prod").is_err());
     }
 
     #[test]

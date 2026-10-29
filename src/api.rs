@@ -1,7 +1,8 @@
 use crate::format::base64_decode;
 use crate::model::{
     RateLimit, ReadmeContent, Release, Repo, SearchOutcome, SearchResponse, SearchSort,
-    TreeResponse, User, WorkflowJob, WorkflowJobsResponse, WorkflowRun, WorkflowRunsResponse,
+    TreeResponse, User, Workflow, WorkflowJob, WorkflowJobsResponse, WorkflowListResponse,
+    WorkflowRun, WorkflowRunsResponse,
 };
 use serde::de::DeserializeOwned;
 use std::fs;
@@ -139,6 +140,53 @@ impl ApiClient {
             self.get_public_with_fallback(&url)?
         };
         Ok(response.jobs)
+    }
+
+    pub fn workflows(&self, full_name: &str, private: bool) -> Result<Vec<Workflow>, String> {
+        let url = format!("{API}/repos/{full_name}/actions/workflows?per_page=100");
+        let response: WorkflowListResponse = if private {
+            self.get_json(&url, true)?
+        } else {
+            self.get_public_with_fallback(&url)?
+        };
+        Ok(response.workflows)
+    }
+
+    pub fn dispatch_workflow(
+        &self,
+        full_name: &str,
+        workflow_id: u64,
+        git_ref: &str,
+        inputs: Option<serde_json::Value>,
+    ) -> Result<(), String> {
+        let Some(token) = self.token.as_deref() else {
+            return Err(
+                "还没有登录 GitHub，跑不了工作流哦喵~先运行 gh auth login 吧喵~".to_string(),
+            );
+        };
+        let url = format!("{API}/repos/{full_name}/actions/workflows/{workflow_id}/dispatches");
+        let mut payload = serde_json::Map::new();
+        payload.insert("ref".to_string(), serde_json::json!(git_ref));
+        if let Some(inputs) = inputs {
+            payload.insert("inputs".to_string(), inputs);
+        }
+        let payload = serde_json::Value::Object(payload);
+        let response = self
+            .agent
+            .post(&url)
+            .header("Accept", "application/vnd.github+json")
+            .header("X-GitHub-Api-Version", "2022-11-28")
+            .header("Authorization", format!("Bearer {token}"))
+            .send_json(&payload)
+            .map_err(|err| format_transport_error(&err))?;
+        let status = response.status().as_u16();
+        let mut response = response;
+        let body = response.body_mut().read_to_string().unwrap_or_default();
+        if (200..300).contains(&status) {
+            Ok(())
+        } else {
+            Err(status_message(status, &body))
+        }
     }
 
     pub fn search(&self, query: &str, sort: SearchSort) -> Result<SearchOutcome, String> {

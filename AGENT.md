@@ -20,6 +20,7 @@
 - 账号页：资料 + `/rate_limit` 的 core/search/graphql 额度与恢复时间，缓存 key `rate_limit`。
 - 自己的仓库编辑：`e` / 「编辑仓库」按钮打开 `Overlay::EditRepo`，可改 description、homepage、topics、private、archived，`Ctrl+S` 走 `PATCH /repos/{owner}/{repo}`，成功后更新列表/详情/缓存。
 - 工作流页：仓库页按 `a` 进入 `Page::Actions`，左 run / 右 jobs+steps，`Enter`/`o` 去浏览器，缓存 key `actions_*`，详见「待办 4」。
+- 手动运行工作流：Actions 页按 `R`/`x` 或点「运行工作流」，选中工作流 + 分支/标签 + 可选 inputs JSON 后回车走 `POST /repos/{owner}/{repo}/actions/workflows/{id}/dispatches`。
 - 缓存管理：设置页「缓存管理」或全局 `c` 打开 `Overlay::Cache`，按分类清理，`o` 打开缓存目录。
 - 测试 32 项通过，`cargo clippy --all-targets -- -D warnings` 无警告。
 
@@ -79,7 +80,7 @@
 
 ## 待办 4：GitHub Actions 功能（✅ 已完成）
 
-已实现：`Page::Actions`、`WorkflowRun/Job/Step` 模型、`ApiClient::action_runs/action_jobs`、左右双栏页面、缓存、`a` 入口、文档与 2 个新测试。`Esc` 从仓库页进入时回仓库页，从列表页进入时回原列表。原始设计留档：
+已实现：`Page::Actions`、`WorkflowRun/Job/Step` 模型、`ApiClient::action_runs/action_jobs`、左右双栏页面、缓存、`a` 入口、文档与测试。后续补了 `Workflow` 列表与手动运行弹窗（`R`/`x`，`workflow_dispatch`）。`Esc` 从仓库页进入时回仓库页，从列表页进入时回原列表。原始设计留档：
 
 目标：新增一个专门页面查看当前仓库的 GitHub Actions 运行记录。GitHub 没有「账号级全部 runs」的稳定 API，建议做成 **仓库维度** 的 Actions 页：
 
