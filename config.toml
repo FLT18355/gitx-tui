@@ -19,3 +19,12 @@ search_ttl_secs = 600
 
 # 最近搜索，最多保存 8 条
 search_history = []
+
+# 仓库页文件树预览。默认关闭，在设置页开启。
+show_file_tree = false
+
+# 仓库页底部 README 预览。默认关闭，在设置页开启。
+show_readme = false
+
+# 发行版与源码下载目录。不会覆盖同名文件。
+download_dir = "~/Downloads/gitx-tui"

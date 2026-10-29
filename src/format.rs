@@ -85,6 +85,31 @@ pub fn relative_epoch(then: i64, now: i64) -> String {
     }
 }
 
+pub fn countdown_epoch(then: i64, now: i64) -> String {
+    if then <= now {
+        return "已经恢复".to_string();
+    }
+    let seconds = then - now;
+    if seconds < 60 {
+        "不到 1 分钟".to_string()
+    } else if seconds < 3600 {
+        format!("{} 分钟后", seconds / 60)
+    } else if seconds < 86_400 {
+        format!("{} 小时后", seconds / 3600)
+    } else {
+        format!("{} 天后", seconds / 86_400)
+    }
+}
+
+pub fn reset_label(then: i64, now: i64) -> String {
+    let left = countdown_epoch(then, now);
+    if left == "已经恢复" {
+        left
+    } else {
+        format!("{left}恢复")
+    }
+}
+
 pub fn text_width(text: &str) -> usize {
     UnicodeWidthStr::width(text)
 }
@@ -250,6 +275,37 @@ pub fn display_path(path: &std::path::Path) -> String {
     display
 }
 
+pub fn base64_decode(input: &str) -> Option<Vec<u8>> {
+    let mut values = Vec::new();
+    for byte in input.bytes() {
+        let value = match byte {
+            b'A'..=b'Z' => byte - b'A',
+            b'a'..=b'z' => byte - b'a' + 26,
+            b'0'..=b'9' => byte - b'0' + 52,
+            b'+' => 62,
+            b'/' => 63,
+            b'=' => break,
+            b'\n' | b'\r' | b' ' | b'\t' => continue,
+            _ => return None,
+        };
+        values.push(value);
+    }
+    let mut out = Vec::with_capacity(values.len() * 3 / 4);
+    for chunk in values.chunks(4) {
+        if chunk.len() < 2 {
+            return None;
+        }
+        out.push((chunk[0] << 2) | (chunk[1] >> 4));
+        if chunk.len() > 2 {
+            out.push((chunk[1] << 4) | (chunk[2] >> 2));
+        }
+        if chunk.len() > 3 {
+            out.push((chunk[2] << 6) | chunk[3]);
+        }
+    }
+    Some(out)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -272,7 +328,7 @@ mod tests {
 
     #[test]
     fn wraps_chinese_text() {
-        let lines = wrap_text("这是一个没有空格的仓库简介，需要按照显示宽度换行。", 10, 3);
+        let lines = wrap_text("这是一个没有空格的仓库简介，需要按照显示宽度换行喵~", 10, 3);
         assert!(!lines.is_empty());
         assert!(lines.iter().all(|line| text_width(line) <= 10));
     }
@@ -283,6 +339,17 @@ mod tests {
         assert_eq!(relative_epoch(now - 10, now), "刚刚");
         assert_eq!(relative_epoch(now - 120, now), "2 分钟前");
         assert_eq!(relative_epoch(now - 7200, now), "2 小时前");
+    }
+
+    #[test]
+    fn counts_down_rate_limit_reset() {
+        let now = 1_000_000;
+        assert_eq!(countdown_epoch(now - 10, now), "已经恢复");
+        assert_eq!(countdown_epoch(now + 30, now), "不到 1 分钟");
+        assert_eq!(countdown_epoch(now + 125, now), "2 分钟后");
+        assert_eq!(countdown_epoch(now + 7200, now), "2 小时后");
+        assert_eq!(reset_label(now + 125, now), "2 分钟后恢复");
+        assert_eq!(reset_label(now - 1, now), "已经恢复");
     }
 
     #[test]
@@ -297,6 +364,8 @@ mod tests {
         assert_eq!(base64("gitx-tui"), "Z2l0eC10dWk=");
         assert_eq!(base64("a"), "YQ==");
         assert_eq!(base64("ab"), "YWI=");
+        assert_eq!(base64_decode("Z2l0eC10dWk=").unwrap(), b"gitx-tui");
+        assert_eq!(base64_decode("5Lit5paH").unwrap(), "中文".as_bytes());
     }
 
     #[test]

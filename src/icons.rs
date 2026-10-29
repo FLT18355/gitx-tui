@@ -33,3 +33,13 @@ pub const EYE: &str = "\u{f06e}";
 pub fn label(icon: &str, text: &str) -> String {
     format!("{icon} {text}")
 }
+pub const FILE: &str = "\u{f15b}";
+pub const FOLDER_OPEN: &str = "\u{f07c}";
+pub const BOOK: &str = "\u{f02d}";
+pub const CHECK_SQUARE: &str = "\u{f14a}";
+pub const SQUARE: &str = "\u{f096}";
+pub const STAR_EMPTY: &str = "\u{f006}";
+pub const COGS: &str = "\u{f085}";
+pub const PULL: &str = "\u{f126}";
+pub const DOWNLOAD_DIR: &str = "\u{f07c}";
+pub const CODE_FILE: &str = "\u{f1c9}";

@@ -5,6 +5,25 @@ use std::path::{Path, PathBuf};
 pub const DEFAULT_PROXY: &str = "https://v4.gh-proxy.org";
 const DEFAULT_CONFIG: &str = include_str!("../config.toml");
 
+pub fn default_download_dir() -> String {
+    "~/Downloads/gitx-tui".to_string()
+}
+
+pub fn expand_tilde(value: &str) -> PathBuf {
+    let value = value.trim();
+    if value == "~" {
+        return std::env::var_os("HOME")
+            .map(PathBuf::from)
+            .unwrap_or_else(|| PathBuf::from("."));
+    }
+    if let Some(rest) = value.strip_prefix("~/")
+        && let Some(home) = std::env::var_os("HOME")
+    {
+        return PathBuf::from(home).join(rest);
+    }
+    PathBuf::from(value)
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(default)]
 pub struct Config {
@@ -14,6 +33,9 @@ pub struct Config {
     pub detail_ttl_secs: u64,
     pub search_ttl_secs: u64,
     pub search_history: Vec<String>,
+    pub show_file_tree: bool,
+    pub show_readme: bool,
+    pub download_dir: String,
 }
 
 impl Default for Config {
@@ -25,6 +47,9 @@ impl Default for Config {
             detail_ttl_secs: 900,
             search_ttl_secs: 600,
             search_history: Vec::new(),
+            show_file_tree: false,
+            show_readme: false,
+            download_dir: default_download_dir(),
         }
     }
 }
@@ -61,6 +86,14 @@ impl Config {
         self.detail_ttl_secs = self.detail_ttl_secs.clamp(60, 86_400);
         self.search_ttl_secs = self.search_ttl_secs.clamp(60, 86_400);
         self.search_history.truncate(8);
+        self.download_dir = self.download_dir.trim().to_string();
+        if self.download_dir.is_empty() {
+            self.download_dir = default_download_dir();
+        }
+    }
+
+    pub fn expanded_download_dir(&self) -> PathBuf {
+        expand_tilde(&self.download_dir)
     }
 
     pub fn save(&self, paths: &Paths) -> std::io::Result<()> {
@@ -185,6 +218,26 @@ mod tests {
         let config: Config = toml::from_str(DEFAULT_CONFIG).expect("bundled config");
         assert!(crate::theme::FLAVORS.contains(&config.theme.as_str()));
         assert_eq!(config.proxy, DEFAULT_PROXY);
+    }
+
+    #[test]
+    fn old_config_gets_new_defaults() {
+        let config: Config =
+            toml::from_str("theme = \"latte\"\nproxy = \"https://v4.gh-proxy.org\"\n")
+                .expect("old config");
+        assert!(!config.show_file_tree);
+        assert!(!config.show_readme);
+        assert_eq!(config.download_dir, default_download_dir());
+    }
+
+    #[test]
+    fn expands_home_path() {
+        if let Some(home) = std::env::var_os("HOME") {
+            assert_eq!(
+                expand_tilde("~/Downloads/gitx-tui"),
+                PathBuf::from(home).join("Downloads/gitx-tui")
+            );
+        }
     }
 
     #[test]

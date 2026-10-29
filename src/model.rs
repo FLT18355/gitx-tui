@@ -99,10 +99,10 @@ impl Repo {
 
     pub fn visibility(&self) -> &str {
         match self.visibility.as_deref() {
-            Some("private") => "私有",
-            Some("internal") => "内部",
-            _ if self.private => "私有",
-            _ => "公开",
+            Some("private") => "私有喵~",
+            Some("internal") => "内部喵~",
+            _ if self.private => "私有喵~",
+            _ => "公开喵~",
         }
     }
 
@@ -116,17 +116,17 @@ impl Repo {
                     .filter(|value| value != "NOASSERTION")
                     .or_else(|| (!license.name.is_empty()).then(|| license.name.clone()))
             })
-            .unwrap_or_else(|| "未标注".to_string())
+            .unwrap_or_else(|| "未标注喵~".to_string())
     }
 
     pub fn language_label(&self) -> &str {
-        self.language.as_deref().unwrap_or("未标注")
+        self.language.as_deref().unwrap_or("未标注喵~")
     }
 
     pub fn description_text(&self) -> &str {
         self.description
             .as_deref()
-            .unwrap_or("这个仓库还没有写简介。")
+            .unwrap_or("这个仓库还没有写简介喵~")
     }
 
     pub fn updated_at(&self) -> &str {
@@ -161,6 +161,18 @@ pub fn key_part(full_name: &str) -> String {
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct UserPlan {
+    #[serde(default)]
+    pub name: String,
+    #[serde(default)]
+    pub space: u64,
+    #[serde(default)]
+    pub private_repos: u64,
+    #[serde(default)]
+    pub collaborators: u64,
+}
+
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct User {
     #[serde(default)]
     pub login: String,
@@ -169,11 +181,89 @@ pub struct User {
     #[serde(default)]
     pub html_url: String,
     #[serde(default)]
+    pub avatar_url: String,
+    #[serde(default)]
+    pub bio: Option<String>,
+    #[serde(default)]
+    pub company: Option<String>,
+    #[serde(default)]
+    pub location: Option<String>,
+    #[serde(default)]
+    pub blog: Option<String>,
+    #[serde(default)]
+    pub email: Option<String>,
+    #[serde(default)]
+    pub twitter_username: Option<String>,
+    #[serde(default)]
+    pub created_at: String,
+    #[serde(default)]
+    pub updated_at: String,
+    #[serde(default)]
     pub public_repos: u64,
+    #[serde(default)]
+    pub public_gists: u64,
     #[serde(default)]
     pub followers: u64,
     #[serde(default)]
     pub following: u64,
+    #[serde(default)]
+    pub plan: Option<UserPlan>,
+}
+
+impl User {
+    pub fn display_name(&self) -> &str {
+        self.name
+            .as_deref()
+            .map(str::trim)
+            .filter(|name| !name.is_empty())
+            .unwrap_or(&self.login)
+    }
+
+    pub fn joined_label(&self) -> String {
+        if self.created_at.is_empty() {
+            "时间不详喵~".to_string()
+        } else {
+            crate::format::relative_time(&self.created_at)
+        }
+    }
+}
+
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct RateLimitInfo {
+    #[serde(default)]
+    pub limit: u64,
+    #[serde(default)]
+    pub used: u64,
+    #[serde(default)]
+    pub remaining: u64,
+    #[serde(default)]
+    pub reset: i64,
+}
+
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct RateLimitResources {
+    #[serde(default)]
+    pub core: RateLimitInfo,
+    #[serde(default)]
+    pub search: RateLimitInfo,
+    #[serde(default)]
+    pub graphql: RateLimitInfo,
+}
+
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct RateLimit {
+    #[serde(default)]
+    pub resources: RateLimitResources,
+}
+
+impl RateLimit {
+    pub fn items(&self) -> [(&'static str, &RateLimitInfo); 3] {
+        [
+            ("核心接口喵~", &self.resources.core),
+            ("搜索接口喵~", &self.resources.search),
+            ("GraphQL", &self.resources.graphql),
+        ]
+    }
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
@@ -260,9 +350,9 @@ pub enum SearchSort {
 impl SearchSort {
     pub fn label(self) -> &'static str {
         match self {
-            Self::BestMatch => "最佳匹配",
-            Self::Stars => "星标优先",
-            Self::Updated => "最近更新",
+            Self::BestMatch => "最佳匹配喵~",
+            Self::Stars => "星标优先喵~",
+            Self::Updated => "最近更新喵~",
         }
     }
 
@@ -293,9 +383,81 @@ pub enum RepoSort {
 impl RepoSort {
     pub fn label(self) -> &'static str {
         match self {
-            Self::Updated => "最近更新",
-            Self::Stars => "星标",
-            Self::Name => "名称",
+            Self::Updated => "最近更新喵~",
+            Self::Stars => "星标喵~",
+            Self::Name => "名称喵~",
         }
+    }
+}
+
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct TreeEntry {
+    #[serde(default)]
+    pub path: String,
+    #[serde(rename = "type", default)]
+    pub kind: String,
+    #[serde(default)]
+    pub size: Option<u64>,
+    #[serde(default)]
+    pub sha: String,
+}
+
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct TreeResponse {
+    #[serde(default)]
+    pub sha: String,
+    #[serde(default)]
+    pub truncated: bool,
+    #[serde(default)]
+    pub tree: Vec<TreeEntry>,
+}
+
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct ReadmeContent {
+    #[serde(default)]
+    pub name: String,
+    #[serde(default)]
+    pub path: String,
+    #[serde(default)]
+    pub html_url: String,
+    #[serde(default)]
+    pub content: String,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn parses_rate_limit_resources() {
+        let raw = r#"{
+            "resources": {
+                "core": {"limit": 5000, "used": 12, "remaining": 4988, "reset": 1900000000},
+                "search": {"limit": 30, "used": 1, "remaining": 29, "reset": 1900000100},
+                "graphql": {"limit": 5000, "used": 0, "remaining": 5000, "reset": 1900000200}
+            }
+        }"#;
+        let rate: RateLimit = serde_json::from_str(raw).unwrap();
+        assert_eq!(rate.resources.core.remaining, 4988);
+        assert_eq!(rate.resources.search.limit, 30);
+        assert_eq!(rate.items()[2].0, "GraphQL");
+    }
+
+    #[test]
+    fn keeps_extended_user_fields() {
+        let raw = r#"{
+            "login": "me",
+            "name": "Meow",
+            "bio": "hi",
+            "public_repos": 7,
+            "followers": 3,
+            "following": 2,
+            "created_at": "2020-01-02T03:04:05Z",
+            "plan": {"name": "pro", "private_repos": 100}
+        }"#;
+        let user: User = serde_json::from_str(raw).unwrap();
+        assert_eq!(user.display_name(), "Meow");
+        assert_eq!(user.plan.as_ref().unwrap().name, "pro");
+        assert!(!user.joined_label().is_empty());
     }
 }

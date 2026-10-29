@@ -1,4 +1,6 @@
-use crate::app::{Action, App, HitBox, LayoutRects, Overlay, Page, StatusKind, TextInput, TtlKind};
+use crate::app::{
+    Action, App, HitBox, LayoutRects, Overlay, Page, RepoPane, StatusKind, TextInput, TtlKind,
+};
 use crate::format;
 use crate::icons;
 use crate::model::{Repo, RepoSort, SearchSort};
@@ -38,13 +40,20 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
         Page::Repositories => draw_repositories_page(frame, app, &theme, chunks[1], &mut hits),
         Page::Starred => draw_starred_page(frame, app, &theme, chunks[1], &mut hits),
         Page::Search => draw_search_page(frame, app, &theme, chunks[1], &mut hits),
+        Page::Account => draw_account_page(frame, app, &theme, chunks[1], &mut hits),
         Page::Settings => draw_settings_page(frame, app, &theme, chunks[1], &mut hits),
         Page::Repo => draw_repo_page(frame, app, &theme, chunks[1], &mut hits),
     }
     draw_footer(frame, app, &theme, chunks[2], &hits);
 
-    if app.overlay == Some(Overlay::Help) {
-        draw_help(frame, app, &theme, area, &mut hits);
+    if app.overlay.is_some() {
+        hits.clear();
+    }
+    match app.overlay {
+        Some(Overlay::Help) => draw_help(frame, app, &theme, area, &mut hits),
+        Some(Overlay::Languages) => draw_languages_overlay(frame, app, &theme, area, &mut hits),
+        Some(Overlay::EditRepo) => draw_repo_edit_overlay(frame, app, &theme, area, &mut hits),
+        None => app.layout.overlay = Rect::default(),
     }
 
     app.hitboxes = hits;
@@ -74,13 +83,13 @@ fn draw_header(frame: &mut Frame, app: &App, theme: &Theme, area: Rect, hits: &m
     frame.render_widget(Paragraph::new(Line::from(title)), brand);
 
     let account = format!(
-        "{} 账号 {}   {} {}",
+        "{} 账号 {}   {} {}喵~",
         icons::USER,
         app.auth_label(),
         icons::PALETTE,
         Theme::label(&app.theme.flavor)
     );
-    if area.width > 84 {
+    if area.width > 118 {
         let account_width = format::text_width(&account) as u16 + 2;
         let right = Rect::new(
             area.x + area.width.saturating_sub(account_width),
@@ -99,15 +108,17 @@ fn draw_header(frame: &mut Frame, app: &App, theme: &Theme, area: Rect, hits: &m
         .nav_index()
         .unwrap_or_else(|| app.return_page.nav_index().unwrap_or(0));
     let labels = [
-        icons::label(icons::REPO, "仓库"),
-        icons::label(icons::STAR, "收藏"),
-        icons::label(icons::SEARCH, "搜索"),
-        icons::label(icons::SETTINGS, "设置"),
+        icons::label(icons::REPO, "仓库喵~"),
+        icons::label(icons::STAR, "收藏喵~"),
+        icons::label(icons::SEARCH, "搜索喵~"),
+        icons::label(icons::USER, "账号喵~"),
+        icons::label(icons::SETTINGS, "设置喵~"),
     ];
     let pages = [
         Page::Repositories,
         Page::Starred,
         Page::Search,
+        Page::Account,
         Page::Settings,
     ];
     let mut x = area.x + 2;
@@ -144,7 +155,7 @@ fn draw_header(frame: &mut Frame, app: &App, theme: &Theme, area: Rect, hits: &m
     }
 
     if area.width > 100 {
-        let hint = "Tab 切页   / 搜索   ? 帮助";
+        let hint = "Tab 切页   / 搜索   ? 帮助喵~";
         let width = format::text_width(hint) as u16;
         let rect = Rect::new(
             area.x + area.width.saturating_sub(width + 2),
@@ -167,7 +178,12 @@ fn draw_header(frame: &mut Frame, app: &App, theme: &Theme, area: Rect, hits: &m
 fn draw_footer(frame: &mut Frame, app: &App, theme: &Theme, area: Rect, _hits: &[HitBox]) {
     fill(frame, area, theme.color("crust"));
     let status_rect = Rect::new(area.x + 2, area.y, area.width.saturating_sub(26), 1);
-    let (text, color) = if let Some(busy) = app.busy_text() {
+    let (text, color) = if let Some(download) = app.download_summary() {
+        (
+            format!("{}  {}", app.spinner(), download),
+            theme.color("peach"),
+        )
+    } else if let Some(busy) = app.busy_text() {
         (format!("{}  {}", app.spinner(), busy), theme.color("peach"))
     } else {
         let (icon, color) = match app.status.kind {
@@ -185,7 +201,7 @@ fn draw_footer(frame: &mut Frame, app: &App, theme: &Theme, area: Rect, _hits: &
 
     if area.width > 68 {
         let info = format!(
-            "{} 缓存 {} 个文件 · {}   {} {}",
+            "{} 缓存 {} 个文件 · {}   {} {}喵~",
             icons::DATABASE,
             app.cache_stats.files,
             format::format_size(app.cache_stats.bytes),
@@ -220,11 +236,16 @@ fn draw_footer(frame: &mut Frame, app: &App, theme: &Theme, area: Rect, _hits: &
 
 fn hints_for(page: Page) -> &'static str {
     match page {
-        Page::Repositories => "j/k 选择   Enter 打开   o 主页   y 复制   r 刷新   / 搜索   ? 帮助",
-        Page::Starred => "j/k 选择   Enter 打开   o 主页   y 复制   r 刷新   ? 帮助",
-        Page::Search => "输入后回车   Esc 离开输入   j/k 选择   Enter 打开   ? 帮助",
-        Page::Settings => "j/k 选择   h/l 调整   Enter 操作   Ctrl+S 保存   Esc 离开",
-        Page::Repo => "Esc 返回   j/k 滚动   o 主页   y 复制   r 刷新   ? 帮助",
+        Page::Repositories => {
+            "j/k 挑    [ ] 翻页    Enter 打开    e 编辑    f 收藏    l 语言    / 找仓库喵~"
+        }
+        Page::Starred => {
+            "j/k 挑    [ ] 翻页    Enter 打开    f 收藏    o 主页    y 复制    r 刷新喵~"
+        }
+        Page::Search => "输入后回车    Esc 离开输入    j/k 挑    [ ] 翻页    Enter 打开喵~",
+        Page::Account => "r 刷新账号和额度    Enter 打开主页    Esc 回仓库喵~",
+        Page::Settings => "j/k 选    h/l 调    Enter 操作    Ctrl+S 保存    Esc 离开喵~",
+        Page::Repo => "Esc 返回    Tab 换面板    j/k 滚动    e 编辑自己的仓库    o 主页喵~",
     }
 }
 
@@ -291,9 +312,9 @@ fn draw_sidebar(
         .as_ref()
         .map(|user| user.login.clone())
         .or_else(|| app.login.clone())
-        .unwrap_or_else(|| "未登录".to_string());
+        .unwrap_or_else(|| "未登录喵~".to_string());
     frame.render_widget(
-        Paragraph::new(icons::label(icons::USER, "当前账号"))
+        Paragraph::new(icons::label(icons::USER, "当前账号喵~"))
             .style(Style::default().fg(theme.color("overlay0"))),
         Rect::new(area.x + 2, y, width, 1),
     );
@@ -308,9 +329,9 @@ fn draw_sidebar(
     );
     y += 1;
     let auth = if app.client.token_present() {
-        "GitHub CLI 已连接"
+        "gh 已经连上啦喵~"
     } else {
-        "先运行 gh auth login"
+        "先跑一下 gh auth login 哦喵~"
     };
     frame.render_widget(
         Paragraph::new(format::truncate(auth, width as usize))
@@ -319,11 +340,17 @@ fn draw_sidebar(
     );
     y += 2;
 
+    let lang_header = Rect::new(area.x, y, area.width.saturating_sub(1), 1);
+    let lang_hover = app.hover.as_ref() == Some(&Action::OpenLanguages);
+    if lang_hover {
+        fill(frame, lang_header, theme.color("surface0"));
+    }
     frame.render_widget(
-        Paragraph::new(icons::label(icons::CODE, "语言筛选"))
+        Paragraph::new(icons::label(icons::CODE, "语言筛选喵~"))
             .style(Style::default().fg(theme.color("overlay0"))),
         Rect::new(area.x + 2, y, width, 1),
     );
+    register(hits, lang_header, Action::OpenLanguages);
     y += 1;
 
     let total = app.repos.len();
@@ -333,7 +360,7 @@ fn draw_sidebar(
         frame,
         theme,
         all_rect,
-        "全部",
+        "全部喵~",
         total,
         all_active,
         app.hover.as_ref() == Some(&Action::Language(None)),
@@ -342,32 +369,49 @@ fn draw_sidebar(
     y += 1;
 
     let counts = app.language_counts();
-    for (language, count) in counts {
-        if y >= area.y + area.height.saturating_sub(5) {
+    let language_limit = area.y + area.height.saturating_sub(7);
+    let mut shown = 0;
+    for (language, count) in &counts {
+        if y >= language_limit {
             break;
         }
         let active = app
             .language_filter
             .as_deref()
-            .map(|value| value.eq_ignore_ascii_case(&language))
+            .map(|value| value.eq_ignore_ascii_case(language))
             .unwrap_or(false);
         let action = Action::Language(Some(language.clone()));
         let hovered = app.hover.as_ref() == Some(&action);
         let rect = Rect::new(area.x, y, area.width.saturating_sub(1), 1);
-        draw_sidebar_item(frame, theme, rect, &language, count, active, hovered);
+        draw_sidebar_item(frame, theme, rect, language, *count, active, hovered);
         register(hits, rect, action);
+        shown += 1;
         y += 1;
+    }
+    if shown < counts.len() && y < area.y + area.height.saturating_sub(4) {
+        let action = Action::OpenLanguages;
+        let hovered = app.hover.as_ref() == Some(&action);
+        let rect = Rect::new(area.x, y, area.width.saturating_sub(1), 1);
+        if hovered {
+            fill(frame, rect, theme.color("surface0"));
+        }
+        frame.render_widget(
+            Paragraph::new(format!("查看全部 {} 种喵~", counts.len()))
+                .style(Style::default().fg(theme.color("blue"))),
+            Rect::new(area.x + 2, y, width, 1),
+        );
+        register(hits, rect, action);
     }
 
     let cache_top = area.y + area.height.saturating_sub(5);
     if cache_top > y {
         frame.render_widget(
-            Paragraph::new(icons::label(icons::DATABASE, "本地缓存"))
+            Paragraph::new(icons::label(icons::DATABASE, "本地缓存喵~"))
                 .style(Style::default().fg(theme.color("overlay0"))),
             Rect::new(area.x + 2, cache_top, width, 1),
         );
         let stats = format!(
-            "{} 个文件 · {}",
+            "{} 个文件 · {}喵~",
             app.cache_stats.files,
             format::format_size(app.cache_stats.bytes)
         );
@@ -377,7 +421,8 @@ fn draw_sidebar(
             Rect::new(area.x + 2, cache_top + 1, width, 1),
         );
         frame.render_widget(
-            Paragraph::new("在设置页管理缓存").style(Style::default().fg(theme.color("overlay0"))),
+            Paragraph::new("到设置页就能管缓存啦喵~")
+                .style(Style::default().fg(theme.color("overlay0"))),
             Rect::new(area.x + 2, cache_top + 2, width, 1),
         );
     }
@@ -449,16 +494,16 @@ fn draw_repositories_main(
         app,
         theme,
         inner,
-        &icons::label(icons::REPO, "我的仓库"),
-        "人家把账号下的仓库都整理好啦。",
-        "刷新",
+        &icons::label(icons::REPO, "人家的仓库喵~"),
+        "人家把账号下的仓库都整理好啦喵~",
+        "刷新一下喵~",
         Action::Refresh,
         hits,
     );
 
     let (public, private, languages, stars) = app.repo_stats();
     let stats = format!(
-        "公开 {}   私有 {}   语言 {}   星标合计 {}",
+        "公开 {}   私有 {}   语言 {}   星标合计 {}喵~",
         public,
         private,
         languages,
@@ -477,7 +522,7 @@ fn draw_repositories_main(
         theme,
         hits,
         Rect::new(inner.x, chips_y, inner.width, 1),
-        &icons::label(icons::CLOCK, "排序"),
+        &icons::label(icons::CLOCK, "排序喵~"),
         &[
             (
                 RepoSort::Updated.label(),
@@ -497,11 +542,18 @@ fn draw_repositories_main(
         ],
     );
 
+    draw_list_pagination(
+        frame,
+        app,
+        theme,
+        hits,
+        Rect::new(inner.x, inner.y + 4, inner.width, 1),
+    );
     let list = Rect::new(
         inner.x,
-        inner.y + 5,
+        inner.y + 6,
         inner.width,
-        inner.height.saturating_sub(5),
+        inner.height.saturating_sub(6),
     );
     app.layout.list = list;
     draw_cards(frame, app, theme, list, hits, EmptyKind::Repositories);
@@ -553,7 +605,7 @@ fn draw_starred_summary(frame: &mut Frame, app: &App, theme: &Theme, area: Rect)
         area.height.saturating_sub(2),
     );
     frame.render_widget(
-        Paragraph::new(icons::label(icons::STAR, "收藏概览"))
+        Paragraph::new(icons::label(icons::STAR, "星星小账本喵~"))
             .style(Style::default().fg(theme.color("overlay0"))),
         Rect::new(inner.x, inner.y, inner.width, 1),
     );
@@ -567,17 +619,17 @@ fn draw_starred_summary(frame: &mut Frame, app: &App, theme: &Theme, area: Rect)
         Rect::new(inner.x, inner.y + 2, inner.width, 1),
     );
     frame.render_widget(
-        Paragraph::new("个仓库收了星星").style(Style::default().fg(theme.color("subtext0"))),
+        Paragraph::new("个仓库收着星星呢喵~").style(Style::default().fg(theme.color("subtext0"))),
         Rect::new(inner.x, inner.y + 3, inner.width, 1),
     );
     frame.render_widget(
-        Paragraph::new(format!("{} 语言  {}", icons::CODE, languages))
+        Paragraph::new(format!("{} 语言  {}喵~", icons::CODE, languages))
             .style(Style::default().fg(theme.color("subtext0"))),
         Rect::new(inner.x, inner.y + 5, inner.width, 1),
     );
     frame.render_widget(
         Paragraph::new(format!(
-            "{} 星标  {}",
+            "{} 星标  {}喵~",
             icons::STAR,
             format::human_count(stars)
         ))
@@ -587,16 +639,16 @@ fn draw_starred_summary(frame: &mut Frame, app: &App, theme: &Theme, area: Rect)
 
     let mut y = inner.y + 9;
     frame.render_widget(
-        Paragraph::new(icons::label(icons::INFO, "人家的小提示"))
+        Paragraph::new(icons::label(icons::INFO, "人家的小提示喵~"))
             .style(Style::default().fg(theme.color("overlay0"))),
         Rect::new(inner.x, y, inner.width, 1),
     );
     y += 1;
     let note = [
-        "收藏列表来自 GitHub。",
-        "点仓库卡片可以看详情，",
-        "双击或者按 Enter 进入",
-        "仓库页。",
+        "收藏列表来自 GitHub喵~",
+        "点仓库卡片看详情喵~",
+        "双击或按 Enter 就进",
+        "仓库页喵~",
     ];
     for line in note {
         frame.render_widget(
@@ -627,15 +679,15 @@ fn draw_starred_main(
         app,
         theme,
         inner,
-        &icons::label(icons::STAR, "收藏仓库"),
-        "点过星星的仓库，都收在这里啦。",
-        "刷新",
+        &icons::label(icons::STAR, "星星收藏喵~"),
+        "点过星星的仓库，都收在这里啦喵~",
+        "刷新一下喵~",
         Action::Refresh,
         hits,
     );
     let (count, _, _) = app.starred_stats();
     frame.render_widget(
-        Paragraph::new(format!("当前显示 {} 个收藏", count))
+        Paragraph::new(format!("人家这里收着 {} 个仓库呢喵~", count))
             .style(Style::default().fg(theme.color("subtext0"))),
         Rect::new(inner.x, inner.y + 2, inner.width, 1),
     );
@@ -645,7 +697,7 @@ fn draw_starred_main(
         theme,
         hits,
         Rect::new(inner.x, inner.y + 3, inner.width, 1),
-        &icons::label(icons::CLOCK, "排序"),
+        &icons::label(icons::CLOCK, "排序喵~"),
         &[
             (
                 RepoSort::Updated.label(),
@@ -664,11 +716,18 @@ fn draw_starred_main(
             ),
         ],
     );
+    draw_list_pagination(
+        frame,
+        app,
+        theme,
+        hits,
+        Rect::new(inner.x, inner.y + 4, inner.width, 1),
+    );
     let list = Rect::new(
         inner.x,
-        inner.y + 5,
+        inner.y + 6,
         inner.width,
-        inner.height.saturating_sub(5),
+        inner.height.saturating_sub(6),
     );
     app.layout.list = list;
     draw_cards(frame, app, theme, list, hits, EmptyKind::Starred);
@@ -693,9 +752,9 @@ fn draw_search_page(
         app,
         theme,
         inner,
-        &icons::label(icons::SEARCH, "搜索仓库"),
-        "想找什么仓库呢？告诉人家就好啦。",
-        "刷新",
+        &icons::label(icons::SEARCH, "找仓库喵~"),
+        "想找什么仓库喵~？告诉人家就好啦喵~",
+        "刷新一下喵~",
         Action::Refresh,
         hits,
     );
@@ -711,7 +770,7 @@ fn draw_search_page(
         theme,
         hits,
         Rect::new(inner.x, sort_y, inner.width, 1),
-        &icons::label(icons::CLOCK, "排序"),
+        &icons::label(icons::CLOCK, "排序喵~"),
         &[
             (
                 SearchSort::BestMatch.label(),
@@ -739,11 +798,18 @@ fn draw_search_page(
         Rect::new(inner.x, sort_y + 1, inner.width, 1),
     );
 
+    draw_list_pagination(
+        frame,
+        app,
+        theme,
+        hits,
+        Rect::new(inner.x, sort_y + 2, inner.width, 1),
+    );
     let content = Rect::new(
         inner.x,
-        sort_y + 2,
+        sort_y + 3,
         inner.width,
-        inner.height.saturating_sub(sort_y - inner.y + 2),
+        inner.height.saturating_sub(sort_y - inner.y + 3),
     );
     let detail_width = if area.width >= 116 {
         42
@@ -759,6 +825,337 @@ fn draw_search_page(
     if detail_width > 0 {
         draw_repository_detail(frame, app, theme, columns[1], hits);
         app.layout.detail = columns[1];
+    }
+}
+
+fn draw_account_page(
+    frame: &mut Frame,
+    app: &mut App,
+    theme: &Theme,
+    area: Rect,
+    hits: &mut Vec<HitBox>,
+) {
+    fill(frame, area, theme.color("base"));
+    let width = area.width.saturating_sub(8).min(112);
+    let left = area.x + (area.width.saturating_sub(width)) / 2;
+    let inner = Rect::new(left, area.y + 1, width, area.height.saturating_sub(2));
+    draw_page_title(
+        frame,
+        app,
+        theme,
+        inner,
+        &icons::label(icons::USER, "账号喵~"),
+        "这里放着你的 GitHub 小档案和 API 额度喵~",
+        "刷新喵~",
+        Action::Refresh,
+        hits,
+    );
+
+    let content = Rect::new(
+        inner.x,
+        inner.y + 3,
+        inner.width,
+        inner.height.saturating_sub(3),
+    );
+    if content.height < 8 {
+        return;
+    }
+    let left_width = content.width.saturating_mul(11) / 20;
+    let gap = 2;
+    let profile_rect = Rect::new(content.x, content.y, left_width, content.height);
+    let quota_rect = Rect::new(
+        content.x + left_width + gap,
+        content.y,
+        content.width.saturating_sub(left_width + gap),
+        content.height,
+    );
+    draw_account_profile(frame, app, theme, profile_rect, hits);
+    draw_account_quota(frame, app, theme, quota_rect, hits);
+}
+
+fn draw_account_profile(
+    frame: &mut Frame,
+    app: &App,
+    theme: &Theme,
+    area: Rect,
+    hits: &mut Vec<HitBox>,
+) {
+    fill(frame, area, theme.color("mantle"));
+    frame.render_widget(
+        Block::new()
+            .borders(Borders::ALL)
+            .border_style(Style::default().fg(theme.color("surface0"))),
+        area,
+    );
+    let inner = Rect::new(
+        area.x + 2,
+        area.y + 1,
+        area.width.saturating_sub(4),
+        area.height.saturating_sub(2),
+    );
+    if inner.height < 6 || inner.width < 12 {
+        return;
+    }
+    let Some(user) = app.user.as_ref() else {
+        draw_center_message(
+            frame,
+            theme,
+            area,
+            "还没有登录喵~",
+            "先在终端跑一下 gh auth login，再来看看嘛喵~",
+        );
+        return;
+    };
+
+    frame.render_widget(
+        Paragraph::new(icons::label(icons::USER, "人家的小档案喵~"))
+            .style(Style::default().fg(theme.color("overlay0"))),
+        Rect::new(inner.x, inner.y, inner.width, 1),
+    );
+    frame.render_widget(
+        Paragraph::new(format::truncate(user.display_name(), inner.width as usize)).style(
+            Style::default()
+                .fg(theme.color("text"))
+                .add_modifier(Modifier::BOLD),
+        ),
+        Rect::new(inner.x, inner.y + 1, inner.width, 1),
+    );
+    frame.render_widget(
+        Paragraph::new(format!("@{}", user.login)).style(Style::default().fg(theme.color("blue"))),
+        Rect::new(inner.x, inner.y + 2, inner.width, 1),
+    );
+
+    let mut y = inner.y + 4;
+    let bio = user
+        .bio
+        .as_deref()
+        .map(format::clean_text)
+        .filter(|bio| !bio.trim().is_empty())
+        .unwrap_or_else(|| "还没有写简介喵~".to_string());
+    for line in format::wrap_text(&bio, inner.width as usize, 3) {
+        frame.render_widget(
+            Paragraph::new(line).style(Style::default().fg(theme.color("subtext0"))),
+            Rect::new(inner.x, y, inner.width, 1),
+        );
+        y += 1;
+    }
+
+    let facts = [
+        (icons::COGS, "公司喵~", user.company.clone()),
+        (icons::GLOBE, "位置喵~", user.location.clone()),
+        (icons::NETWORK, "博客喵~", user.blog.clone()),
+        (icons::INFO, "邮箱喵~", user.email.clone()),
+        (icons::CLOCK, "加入喵~", Some(user.joined_label())),
+        (
+            icons::STAR,
+            "计划喵~",
+            user.plan
+                .as_ref()
+                .map(|plan| format!("{} · {} 个私有仓库喵~", plan.name, plan.private_repos)),
+        ),
+    ];
+    y += 1;
+    for (icon, label, value) in facts {
+        if y >= inner.y + inner.height - 7 {
+            break;
+        }
+        let value = value
+            .map(|value| format::clean_text(&value))
+            .filter(|value| !value.trim().is_empty());
+        let Some(value) = value else {
+            continue;
+        };
+        frame.render_widget(
+            Paragraph::new(format::truncate(
+                &format!("{icon} {label}  {value}"),
+                inner.width as usize,
+            ))
+            .style(Style::default().fg(theme.color("subtext0"))),
+            Rect::new(inner.x, y, inner.width, 1),
+        );
+        y += 1;
+    }
+
+    let stats_y = inner.y + inner.height.saturating_sub(5);
+    let (public, private, _, _) = app.repo_stats();
+    let stats = format!(
+        "{} 公开 {}   私有 {}   {} 星标 {}   {} 关注 {}喵~",
+        icons::REPO,
+        public,
+        private,
+        icons::STAR,
+        app.starred.len(),
+        icons::EYE,
+        user.followers
+    );
+    frame.render_widget(
+        Paragraph::new(format::truncate(&stats, inner.width as usize))
+            .style(Style::default().fg(theme.color("text"))),
+        Rect::new(inner.x, stats_y, inner.width, 1),
+    );
+    let follow = format!(
+        "{} 正在关注 {}   {} 公开仓库 {}喵~",
+        icons::USER,
+        user.following,
+        icons::REPO,
+        user.public_repos
+    );
+    frame.render_widget(
+        Paragraph::new(format::truncate(&follow, inner.width as usize))
+            .style(Style::default().fg(theme.color("subtext0"))),
+        Rect::new(inner.x, stats_y + 1, inner.width, 1),
+    );
+
+    let open = icons::label(icons::EXTERNAL, "打开主页喵~");
+    let open_width = format::text_width(&open) as u16 + 4;
+    if stats_y + 3 < inner.y + inner.height {
+        draw_button(
+            frame,
+            app,
+            theme,
+            hits,
+            Rect::new(inner.x, stats_y + 3, open_width, 1),
+            &open,
+            Action::OpenExternal(user.html_url.clone()),
+            true,
+        );
+    }
+}
+
+fn draw_account_quota(
+    frame: &mut Frame,
+    app: &App,
+    theme: &Theme,
+    area: Rect,
+    hits: &mut Vec<HitBox>,
+) {
+    fill(frame, area, theme.color("mantle"));
+    frame.render_widget(
+        Block::new()
+            .borders(Borders::ALL)
+            .border_style(Style::default().fg(theme.color("surface0"))),
+        area,
+    );
+    let inner = Rect::new(
+        area.x + 2,
+        area.y + 1,
+        area.width.saturating_sub(4),
+        area.height.saturating_sub(2),
+    );
+    if inner.height < 6 || inner.width < 12 {
+        return;
+    }
+    frame.render_widget(
+        Paragraph::new(icons::label(icons::NETWORK, "GitHub API 额度喵~")).style(
+            Style::default()
+                .fg(theme.color("text"))
+                .add_modifier(Modifier::BOLD),
+        ),
+        Rect::new(inner.x, inner.y, inner.width, 1),
+    );
+    let source = if app.client.token_present() {
+        "凭据来自 gh auth token，额度按当前账号算喵~"
+    } else {
+        "还没登录，看到的是匿名额度喵~"
+    };
+    frame.render_widget(
+        Paragraph::new(format::truncate(source, inner.width as usize))
+            .style(Style::default().fg(theme.color("overlay0"))),
+        Rect::new(inner.x, inner.y + 1, inner.width, 1),
+    );
+
+    let Some(rate) = app.rate_limit.as_ref() else {
+        let detail = if app.rate_loading {
+            format!("{} 人家正在问 GitHub 喵~...", app.spinner())
+        } else {
+            "点一下刷新，人家才去问 GitHub 喵~".to_string()
+        };
+        draw_center_message(frame, theme, area, "额度还没拿来喵~", &detail);
+        return;
+    };
+
+    let now = crate::cache::now_epoch();
+    let mut y = inner.y + 3;
+    for (label, info) in rate.items() {
+        if y + 4 >= inner.y + inner.height {
+            break;
+        }
+        let percent = if info.limit == 0 {
+            0
+        } else {
+            (info.remaining as f64 / info.limit as f64 * 100.0).round() as u32
+        };
+        let color = if percent >= 50 {
+            theme.color("green")
+        } else if percent >= 20 {
+            theme.color("yellow")
+        } else {
+            theme.color("red")
+        };
+        frame.render_widget(
+            Paragraph::new(Line::from(vec![
+                Span::styled(
+                    label,
+                    Style::default()
+                        .fg(theme.color("text"))
+                        .add_modifier(Modifier::BOLD),
+                ),
+                Span::styled(
+                    format!("  {} / {} 剩余", info.remaining, info.limit),
+                    Style::default().fg(theme.color("subtext0")),
+                ),
+                Span::styled(
+                    format!("  {percent}%"),
+                    Style::default().fg(color).add_modifier(Modifier::BOLD),
+                ),
+            ])),
+            Rect::new(inner.x, y, inner.width, 1),
+        );
+        let bar = Rect::new(inner.x, y + 1, inner.width.saturating_sub(2), 1);
+        fill(frame, bar, theme.color("surface0"));
+        let filled = (bar.width as u32 * percent / 100) as u16;
+        if filled > 0 {
+            fill(frame, Rect::new(bar.x, bar.y, filled, 1), color);
+        }
+        frame.render_widget(
+            Paragraph::new(format!(
+                "已用 {} · {}喵~",
+                info.used,
+                format::reset_label(info.reset, now)
+            ))
+            .style(Style::default().fg(theme.color("overlay0"))),
+            Rect::new(inner.x, y + 2, inner.width, 1),
+        );
+        y += 4;
+    }
+
+    let note = format!("{} 额度接口不消耗额度，刷新随便点喵~", icons::INFO);
+    if y < inner.y + inner.height {
+        frame.render_widget(
+            Paragraph::new(format::truncate(&note, inner.width as usize))
+                .style(Style::default().fg(theme.color("overlay0"))),
+            Rect::new(inner.x, inner.y + inner.height - 1, inner.width, 1),
+        );
+    }
+    let refresh = icons::label(icons::REFRESH, "刷新额度喵~");
+    let refresh_width = format::text_width(&refresh) as u16 + 4;
+    if inner.y + inner.height >= 2 {
+        let rect = Rect::new(
+            inner.x + inner.width.saturating_sub(refresh_width),
+            inner.y,
+            refresh_width,
+            1,
+        );
+        draw_button(
+            frame,
+            app,
+            theme,
+            hits,
+            rect,
+            &refresh,
+            Action::RefreshRateLimit,
+            false,
+        );
     }
 }
 
@@ -784,7 +1181,7 @@ fn draw_search_field(
     let button_width = 9;
     let input_width = area.width.saturating_sub(button_width + 5);
     let input_rect = Rect::new(area.x + 2, area.y + 1, input_width, 1);
-    let placeholder = "输入关键词，回车开始找仓库";
+    let placeholder = "想找什么喵~？输入后按回车嘛";
     let (visible, cursor_column) = if app.search_input.is_empty() {
         (format::truncate(placeholder, input_width as usize), 0_u16)
     } else {
@@ -810,7 +1207,7 @@ fn draw_search_field(
         theme,
         hits,
         button_rect,
-        &icons::label(icons::SEARCH, "搜索"),
+        &icons::label(icons::SEARCH, "找找喵~"),
         Action::SubmitSearch,
         true,
     );
@@ -820,6 +1217,50 @@ fn draw_search_field(
             .saturating_add(cursor_column.min(input_width.saturating_sub(1)));
         frame.set_cursor_position(Position::new(x, input_rect.y));
     }
+}
+
+fn draw_list_pagination(
+    frame: &mut Frame,
+    app: &mut App,
+    theme: &Theme,
+    hits: &mut Vec<HitBox>,
+    area: Rect,
+) {
+    if area.height == 0 || area.width < 26 {
+        return;
+    }
+    let prev = icons::label(icons::BACK, "上一页喵~");
+    let next = icons::label(icons::EXTERNAL, "下一页喵~");
+    let prev_width = format::text_width(&prev) as u16 + 4;
+    let next_width = format::text_width(&next) as u16 + 4;
+    let buttons_width = prev_width + next_width + 2;
+    let label_width = area.width.saturating_sub(buttons_width + 1);
+    frame.render_widget(
+        Paragraph::new(format::truncate(&app.page_label(), label_width as usize))
+            .style(Style::default().fg(theme.color("subtext0"))),
+        Rect::new(area.x, area.y, label_width, 1),
+    );
+    let prev_rect = Rect::new(area.x + area.width - buttons_width, area.y, prev_width, 1);
+    draw_button(
+        frame,
+        app,
+        theme,
+        hits,
+        prev_rect,
+        &prev,
+        Action::PrevListPage,
+        false,
+    );
+    draw_button(
+        frame,
+        app,
+        theme,
+        hits,
+        Rect::new(prev_rect.x + prev_width + 2, area.y, next_width, 1),
+        &next,
+        Action::NextListPage,
+        true,
+    );
 }
 
 fn draw_cards(
@@ -836,14 +1277,16 @@ fn draw_cards(
     let indices = app.visible_indices();
     let viewport = (area.height / CARD_STEP).max(1) as usize;
     app.viewport_cards = viewport;
-    let max_offset = indices.len().saturating_sub(viewport);
-    app.list_offset = app.list_offset.min(max_offset);
     let selected = app.selected_index();
 
     if indices.is_empty() {
+        app.list_offset = 0;
         draw_empty_state(frame, app, theme, area, hits, empty);
         return;
     }
+
+    let page = (selected / viewport).min((indices.len() - 1) / viewport);
+    app.list_offset = page * viewport;
 
     let hovered = app.hover.clone();
     for (row, (slot, index)) in indices
@@ -920,23 +1363,23 @@ fn draw_empty_state(
         EmptyKind::Search => app.search_loading,
     };
     let (title, detail) = if loading {
-        ("人家正在搬数据...", "第一次同步会慢一点点，等一等哦。")
+        ("人家正在搬数据喵~...", "第一次同步会慢一点点，等一等哦喵~")
     } else if !app.client.token_present() {
         (
-            "还没有登录 GitHub",
-            "在终端运行 gh auth login，再重新打开人家。",
+            "还没有登录 GitHub喵~",
+            "在终端跑一下 gh auth login，再重新打开人家嘛喵~",
         )
     } else {
         match kind {
             EmptyKind::Repositories => (
-                "这里还没有仓库呢",
-                "先去 GitHub 建一个，或者按 r 刷新试试。",
+                "这里还没有仓库呢喵~",
+                "先去 GitHub 建一个，或者按 r 刷新看看嘛喵~",
             ),
             EmptyKind::Starred => (
-                "还没有收藏任何仓库",
-                "在 GitHub 上点一颗星星，这里就会热闹起来。",
+                "还没有收藏任何仓库喵~",
+                "去 GitHub 点一颗星星，这里就会热闹起来啦喵~",
             ),
-            EmptyKind::Search => ("没有搜到仓库", "换个关键词再试试嘛。"),
+            EmptyKind::Search => ("没有搜到仓库喵~", "换个关键词再试试嘛喵~"),
         }
     };
     draw_center_message(frame, theme, area, title, detail);
@@ -951,9 +1394,9 @@ fn draw_search_history(
 ) {
     if app.search_submitted.is_none() {
         let title = if app.search_loading {
-            "人家正在找仓库..."
+            "人家正在找仓库喵~..."
         } else {
-            "还没有开始搜索呢"
+            "还没有开始搜索呢喵~"
         };
         let mut y = area.y + 2;
         frame.render_widget(
@@ -966,14 +1409,14 @@ fn draw_search_history(
         );
         y += 1;
         frame.render_widget(
-            Paragraph::new("在上面的搜索框里输入关键词，按回车就好啦。")
+            Paragraph::new("在上面输入关键词，按回车人家就去找啦喵~")
                 .style(Style::default().fg(theme.color("overlay0"))),
             Rect::new(area.x + 1, y, area.width.saturating_sub(2), 1),
         );
         y += 3;
         if !app.config.search_history.is_empty() {
             frame.render_widget(
-                Paragraph::new("最近搜过").style(
+                Paragraph::new("人家最近找过喵~").style(
                     Style::default()
                         .fg(theme.color("subtext0"))
                         .add_modifier(Modifier::BOLD),
@@ -1008,8 +1451,8 @@ fn draw_search_history(
             frame,
             theme,
             area,
-            "人家正在找仓库...",
-            "搜索结果一会儿就回来啦。",
+            "人家正在找仓库喵~...",
+            "搜索结果一会儿就回来啦喵~",
         );
         return;
     }
@@ -1018,8 +1461,8 @@ fn draw_search_history(
             frame,
             theme,
             area,
-            "没有搜到仓库",
-            "换个关键词，或者去掉一些限定条件试试嘛。",
+            "没有搜到仓库喵~",
+            "换个关键词，或者去掉一些限定条件试试嘛喵~",
         );
     }
 }
@@ -1078,9 +1521,9 @@ fn draw_repo_card(
         ));
     }
     let (visibility_icon, visibility_text) = if repo.private {
-        (icons::LOCK, "私有")
+        (icons::LOCK, "私有喵~")
     } else {
-        (icons::GLOBE, "公开")
+        (icons::GLOBE, "公开喵~")
     };
     let right = format!(
         "{} {}   {} {}",
@@ -1184,8 +1627,8 @@ fn draw_repository_detail(
             frame,
             theme,
             area,
-            "挑一个仓库看看",
-            "点左边卡片，人家就把详情摆在这里。",
+            "挑一个仓库看看喵~",
+            "点左边卡片，人家就把详情摆在这里喵~",
         );
         return;
     };
@@ -1204,7 +1647,7 @@ fn draw_repository_detail(
         return;
     }
     frame.render_widget(
-        Paragraph::new(icons::label(icons::REPO, "仓库详情"))
+        Paragraph::new(icons::label(icons::REPO, "仓库小档案喵~"))
             .style(Style::default().fg(theme.color("overlay0"))),
         Rect::new(inner.x, inner.y, inner.width, 1),
     );
@@ -1259,21 +1702,21 @@ fn draw_repository_detail(
     if y + 3 < inner.y + inner.height {
         let stats = [
             (
-                format!("{} 星标", icons::STAR),
+                format!("{} 星标喵~", icons::STAR),
                 format::human_count(repo.stargazers_count),
-                format!("{} 复刻", icons::FORK),
+                format!("{} 复刻喵~", icons::FORK),
                 format::human_count(repo.forks_count),
             ),
             (
-                format!("{} 议题", icons::ISSUE),
+                format!("{} 议题喵~", icons::ISSUE),
                 format::human_count(repo.open_issues_count),
-                format!("{} 关注", icons::EYE),
+                format!("{} 关注喵~", icons::EYE),
                 format::human_count(repo.watchers_count),
             ),
             (
-                format!("{} 更新", icons::CLOCK),
+                format!("{} 更新喵~", icons::CLOCK),
                 format::relative_time(repo.updated_at()),
-                format!("{} 分支", icons::BRANCH),
+                format!("{} 分支喵~", icons::BRANCH),
                 repo.default_branch.clone(),
             ),
         ];
@@ -1304,21 +1747,28 @@ fn draw_repository_detail(
     let buttons_y = y + 1;
     if buttons_y < inner.y + inner.height {
         let mut x = inner.x;
-        let buttons = [
+        let mut buttons = vec![
             (
-                &*icons::label(icons::EXTERNAL, "打开"),
+                icons::label(icons::EXTERNAL, "去主页喵~"),
                 Action::OpenCurrent,
                 false,
             ),
             (
-                &*icons::label(icons::COPY, "复制"),
+                icons::label(icons::COPY, "复制喵~"),
                 Action::CopyClone,
                 false,
             ),
-            (&*icons::label(icons::TAG, "详情"), Action::OpenPage, true),
+            (icons::label(icons::TAG, "打开喵~"), Action::OpenPage, true),
         ];
+        if app.is_own_repo(&repo) {
+            buttons.push((
+                icons::label(icons::COGS, "编辑喵~"),
+                Action::OpenRepoEdit,
+                false,
+            ));
+        }
         for (label, action, primary) in buttons {
-            let width = format::text_width(label) as u16 + 4;
+            let width = format::text_width(&label) as u16 + 4;
             if x + width > inner.x + inner.width {
                 break;
             }
@@ -1328,7 +1778,7 @@ fn draw_repository_detail(
                 theme,
                 hits,
                 Rect::new(x, buttons_y, width, 1),
-                label,
+                &label,
                 action,
                 primary,
             );
@@ -1346,7 +1796,7 @@ fn draw_repository_detail(
         theme.color("surface0"),
     );
     frame.render_widget(
-        Paragraph::new(icons::label(icons::TAG, "发行版")).style(
+        Paragraph::new(icons::label(icons::TAG, "发行版喵~")).style(
             Style::default()
                 .fg(theme.color("text"))
                 .add_modifier(Modifier::BOLD),
@@ -1359,7 +1809,7 @@ fn draw_repository_detail(
         .is_some_and(|name| name == &repo.display_full_name());
     if loading_note {
         frame.render_widget(
-            Paragraph::new(format!("{} 人家正在取...", app.spinner()))
+            Paragraph::new(format!("{} 人家正在取喵~...", app.spinner()))
                 .style(Style::default().fg(theme.color("peach"))),
             Rect::new(inner.x, releases_y + 2, inner.width, 1),
         );
@@ -1367,7 +1817,7 @@ fn draw_repository_detail(
     }
     if app.releases.is_empty() {
         frame.render_widget(
-            Paragraph::new("这个仓库还没有发行版。")
+            Paragraph::new("这个仓库还没有发行版呢喵~")
                 .style(Style::default().fg(theme.color("overlay0"))),
             Rect::new(inner.x, releases_y + 2, inner.width, 1),
         );
@@ -1401,7 +1851,7 @@ fn draw_repository_detail(
             Style::default().fg(theme.color("subtext0")),
         )));
         lines.push(Line::from(Span::styled(
-            format!("资产 {} 个", release.assets.len()),
+            format!("资产 {} 个喵~", release.assets.len()),
             Style::default().fg(theme.color("overlay0")),
         )));
         lines.push(Line::default());
@@ -1414,7 +1864,7 @@ fn draw_repository_detail(
     );
     if app.client.proxy().contains("v4.gh-proxy.org") {
         frame.render_widget(
-            Paragraph::new("发行版资产经 v4 加速")
+            Paragraph::new("发行版资产走 v4 加速通道喵~")
                 .style(Style::default().fg(theme.color("overlay0"))),
             Rect::new(
                 inner.x,
@@ -1526,8 +1976,8 @@ fn draw_repo_page(
             frame,
             theme,
             area,
-            "仓库不见了",
-            "按 Esc 回到列表再选一次吧。",
+            "仓库不见啦喵~",
+            "按 Esc 回列表再选一次嘛喵~",
         );
         return;
     };
@@ -1547,24 +1997,25 @@ fn draw_repo_page(
             frame,
             theme,
             inner,
-            "这里有点挤",
-            "把终端拉大一点，人家才摆得下仓库页。",
+            "这里有点挤喵~",
+            "把终端拉大一点，人家才摆得下仓库页喵~",
         );
         return;
     }
 
-    let back_action = Action::Back;
-    let back_rect = Rect::new(inner.x, inner.y, 10, 1);
-    let back_hover = app.hover.as_ref() == Some(&back_action);
+    let back_label = icons::label(icons::BACK, "返回喵~");
+    let back_width = format::text_width(&back_label) as u16 + 2;
+    let back_rect = Rect::new(inner.x, inner.y, back_width, 1);
+    let back_hover = app.hover.as_ref() == Some(&Action::Back);
     frame.render_widget(
-        Paragraph::new(icons::label(icons::BACK, "返回")).style(if back_hover {
+        Paragraph::new(back_label).style(if back_hover {
             Style::default().fg(theme.color("blue"))
         } else {
             Style::default().fg(theme.color("subtext0"))
         }),
         back_rect,
     );
-    register(hits, back_rect, back_action);
+    register(hits, back_rect, Action::Back);
     let crumb = format!(
         "{} / {} / {}",
         app.return_page.title(),
@@ -1574,125 +2025,176 @@ fn draw_repo_page(
     frame.render_widget(
         Paragraph::new(format::truncate(
             &crumb,
-            inner.width.saturating_sub(12) as usize,
+            inner.width.saturating_sub(back_width + 14) as usize,
         ))
         .style(Style::default().fg(theme.color("overlay0"))),
-        Rect::new(inner.x + 12, inner.y, inner.width.saturating_sub(14), 1),
+        Rect::new(
+            inner.x + back_width + 2,
+            inner.y,
+            inner.width.saturating_sub(back_width + 14),
+            1,
+        ),
+    );
+    let refresh_label = icons::label(icons::REFRESH, "刷新一下喵~");
+    let refresh_width = format::text_width(&refresh_label) as u16 + 4;
+    let refresh_x = inner.x + inner.width.saturating_sub(refresh_width);
+    draw_button(
+        frame,
+        app,
+        theme,
+        hits,
+        Rect::new(refresh_x, inner.y, refresh_width, 1),
+        &refresh_label,
+        Action::Refresh,
+        false,
+    );
+    if app.is_own_repo(&repo) {
+        let edit_label = icons::label(icons::COGS, "编辑仓库喵~");
+        let edit_width = format::text_width(&edit_label) as u16 + 4;
+        let edit_x = refresh_x.saturating_sub(edit_width + 1);
+        if edit_x > inner.x + back_width {
+            draw_button(
+                frame,
+                app,
+                theme,
+                hits,
+                Rect::new(edit_x, inner.y, edit_width, 1),
+                &edit_label,
+                Action::OpenRepoEdit,
+                true,
+            );
+        }
+    }
+
+    let starred = app.is_current_starred();
+    let star_label = if app.star_loading.is_some() {
+        format!("{} 处理中喵~", icons::STAR)
+    } else if starred {
+        format!("{} 已收藏喵~", icons::STAR)
+    } else {
+        format!("{} 收藏喵~", icons::STAR_EMPTY)
+    };
+    let star_width = format::text_width(&star_label) as u16 + 4;
+    draw_button(
+        frame,
+        app,
+        theme,
+        hits,
+        Rect::new(
+            inner.x + inner.width.saturating_sub(star_width),
+            inner.y + 1,
+            star_width,
+            1,
+        ),
+        &star_label,
+        Action::ToggleStar,
+        !starred,
     );
 
-    let title_y = inner.y + 1;
+    let title = format!("{} {}", icons::REPO, repo.display_full_name());
     frame.render_widget(
         Paragraph::new(format::truncate(
-            &format!("{} {}", icons::REPO, repo.display_full_name()),
-            inner.width as usize,
+            &title,
+            inner.width.saturating_sub(star_width + 3) as usize,
         ))
         .style(
             Style::default()
                 .fg(theme.color("text"))
                 .add_modifier(Modifier::BOLD),
         ),
-        Rect::new(inner.x, title_y, inner.width, 1),
+        Rect::new(
+            inner.x,
+            inner.y + 1,
+            inner.width.saturating_sub(star_width + 3),
+            1,
+        ),
+    );
+    frame.render_widget(
+        Paragraph::new(format::truncate(
+            &format::clean_text(repo.description_text()),
+            inner.width as usize,
+        ))
+        .style(Style::default().fg(theme.color("subtext0"))),
+        Rect::new(inner.x, inner.y + 2, inner.width, 1),
     );
     let visibility_icon = if repo.private {
         icons::LOCK
     } else {
         icons::GLOBE
     };
-    let badge = format!(
-        "{visibility_icon} {}   {} {}{}",
-        repo.visibility(),
-        icons::CODE,
-        repo.language_label(),
-        if repo.archived {
-            format!("   {} 已归档", icons::ARCHIVE)
-        } else {
-            String::new()
-        }
-    );
-    frame.render_widget(
-        Paragraph::new(badge).style(Style::default().fg(theme.color("sapphire"))),
-        Rect::new(inner.x, title_y + 1, inner.width, 1),
-    );
-    let desc_width = inner.width.min(100);
-    let desc = format::wrap_text(
-        &format::clean_text(repo.description_text()),
-        desc_width as usize,
-        2,
-    );
-    let mut y = title_y + 2;
-    for line in desc {
-        frame.render_widget(
-            Paragraph::new(line).style(Style::default().fg(theme.color("subtext0"))),
-            Rect::new(inner.x, y, desc_width, 1),
-        );
-        y += 1;
-    }
-    if y < title_y + 4 {
-        y = title_y + 4;
-    }
-
-    let stats = [
-        (
-            format!("{} 星标", icons::STAR),
-            format::human_count(repo.stargazers_count),
-        ),
-        (
-            format!("{} 复刻", icons::FORK),
-            format::human_count(repo.forks_count),
-        ),
-        (
-            format!("{} 关注", icons::EYE),
-            format::human_count(repo.watchers_count),
-        ),
-        (
-            format!("{} 议题", icons::ISSUE),
-            format::human_count(repo.open_issues_count),
+    let mut facts = vec![
+        format!("{visibility_icon} {}", repo.visibility()),
+        format!("{} {}", icons::BRANCH, repo.default_branch),
+        format!("{} {}", icons::LICENSE, repo.license_label()),
+        format!(
+            "{} {}",
+            icons::DATABASE,
+            format::format_size(repo.size.saturating_mul(1024))
         ),
     ];
-    let stat_width = ((inner.width.saturating_sub(3)) / 4).max(10);
-    for (index, (label, value)) in stats.iter().enumerate() {
-        let rect = Rect::new(inner.x + index as u16 * (stat_width + 1), y, stat_width, 2);
-        if rect.x + rect.width > inner.x + inner.width {
-            break;
-        }
-        fill(frame, rect, theme.color("mantle"));
-        frame.render_widget(
-            Paragraph::new(format!("{label} {value}")).style(
-                Style::default()
-                    .fg(theme.color("text"))
-                    .add_modifier(Modifier::BOLD),
-            ),
-            Rect::new(rect.x + 1, rect.y, rect.width.saturating_sub(2), 1),
-        );
+    for topic in repo.topics.iter().take(3) {
+        facts.push(format!("#{}", format::clean_text(topic)));
     }
-    y += 3;
+    frame.render_widget(
+        Paragraph::new(format::truncate(&facts.join("   "), inner.width as usize))
+            .style(Style::default().fg(theme.color("overlay0"))),
+        Rect::new(inner.x, inner.y + 3, inner.width, 1),
+    );
+    let stats = format!(
+        "{} {}   {} {}   {} {}   {} {}   {} {}",
+        icons::STAR,
+        format::human_count(repo.stargazers_count),
+        icons::FORK,
+        format::human_count(repo.forks_count),
+        icons::EYE,
+        format::human_count(repo.watchers_count),
+        icons::ISSUE,
+        format::human_count(repo.open_issues_count),
+        icons::CLOCK,
+        format::relative_time(repo.updated_at())
+    );
+    frame.render_widget(
+        Paragraph::new(stats).style(Style::default().fg(theme.color("text"))),
+        Rect::new(inner.x, inner.y + 4, inner.width, 1),
+    );
 
-    let mut button_x = inner.x;
+    let actions_y = inner.y + 5;
+    let mut action_x = inner.x;
     let buttons = [
         (
-            &*icons::label(icons::EXTERNAL, "打开主页"),
+            icons::label(icons::EXTERNAL, "去主页喵~"),
             Action::OpenCurrent,
             false,
         ),
         (
-            &*icons::label(icons::COPY, "复制克隆"),
+            icons::label(icons::COPY, "复制克隆喵~"),
             Action::CopyClone,
             false,
         ),
         (
-            &*icons::label(icons::DOWNLOAD, "下载源码"),
-            Action::SourceZip,
+            icons::label(icons::DOWNLOAD, "下载源码喵~"),
+            Action::DownloadSource,
             false,
         ),
         (
-            &*icons::label(icons::REFRESH, "刷新"),
-            Action::Refresh,
-            true,
+            icons::label(icons::ISSUE, "议题喵~"),
+            Action::OpenExternal(format!("{}/issues", repo.html_url.trim_end_matches('/'))),
+            false,
+        ),
+        (
+            icons::label(icons::PULL, "合并请求喵~"),
+            Action::OpenExternal(format!("{}/pulls", repo.html_url.trim_end_matches('/'))),
+            false,
+        ),
+        (
+            icons::label(icons::COGS, "工作流喵~"),
+            Action::OpenExternal(format!("{}/actions", repo.html_url.trim_end_matches('/'))),
+            false,
         ),
     ];
     for (label, action, primary) in buttons {
-        let width = format::text_width(label) as u16 + 4;
-        if button_x + width > inner.x + inner.width {
+        let button_width = format::text_width(&label) as u16 + 4;
+        if action_x + button_width > inner.x + inner.width {
             break;
         }
         draw_button(
@@ -1700,39 +2202,205 @@ fn draw_repo_page(
             app,
             theme,
             hits,
-            Rect::new(button_x, y, width, 1),
-            label,
+            Rect::new(action_x, actions_y, button_width, 1),
+            &label,
             action,
             primary,
         );
-        button_x += width + 1;
+        action_x += button_width + 1;
     }
-    y += 2;
+    let divider_y = inner.y + 6;
     fill(
         frame,
-        Rect::new(inner.x, y, inner.width, 1),
+        Rect::new(inner.x, divider_y, inner.width, 1),
         theme.color("surface0"),
     );
-    y += 1;
-
     let content = Rect::new(
         inner.x,
-        y,
+        divider_y + 1,
         inner.width,
-        (inner.y + inner.height).saturating_sub(y),
+        (inner.y + inner.height).saturating_sub(divider_y + 1),
     );
     if content.height < 4 {
         return;
     }
-    let side_width = if inner.width >= 100 { 38 } else { 0 };
-    let columns =
-        Layout::horizontal([Constraint::Min(30), Constraint::Length(side_width)]).split(content);
-    draw_releases_panel(frame, app, theme, &repo, columns[0], hits);
-    app.layout.page_releases = columns[0];
-    if side_width > 0 {
-        draw_repo_about(frame, app, theme, &repo, columns[1], hits);
-        app.layout.detail = columns[1];
+
+    let show_readme = app.config.show_readme && content.height >= 9;
+    let readme_height = (content.height * 2 / 5).max(4);
+    let (main_area, readme_area) = if show_readme {
+        let split = Layout::vertical([
+            Constraint::Min(4),
+            Constraint::Length(readme_height.min(content.height.saturating_sub(4))),
+        ])
+        .split(content);
+        (split[0], split[1])
+    } else {
+        (content, Rect::default())
+    };
+    let columns = Layout::horizontal([Constraint::Percentage(55), Constraint::Percentage(45)])
+        .split(main_area);
+    let tree_rect = columns[0];
+    let releases_rect = columns[1];
+    app.layout.page_tree = tree_rect;
+    app.layout.page_releases = releases_rect;
+    app.layout.page_readme = readme_area;
+    draw_file_tree_panel(frame, app, theme, &repo, tree_rect, hits);
+    draw_releases_panel(frame, app, theme, &repo, releases_rect, hits);
+    if show_readme {
+        draw_readme_panel(frame, app, theme, readme_area, hits);
+    } else {
+        app.readme_scroll = 0;
+        app.readme_scroll_max = 0;
     }
+}
+
+fn draw_file_tree_panel(
+    frame: &mut Frame,
+    app: &mut App,
+    theme: &Theme,
+    repo: &Repo,
+    area: Rect,
+    hits: &mut Vec<HitBox>,
+) {
+    if area.width < 8 || area.height < 3 {
+        return;
+    }
+    fill(frame, area, theme.color("mantle"));
+    register(hits, area, Action::FocusRepoPane(RepoPane::Tree));
+    let focused = app.repo_pane == RepoPane::Tree;
+    let title = icons::label(icons::FOLDER_OPEN, "文件树喵~");
+    frame.render_widget(
+        Paragraph::new(format!(
+            "{}   {} {}",
+            title,
+            icons::BRANCH,
+            format::truncate(&repo.default_branch, 18)
+        ))
+        .style(if focused {
+            Style::default()
+                .fg(theme.color("blue"))
+                .add_modifier(Modifier::BOLD)
+        } else {
+            Style::default().fg(theme.color("text"))
+        }),
+        Rect::new(area.x + 1, area.y, area.width.saturating_sub(2), 1),
+    );
+    fill(
+        frame,
+        Rect::new(area.x, area.y + 1, area.width, 1),
+        theme.color("surface0"),
+    );
+    let body = Rect::new(
+        area.x + 1,
+        area.y + 2,
+        area.width.saturating_sub(2),
+        area.height.saturating_sub(2),
+    );
+    if !app.config.show_file_tree {
+        draw_center_message(
+            frame,
+            theme,
+            body,
+            "文件树预览没开喵~",
+            "到设置页里手动打开，人家才会去取文件树哦喵~",
+        );
+        app.tree_scroll = 0;
+        app.tree_scroll_max = 0;
+        return;
+    }
+    if let Some(loading) = app.tree_loading.as_ref()
+        && loading == &repo.display_full_name()
+    {
+        frame.render_widget(
+            Paragraph::new(format!("{} 人家正在翻文件树喵~...", app.spinner()))
+                .style(Style::default().fg(theme.color("peach"))),
+            Rect::new(body.x, body.y, body.width, 1),
+        );
+        return;
+    }
+    let Some(tree) = app.tree.as_ref() else {
+        draw_center_message(
+            frame,
+            theme,
+            body,
+            "文件树还没到喵~",
+            "点一下刷新，或者稍后再看看嘛喵~",
+        );
+        return;
+    };
+    let mut entries: Vec<_> = tree
+        .tree
+        .iter()
+        .filter(|entry| entry.kind == "blob" || entry.kind == "tree")
+        .collect();
+    entries.sort_by(|left, right| left.path.cmp(&right.path));
+    if entries.is_empty() {
+        draw_center_message(
+            frame,
+            theme,
+            body,
+            "仓库里空空的喵~",
+            "这个分支下面还没有文件呢喵~",
+        );
+        return;
+    }
+    let mut lines: Vec<Line> = Vec::new();
+    let mut actions = Vec::new();
+    for entry in entries.iter().take(1200) {
+        let depth = entry.path.matches('/').count().min(10);
+        let name = format::clean_text(entry.path.rsplit('/').next().unwrap_or(&entry.path));
+        let directory = entry.kind == "tree";
+        let icon = if directory {
+            icons::FOLDER_OPEN
+        } else {
+            file_icon(&name)
+        };
+        let indent = "  ".repeat(depth);
+        let suffix = if !directory {
+            entry
+                .size
+                .map(|size| format!("  {}", format::format_size(size)))
+                .unwrap_or_default()
+        } else {
+            String::new()
+        };
+        let action = Action::OpenTreePath {
+            path: entry.path.clone(),
+            directory,
+        };
+        actions.push((lines.len(), action));
+        lines.push(Line::from(vec![
+            Span::styled(indent, Style::default().fg(theme.color("surface2"))),
+            Span::styled(
+                format!("{icon} "),
+                Style::default().fg(if directory {
+                    theme.color("blue")
+                } else {
+                    theme.color("overlay1")
+                }),
+            ),
+            Span::styled(
+                format::truncate(
+                    &format!("{name}{suffix}"),
+                    body.width.saturating_sub(3) as usize,
+                ),
+                Style::default().fg(if directory {
+                    theme.color("subtext1")
+                } else {
+                    theme.color("subtext0")
+                }),
+            ),
+        ]));
+    }
+    if tree.truncated || entries.len() > 1200 {
+        lines.push(Line::from(Span::styled(
+            "文件太多啦，只展示了一部分喵~",
+            Style::default().fg(theme.color("peach")),
+        )));
+    }
+    app.tree_scroll_max = lines.len().saturating_sub(body.height as usize) as u16;
+    app.tree_scroll = app.tree_scroll.min(app.tree_scroll_max);
+    render_scrolled(frame, body, lines, actions, app.tree_scroll, theme, hits);
 }
 
 fn draw_releases_panel(
@@ -1743,42 +2411,64 @@ fn draw_releases_panel(
     area: Rect,
     hits: &mut Vec<HitBox>,
 ) {
+    if area.width < 8 || area.height < 3 {
+        return;
+    }
+    fill(frame, area, theme.color("mantle"));
+    register(hits, area, Action::FocusRepoPane(RepoPane::Releases));
+    let focused = app.repo_pane == RepoPane::Releases;
     frame.render_widget(
-        Paragraph::new(icons::label(icons::TAG, "发行版")).style(
+        Paragraph::new(icons::label(icons::TAG, "发行版喵~")).style(if focused {
             Style::default()
-                .fg(theme.color("text"))
-                .add_modifier(Modifier::BOLD),
-        ),
-        Rect::new(area.x, area.y, area.width, 1),
+                .fg(theme.color("blue"))
+                .add_modifier(Modifier::BOLD)
+        } else {
+            Style::default().fg(theme.color("text"))
+        }),
+        Rect::new(area.x + 1, area.y, area.width.saturating_sub(2), 1),
     );
-    let loading = app
-        .releases_loading
-        .as_ref()
-        .is_some_and(|name| name == &repo.display_full_name());
-    let content = Rect::new(
-        area.x,
-        area.y + 2,
-        area.width,
-        area.height.saturating_sub(2),
+    let dir_label = format!("{} {}", icons::DOWNLOAD, app.download_path_label());
+    frame.render_widget(
+        Paragraph::new(format::truncate(
+            &dir_label,
+            area.width.saturating_sub(2) as usize,
+        ))
+        .style(Style::default().fg(theme.color("overlay0"))),
+        Rect::new(area.x + 1, area.y + 1, area.width.saturating_sub(2), 1),
     );
-    if loading {
+    fill(
+        frame,
+        Rect::new(area.x, area.y + 2, area.width, 1),
+        theme.color("surface0"),
+    );
+    let body = Rect::new(
+        area.x + 1,
+        area.y + 3,
+        area.width.saturating_sub(2),
+        area.height.saturating_sub(4),
+    );
+    if let Some(loading) = app.releases_loading.as_ref()
+        && loading == &repo.display_full_name()
+    {
         frame.render_widget(
-            Paragraph::new(format!("{} 人家正在取发行版...", app.spinner()))
+            Paragraph::new(format!("{} 人家正在取发行版喵~...", app.spinner()))
                 .style(Style::default().fg(theme.color("peach"))),
-            content,
+            Rect::new(body.x, body.y, body.width, 1),
         );
         return;
     }
     if app.releases.is_empty() {
-        frame.render_widget(
-            Paragraph::new("这个仓库还没有发行版，等作者发一个吧。")
-                .style(Style::default().fg(theme.color("overlay0"))),
-            content,
+        draw_center_message(
+            frame,
+            theme,
+            body,
+            "还没有发行版喵~",
+            "等作者发一个，或者按 r 再刷新一下嘛喵~",
         );
         return;
     }
     let mut lines: Vec<Line> = Vec::new();
-    let mut actions: Vec<(usize, Action)> = Vec::new();
+    let mut actions = Vec::new();
     for (index, release) in app.releases.iter().enumerate() {
         let mut title = vec![Span::styled(
             release.tag_name.clone(),
@@ -1805,7 +2495,7 @@ fn draw_releases_panel(
         actions.push((lines.len(), Action::OpenReleasePage(index)));
         lines.push(Line::from(title));
         lines.push(Line::from(Span::styled(
-            format::truncate(&format::clean_text(release.title()), area.width as usize),
+            format::truncate(&format::clean_text(release.title()), body.width as usize),
             Style::default().fg(theme.color("subtext0")),
         )));
         let excerpt = release
@@ -1815,12 +2505,10 @@ fn draw_releases_panel(
             .map(|text| format::clean_text(&text))
             .unwrap_or_default();
         if !excerpt.is_empty() {
-            for line in format::wrap_text(&excerpt, area.width.saturating_sub(2) as usize, 2) {
-                lines.push(Line::from(Span::styled(
-                    format!("  {line}"),
-                    Style::default().fg(theme.color("overlay0")),
-                )));
-            }
+            lines.push(Line::from(Span::styled(
+                format::truncate(&excerpt, body.width as usize),
+                Style::default().fg(theme.color("overlay0")),
+            )));
         }
         if release.assets.is_empty() {
             lines.push(Line::from(Span::styled(
@@ -1829,32 +2517,30 @@ fn draw_releases_panel(
             )));
         } else {
             for (asset_index, asset) in release.assets.iter().take(5).enumerate() {
-                let action = Action::OpenAsset {
-                    release: index,
-                    asset: asset_index,
-                };
                 let line = Line::from(vec![
                     Span::styled(
-                        format!("  {} 下载 ", icons::DOWNLOAD),
+                        format!("  {} ", icons::DOWNLOAD),
                         Style::default().fg(theme.color("blue")),
                     ),
                     Span::styled(
                         format::truncate(
                             &format::clean_text(&asset.name),
-                            area.width.saturating_sub(28) as usize,
+                            body.width.saturating_sub(20) as usize,
                         ),
                         Style::default().fg(theme.color("subtext1")),
                     ),
                     Span::styled(
-                        format!(
-                            "  {}   {} 次  经 v4",
-                            format::format_size(asset.size),
-                            format::human_count(asset.download_count)
-                        ),
+                        format!("  {}", format::format_size(asset.size)),
                         Style::default().fg(theme.color("overlay0")),
                     ),
                 ]);
-                actions.push((lines.len(), action));
+                actions.push((
+                    lines.len(),
+                    Action::DownloadAsset {
+                        release: index,
+                        asset: asset_index,
+                    },
+                ));
                 lines.push(line);
             }
             if release.assets.len() > 5 {
@@ -1866,168 +2552,307 @@ fn draw_releases_panel(
         }
         lines.push(Line::default());
     }
-    app.page_scroll_max = lines.len().saturating_sub(content.height as usize) as u16;
+    lines.push(Line::from(Span::styled(
+        "点资产就会下载到上面的目录里，同名也不会覆盖哦喵~",
+        Style::default().fg(theme.color("overlay0")),
+    )));
+    app.page_scroll_max = lines.len().saturating_sub(body.height as usize) as u16;
     app.page_scroll = app.page_scroll.min(app.page_scroll_max);
-    render_scrolled(frame, content, lines, actions, app.page_scroll, theme, hits);
+    render_scrolled(frame, body, lines, actions, app.page_scroll, theme, hits);
 }
 
-fn draw_repo_about(
+fn draw_readme_panel(
     frame: &mut Frame,
     app: &mut App,
     theme: &Theme,
-    repo: &Repo,
     area: Rect,
     hits: &mut Vec<HitBox>,
 ) {
+    if area.width < 8 || area.height < 3 {
+        return;
+    }
+    fill(frame, area, theme.color("mantle"));
+    register(hits, area, Action::FocusRepoPane(RepoPane::Readme));
+    let focused = app.repo_pane == RepoPane::Readme;
+    let repo_name = app
+        .page_repo
+        .as_ref()
+        .map(|repo| repo.display_full_name())
+        .unwrap_or_default();
     frame.render_widget(
-        Paragraph::new(icons::label(icons::INFO, "关于")).style(
+        Paragraph::new(icons::label(icons::BOOK, "README")).style(if focused {
             Style::default()
-                .fg(theme.color("text"))
-                .add_modifier(Modifier::BOLD),
-        ),
-        Rect::new(area.x, area.y, area.width, 1),
+                .fg(theme.color("blue"))
+                .add_modifier(Modifier::BOLD)
+        } else {
+            Style::default().fg(theme.color("text"))
+        }),
+        Rect::new(area.x + 1, area.y, area.width.saturating_sub(2), 1),
     );
-    let mut y = area.y + 2;
-    let desc = format::clean_text(repo.description_text());
-    for line in format::wrap_text(&desc, area.width as usize, 3) {
+    if let Some(readme) = app.readme.as_ref() {
         frame.render_widget(
-            Paragraph::new(line).style(Style::default().fg(theme.color("subtext0"))),
-            Rect::new(area.x, y, area.width, 1),
-        );
-        y += 1;
-    }
-    y += 1;
-    let facts = [
-        (
-            format!("{} 默认分支", icons::BRANCH),
-            repo.default_branch.clone(),
-        ),
-        (format!("{} 许可", icons::LICENSE), repo.license_label()),
-        (
-            format!("{} 更新", icons::CLOCK),
-            format::relative_time(repo.updated_at()),
-        ),
-        (
-            format!("{} 大小", icons::DATABASE),
-            format::format_size(repo.size.saturating_mul(1024)),
-        ),
-        (
-            format!("{} 可见性", icons::GLOBE),
-            repo.visibility().to_string(),
-        ),
-    ];
-    for (label, value) in facts {
-        if y >= area.y + area.height {
-            return;
-        }
-        frame.render_widget(
-            Paragraph::new(Line::from(vec![
-                Span::styled(
-                    format!("{label}  "),
-                    Style::default().fg(theme.color("overlay0")),
-                ),
-                Span::styled(
-                    format::truncate(&value, area.width.saturating_sub(9) as usize),
-                    Style::default().fg(theme.color("subtext1")),
-                ),
-            ])),
-            Rect::new(area.x, y, area.width, 1),
-        );
-        y += 1;
-    }
-    if !repo.topics.is_empty() && y < area.y + area.height {
-        y += 1;
-        frame.render_widget(
-            Paragraph::new(icons::label(icons::TAG, "主题"))
+            Paragraph::new(format::truncate(&format::clean_text(&readme.path), 30))
                 .style(Style::default().fg(theme.color("overlay0"))),
-            Rect::new(area.x, y, area.width, 1),
+            Rect::new(area.x + 12, area.y, area.width.saturating_sub(28), 1),
         );
-        y += 1;
-        let mut x = area.x;
-        for topic in repo.topics.iter().take(6) {
-            let label = format!("#{}", format::clean_text(topic));
-            let width = format::text_width(&label) as u16 + 2;
-            if x + width > area.x + area.width {
-                break;
-            }
-            let rect = Rect::new(x, y, width, 1);
-            let action = Action::Topic(topic.clone());
-            let hovered = app.hover.as_ref() == Some(&action);
-            fill(
-                frame,
-                rect,
-                if hovered {
-                    theme.color("surface1")
-                } else {
-                    theme.color("surface0")
-                },
-            );
-            frame.render_widget(
-                Paragraph::new(format!(" {label}"))
-                    .style(Style::default().fg(theme.color("mauve"))),
-                rect,
-            );
-            register(hits, rect, action);
-            x += width + 1;
-        }
-        y += 2;
-    }
-
-    if y < area.y + area.height {
+        let open_label = icons::label(icons::EXTERNAL, "去 GitHub 看喵~");
+        let open_width = format::text_width(&open_label) as u16 + 2;
+        let open_rect = Rect::new(
+            area.x + area.width.saturating_sub(open_width),
+            area.y,
+            open_width,
+            1,
+        );
+        let hovered = app.hover == Some(Action::OpenExternal(readme.html_url.clone()));
         frame.render_widget(
-            Paragraph::new(icons::label(icons::TERMINAL, "克隆"))
-                .style(Style::default().fg(theme.color("overlay0"))),
-            Rect::new(area.x, y, area.width, 1),
+            Paragraph::new(open_label).style(if hovered {
+                Style::default().fg(theme.color("blue"))
+            } else {
+                Style::default().fg(theme.color("overlay0"))
+            }),
+            open_rect,
         );
-        y += 1;
+        register(
+            hits,
+            open_rect,
+            Action::OpenExternal(readme.html_url.clone()),
+        );
     }
-    let clone = if repo.ssh_url.is_empty() {
-        format!("https://github.com/{}.git", repo.display_full_name())
-    } else {
-        repo.ssh_url.clone()
+    fill(
+        frame,
+        Rect::new(area.x, area.y + 1, area.width, 1),
+        theme.color("surface0"),
+    );
+    let body = Rect::new(
+        area.x + 1,
+        area.y + 2,
+        area.width.saturating_sub(2),
+        area.height.saturating_sub(2),
+    );
+    if let Some(loading) = app.readme_loading.as_ref()
+        && loading == &repo_name
+    {
+        frame.render_widget(
+            Paragraph::new(format!("{} 人家正在读 README 喵~...", app.spinner()))
+                .style(Style::default().fg(theme.color("peach"))),
+            Rect::new(body.x, body.y, body.width, 1),
+        );
+        return;
+    }
+    let Some(readme) = app.readme.as_ref() else {
+        draw_center_message(
+            frame,
+            theme,
+            body,
+            "README 还没到喵~",
+            "点一下刷新，或者稍后再看看嘛喵~",
+        );
+        return;
     };
-    if y < area.y + area.height {
-        frame.render_widget(
-            Paragraph::new(format::truncate(&clone, area.width as usize))
-                .style(Style::default().fg(theme.color("subtext1"))),
-            Rect::new(area.x, y, area.width, 1),
-        );
-        y += 1;
+    let lines = markdown_lines(&readme.content, body.width as usize, theme);
+    app.readme_scroll_max = lines.len().saturating_sub(body.height as usize) as u16;
+    app.readme_scroll = app.readme_scroll.min(app.readme_scroll_max);
+    frame.render_widget(
+        Paragraph::new(Text::from(lines)).scroll((app.readme_scroll, 0)),
+        body,
+    );
+}
+
+fn file_icon(name: &str) -> &'static str {
+    let lower = name.to_ascii_lowercase();
+    if lower.ends_with(".md") || lower.ends_with(".markdown") {
+        icons::BOOK
+    } else if lower.ends_with(".rs")
+        || lower.ends_with(".py")
+        || lower.ends_with(".js")
+        || lower.ends_with(".ts")
+        || lower.ends_with(".go")
+        || lower.ends_with(".toml")
+        || lower.ends_with(".json")
+        || lower.ends_with(".yaml")
+        || lower.ends_with(".yml")
+    {
+        icons::CODE_FILE
+    } else {
+        icons::FILE
     }
-    let mut x = area.x;
-    for (label, action) in [
-        (&*icons::label(icons::COPY, "复制克隆"), Action::CopyClone),
-        (
-            &*icons::label(icons::DOWNLOAD, "下载源码"),
-            Action::SourceZip,
-        ),
-    ] {
-        if y >= area.y + area.height {
-            return;
+}
+
+fn markdown_lines(text: &str, width: usize, theme: &Theme) -> Vec<Line<'static>> {
+    let width = width.max(10);
+    let mut out: Vec<Line<'static>> = Vec::new();
+    let mut in_code = false;
+    for raw in text.lines() {
+        let trimmed = raw.trim_end();
+        if trimmed.trim_start().starts_with("```") {
+            in_code = !in_code;
+            continue;
         }
-        let width = format::text_width(label) as u16 + 4;
-        if x + width > area.x + area.width {
+        if trimmed.trim_start().starts_with("<!--") {
+            continue;
+        }
+        let clean = format::clean_text(trimmed);
+        if clean.is_empty() {
+            if out.last().is_some_and(|line| line.width() > 0) {
+                out.push(Line::default());
+            }
+            continue;
+        }
+        if in_code {
+            for line in format::wrap_text(&clean, width, 4) {
+                out.push(Line::from(Span::styled(
+                    line,
+                    Style::default().fg(theme.color("overlay1")),
+                )));
+            }
+            continue;
+        }
+        let heading = clean.starts_with('#');
+        let list = clean.starts_with("- ") || clean.starts_with("* ") || clean.starts_with("+ ");
+        let plain = if heading {
+            strip_markdown_inline(clean.trim_start_matches('#').trim())
+        } else {
+            strip_markdown_inline(&clean)
+        };
+        let prefix = if heading {
+            "".to_string()
+        } else if list {
+            "  • ".to_string()
+        } else {
+            "".to_string()
+        };
+        let text = if list {
+            plain
+                .trim_start_matches(['-', '*', '+'])
+                .trim_start()
+                .to_string()
+        } else {
+            plain
+        };
+        let style = if heading {
+            Style::default()
+                .fg(theme.color("blue"))
+                .add_modifier(Modifier::BOLD)
+        } else {
+            Style::default().fg(theme.color("subtext0"))
+        };
+        for line in format::wrap_text(&format!("{prefix}{text}"), width, 3) {
+            out.push(Line::from(Span::styled(line, style)));
+        }
+        if heading {
+            out.push(Line::default());
+        }
+        if out.len() > 1600 {
             break;
         }
-        draw_button(
-            frame,
-            app,
-            theme,
-            hits,
-            Rect::new(x, y, width, 1),
-            label,
-            action,
-            false,
-        );
-        x += width + 1;
     }
-    if y + 2 < area.y + area.height {
-        frame.render_widget(
-            Paragraph::new(format!("{} 发行版下载会走 v4.gh-proxy.org", icons::NETWORK))
-                .style(Style::default().fg(theme.color("overlay0"))),
-            Rect::new(area.x, y + 2, area.width, 1),
-        );
+    if out.is_empty() {
+        out.push(Line::from("这个 README 空空的，人家什么也没读到喵~"));
     }
+    out
+}
+
+fn strip_markdown_images(text: &str) -> String {
+    let chars: Vec<char> = text.chars().collect();
+    let mut out = String::new();
+    let mut index = 0;
+    while index < chars.len() {
+        if chars[index] == '!' && chars.get(index + 1) == Some(&'[') {
+            let mut cursor = index + 2;
+            let mut depth = 1;
+            while cursor < chars.len() && depth > 0 {
+                match chars[cursor] {
+                    '[' => depth += 1,
+                    ']' => depth -= 1,
+                    _ => {}
+                }
+                cursor += 1;
+            }
+            if chars.get(cursor) == Some(&'(') {
+                cursor += 1;
+                let mut paren = 1;
+                while cursor < chars.len() && paren > 0 {
+                    match chars[cursor] {
+                        '(' => paren += 1,
+                        ')' => paren -= 1,
+                        _ => {}
+                    }
+                    cursor += 1;
+                }
+            }
+            index = cursor;
+            continue;
+        }
+        out.push(chars[index]);
+        index += 1;
+    }
+    out
+}
+
+fn strip_markdown_inline(text: &str) -> String {
+    let text = strip_markdown_images(text);
+    let mut out = String::new();
+    let mut chars = text.chars().peekable();
+    while let Some(ch) = chars.next() {
+        match ch {
+            '!' if chars.peek() == Some(&'[') => {
+                chars.next();
+                let mut alt = String::new();
+                let mut depth = 1;
+                for inner in chars.by_ref() {
+                    if inner == '[' {
+                        depth += 1;
+                    } else if inner == ']' {
+                        depth -= 1;
+                        if depth == 0 {
+                            break;
+                        }
+                    }
+                    alt.push(inner);
+                }
+                if chars.peek() == Some(&'(') {
+                    chars.next();
+                    for inner in chars.by_ref() {
+                        if inner == ')' {
+                            break;
+                        }
+                    }
+                }
+                out.push_str(&alt);
+            }
+            '[' => {
+                let mut label = String::new();
+                let mut found = false;
+                for inner in chars.by_ref() {
+                    if inner == ']' {
+                        found = true;
+                        break;
+                    }
+                    label.push(inner);
+                }
+                if found && chars.peek() == Some(&'(') {
+                    chars.next();
+                    for inner in chars.by_ref() {
+                        if inner == ')' {
+                            break;
+                        }
+                    }
+                }
+                out.push_str(&label);
+            }
+            '*' | '_' | '`' | '~' => {}
+            '<' => {
+                for inner in chars.by_ref() {
+                    if inner == '>' {
+                        break;
+                    }
+                }
+            }
+            _ => out.push(ch),
+        }
+    }
+    let cleaned = out.trim().to_string();
+    format::clean_text(&cleaned)
 }
 
 fn draw_settings_page(
@@ -2043,7 +2868,7 @@ fn draw_settings_page(
     let inner = Rect::new(left, area.y + 1, width, area.height.saturating_sub(2));
     app.layout.settings = inner;
     frame.render_widget(
-        Paragraph::new(icons::label(icons::SETTINGS, "设置")).style(
+        Paragraph::new(icons::label(icons::SETTINGS, "设置喵~")).style(
             Style::default()
                 .fg(theme.color("text"))
                 .add_modifier(Modifier::BOLD),
@@ -2051,49 +2876,32 @@ fn draw_settings_page(
         Rect::new(inner.x, inner.y, inner.width, 1),
     );
     frame.render_widget(
-        Paragraph::new("改动会写进本机的配置文件里，保存之后才算数哦。")
+        Paragraph::new("想改什么就点一点，改完记得让人家保存哦喵~")
             .style(Style::default().fg(theme.color("subtext0"))),
         Rect::new(inner.x, inner.y + 1, inner.width, 1),
     );
     let actions_y = inner.y + inner.height.saturating_sub(2);
-    let mut y = inner.y + 3;
+    let mut y = inner.y + 2;
 
-    let config_rect = Rect::new(inner.x, y, inner.width, 3);
-    fill(frame, config_rect, theme.color("mantle"));
     frame.render_widget(
-        Block::new()
-            .borders(Borders::ALL)
-            .border_style(Style::default().fg(theme.color("surface0"))),
-        config_rect,
-    );
-    frame.render_widget(
-        Paragraph::new(icons::label(icons::TERMINAL, "配置文件"))
-            .style(Style::default().fg(theme.color("overlay0"))),
-        Rect::new(
-            config_rect.x + 2,
-            config_rect.y,
-            config_rect.width.saturating_sub(4),
-            1,
-        ),
-    );
-    frame.render_widget(
-        Paragraph::new(format::truncate(
-            &app.config_file_label(),
-            config_rect.width.saturating_sub(4) as usize,
+        Paragraph::new(format!(
+            "{} 配置文件  {}喵~",
+            icons::TERMINAL,
+            format::truncate(
+                &app.config_file_label(),
+                inner.width.saturating_sub(14) as usize
+            )
         ))
-        .style(Style::default().fg(theme.color("subtext1"))),
-        Rect::new(
-            config_rect.x + 2,
-            config_rect.y + 1,
-            config_rect.width.saturating_sub(4),
-            1,
-        ),
+        .style(Style::default().fg(theme.color("overlay0"))),
+        Rect::new(inner.x, y, inner.width, 1),
     );
-    y = config_rect.y + 4;
+    y += 2;
 
     if y + 5 < actions_y {
+        let theme_header = icons::label(icons::PALETTE, "主题喵~");
+        let theme_offset = format::text_width(&theme_header) as u16 + 2;
         frame.render_widget(
-            Paragraph::new(icons::label(icons::PALETTE, "主题")).style(
+            Paragraph::new(theme_header).style(
                 Style::default()
                     .fg(theme.color("text"))
                     .add_modifier(Modifier::BOLD),
@@ -2101,9 +2909,14 @@ fn draw_settings_page(
             Rect::new(inner.x, y, inner.width, 1),
         );
         frame.render_widget(
-            Paragraph::new("Catppuccin 四套配色，点一下就能换。")
+            Paragraph::new("Catppuccin 四套配色，点一下就能换啦喵~")
                 .style(Style::default().fg(theme.color("overlay0"))),
-            Rect::new(inner.x + 8, y, inner.width.saturating_sub(8), 1),
+            Rect::new(
+                inner.x + theme_offset,
+                y,
+                inner.width.saturating_sub(theme_offset),
+                1,
+            ),
         );
         y += 1;
         let gap = 1_u16;
@@ -2123,61 +2936,154 @@ fn draw_settings_page(
         y += 5;
     }
 
-    let mut proxy_input_rect = None;
-    if y + 3 < actions_y {
-        frame.render_widget(
-            Paragraph::new(icons::label(icons::NETWORK, "网络")).style(
-                Style::default()
-                    .fg(theme.color("text"))
-                    .add_modifier(Modifier::BOLD),
-            ),
-            Rect::new(inner.x, y, inner.width, 1),
+    if y + 6 < actions_y {
+        let gap = 2_u16;
+        let column_width = (inner.width.saturating_sub(gap)) / 2;
+        let left_column = Rect::new(inner.x, y, column_width, actions_y - y);
+        let right_column = Rect::new(
+            inner.x + column_width + gap,
+            y,
+            inner.width.saturating_sub(column_width + gap),
+            actions_y - y,
         );
-        frame.render_widget(
-            Paragraph::new("公开 API 与发行版走代理；认证请求直连 GitHub。")
-                .style(Style::default().fg(theme.color("overlay0"))),
-            Rect::new(inner.x + 8, y, inner.width.saturating_sub(8), 1),
-        );
-        y += 1;
-        let proxy_rect = Rect::new(inner.x, y, inner.width, 2);
-        draw_proxy_row(frame, app, theme, proxy_rect, hits);
-        proxy_input_rect = Some(Rect::new(
-            inner.x + 2,
-            proxy_rect.y + 1,
-            inner.width.saturating_sub(4),
-            1,
-        ));
-        y = proxy_rect.y + 2;
-    }
 
-    if y + 4 < actions_y {
+        let preview_header = icons::label(icons::BOOK, "仓库预览喵~");
+        let preview_offset = format::text_width(&preview_header) as u16 + 2;
         frame.render_widget(
-            Paragraph::new(icons::label(icons::DATABASE, "缓存")).style(
+            Paragraph::new(preview_header).style(
                 Style::default()
                     .fg(theme.color("text"))
                     .add_modifier(Modifier::BOLD),
             ),
-            Rect::new(inner.x, y, inner.width, 1),
+            Rect::new(left_column.x, y, left_column.width, 1),
+        );
+        frame.render_widget(
+            Paragraph::new("默认关闭，人家不会偷偷去取喵~")
+                .style(Style::default().fg(theme.color("overlay0"))),
+            Rect::new(
+                left_column.x + preview_offset,
+                y,
+                left_column.width.saturating_sub(preview_offset),
+                1,
+            ),
+        );
+        draw_toggle_row(
+            frame,
+            app,
+            theme,
+            hits,
+            Rect::new(left_column.x, y + 1, left_column.width, 1),
+            1,
+            "文件树预览喵~",
+            app.config.show_file_tree,
+            Action::ToggleFileTree,
+        );
+        draw_toggle_row(
+            frame,
+            app,
+            theme,
+            hits,
+            Rect::new(left_column.x, y + 2, left_column.width, 1),
+            2,
+            "README 预览喵~",
+            app.config.show_readme,
+            Action::ToggleReadme,
+        );
+        frame.render_widget(
+            Paragraph::new(icons::label(icons::DOWNLOAD, "下载喵~")).style(
+                Style::default()
+                    .fg(theme.color("text"))
+                    .add_modifier(Modifier::BOLD),
+            ),
+            Rect::new(left_column.x, y + 4, left_column.width, 1),
+        );
+        draw_download_dir_row(
+            frame,
+            app,
+            theme,
+            hits,
+            Rect::new(left_column.x, y + 5, left_column.width, 1),
+        );
+        let open_dir = icons::label(icons::DOWNLOAD_DIR, "打开下载目录喵~");
+        let open_width = format::text_width(&open_dir) as u16 + 4;
+        if y + 6 < actions_y {
+            draw_button(
+                frame,
+                app,
+                theme,
+                hits,
+                Rect::new(left_column.x, y + 6, open_width, 1),
+                &open_dir,
+                Action::OpenDownloadDir,
+                false,
+            );
+            frame.render_widget(
+                Paragraph::new("同名文件会自动改名，不会覆盖旧的哦喵~")
+                    .style(Style::default().fg(theme.color("overlay0"))),
+                Rect::new(left_column.x, y + 7, left_column.width.saturating_sub(2), 1),
+            );
+        }
+
+        let network_header = icons::label(icons::NETWORK, "网络喵~");
+        let network_offset = format::text_width(&network_header) as u16 + 2;
+        frame.render_widget(
+            Paragraph::new(network_header).style(
+                Style::default()
+                    .fg(theme.color("text"))
+                    .add_modifier(Modifier::BOLD),
+            ),
+            Rect::new(right_column.x, y, right_column.width, 1),
+        );
+        frame.render_widget(
+            Paragraph::new("公开接口先走代理，认证请求直连 GitHub 哦喵~")
+                .style(Style::default().fg(theme.color("overlay0"))),
+            Rect::new(
+                right_column.x + network_offset,
+                y,
+                right_column.width.saturating_sub(network_offset),
+                1,
+            ),
+        );
+        draw_proxy_row(
+            frame,
+            app,
+            theme,
+            hits,
+            Rect::new(right_column.x, y + 1, right_column.width, 1),
+        );
+        let cache_header = icons::label(icons::DATABASE, "缓存喵~");
+        let cache_offset = format::text_width(&cache_header) as u16 + 2;
+        frame.render_widget(
+            Paragraph::new(cache_header).style(
+                Style::default()
+                    .fg(theme.color("text"))
+                    .add_modifier(Modifier::BOLD),
+            ),
+            Rect::new(right_column.x, y + 3, right_column.width, 1),
         );
         frame.render_widget(
             Paragraph::new(format!(
-                "{} 个文件 · {}",
+                "{} 个文件 · {}喵~",
                 app.cache_stats.files,
                 format::format_size(app.cache_stats.bytes)
             ))
             .style(Style::default().fg(theme.color("overlay0"))),
-            Rect::new(inner.x + 8, y, inner.width.saturating_sub(8), 1),
+            Rect::new(
+                right_column.x + cache_offset,
+                y + 3,
+                right_column.width.saturating_sub(cache_offset),
+                1,
+            ),
         );
-        y += 1;
         for (index, (label, kind)) in [
-            ("仓库缓存", TtlKind::Repositories),
-            ("详情缓存", TtlKind::Detail),
-            ("搜索缓存", TtlKind::Search),
+            ("仓库列表喵~", TtlKind::Repositories),
+            ("详情与发行版喵~", TtlKind::Detail),
+            ("搜索结果喵~", TtlKind::Search),
         ]
         .into_iter()
         .enumerate()
         {
-            if y >= actions_y {
+            if y + 4 + index as u16 >= actions_y {
                 break;
             }
             draw_ttl_row(
@@ -2185,19 +3091,18 @@ fn draw_settings_page(
                 app,
                 theme,
                 hits,
-                Rect::new(inner.x, y, inner.width, 1),
+                Rect::new(right_column.x, y + 4 + index as u16, right_column.width, 1),
                 label,
                 kind,
-                2 + index,
+                5 + index,
             );
-            y += 1;
         }
     }
 
     let mut x = inner.x;
     let save_action = Action::SaveConfig;
     let save_hover = app.hover.as_ref() == Some(&save_action);
-    let save_width = 16;
+    let save_width = 18;
     fill(
         frame,
         Rect::new(x, actions_y, save_width, 1),
@@ -2208,7 +3113,7 @@ fn draw_settings_page(
         },
     );
     frame.render_widget(
-        Paragraph::new(format!("{} 保存配置", icons::SAVE))
+        Paragraph::new(format!("{} 保存设置喵~", icons::SAVE))
             .alignment(Alignment::Center)
             .style(
                 Style::default()
@@ -2221,7 +3126,7 @@ fn draw_settings_page(
     x += save_width + 1;
     let clear_action = Action::ClearCache;
     let clear_hover = app.hover.as_ref() == Some(&clear_action);
-    let clear_width = 14;
+    let clear_width = 16;
     fill(
         frame,
         Rect::new(x, actions_y, clear_width, 1),
@@ -2232,7 +3137,7 @@ fn draw_settings_page(
         },
     );
     frame.render_widget(
-        Paragraph::new(format!("{} 清理缓存", icons::TRASH))
+        Paragraph::new(format!("{} 清掉缓存喵~", icons::TRASH))
             .alignment(Alignment::Center)
             .style(Style::default().fg(theme.color("red"))),
         Rect::new(x, actions_y, clear_width, 1),
@@ -2240,21 +3145,112 @@ fn draw_settings_page(
     register(hits, Rect::new(x, actions_y, clear_width, 1), clear_action);
     if app.config_dirty {
         frame.render_widget(
-            Paragraph::new("有未保存的改动")
+            Paragraph::new("有改动还没保存呢喵~")
                 .alignment(Alignment::Right)
                 .style(Style::default().fg(theme.color("peach"))),
             Rect::new(inner.x, actions_y, inner.width, 1),
         );
     }
-    if app.editing_proxy
-        && let Some(input_rect) = proxy_input_rect
-    {
-        let (_, cursor_column) = visible_input(&app.proxy_input, true, input_rect.width);
-        let x = input_rect
-            .x
-            .saturating_add(cursor_column.min(input_rect.width.saturating_sub(1)));
-        frame.set_cursor_position(Position::new(x, input_rect.y));
+}
+
+#[allow(clippy::too_many_arguments)]
+fn draw_toggle_row(
+    frame: &mut Frame,
+    app: &App,
+    theme: &Theme,
+    hits: &mut Vec<HitBox>,
+    rect: Rect,
+    row: usize,
+    label: &str,
+    enabled: bool,
+    action: Action,
+) {
+    if app.settings_row == row {
+        fill(frame, rect, theme.color("surface0"));
     }
+    let icon = if enabled {
+        icons::CHECK_SQUARE
+    } else {
+        icons::SQUARE
+    };
+    frame.render_widget(
+        Paragraph::new(format!("{icon} {label}")).style(if enabled {
+            Style::default()
+                .fg(theme.color("green"))
+                .add_modifier(Modifier::BOLD)
+        } else {
+            Style::default().fg(theme.color("subtext1"))
+        }),
+        Rect::new(rect.x + 1, rect.y, rect.width.saturating_sub(12), 1),
+    );
+    frame.render_widget(
+        Paragraph::new(if enabled {
+            "已开启喵~"
+        } else {
+            "已关闭喵~"
+        })
+        .alignment(Alignment::Right)
+        .style(Style::default().fg(theme.color("overlay0"))),
+        Rect::new(rect.x, rect.y, rect.width.saturating_sub(1), 1),
+    );
+    register(hits, rect, action);
+}
+
+fn draw_download_dir_row(
+    frame: &mut Frame,
+    app: &App,
+    theme: &Theme,
+    hits: &mut Vec<HitBox>,
+    rect: Rect,
+) {
+    if app.settings_row == 3 {
+        fill(frame, rect, theme.color("surface0"));
+    }
+    frame.render_widget(
+        Paragraph::new("下载目录喵~").style(Style::default().fg(theme.color("subtext1"))),
+        Rect::new(rect.x + 1, rect.y, 12, 1),
+    );
+    if app.editing_download_dir {
+        let input_width = rect.width.saturating_sub(14);
+        let (visible, cursor_column) = visible_input(&app.download_input, true, input_width);
+        frame.render_widget(
+            Paragraph::new(visible).style(Style::default().fg(theme.color("text"))),
+            Rect::new(rect.x + 13, rect.y, input_width, 1),
+        );
+        let x = rect
+            .x
+            .saturating_add(13)
+            .saturating_add(cursor_column.min(input_width.saturating_sub(1)));
+        frame.set_cursor_position(Position::new(x, rect.y));
+        return;
+    }
+    let path = format::truncate(
+        &app.download_path_label(),
+        rect.width.saturating_sub(22) as usize,
+    );
+    frame.render_widget(
+        Paragraph::new(path).style(Style::default().fg(theme.color("subtext0"))),
+        Rect::new(rect.x + 13, rect.y, rect.width.saturating_sub(23), 1),
+    );
+    let edit_action = Action::StartDownloadDirEdit;
+    let edit_width = 8;
+    let edit_rect = Rect::new(
+        rect.x + rect.width.saturating_sub(edit_width),
+        rect.y,
+        edit_width,
+        1,
+    );
+    draw_button(
+        frame,
+        app,
+        theme,
+        hits,
+        edit_rect,
+        "编辑喵~",
+        edit_action,
+        false,
+    );
+    register(hits, rect, Action::SetSettingsRow(3));
 }
 
 fn draw_theme_card(
@@ -2314,61 +3310,48 @@ fn draw_theme_card(
     register(hits, area, action);
 }
 
-fn draw_proxy_row(frame: &mut Frame, app: &App, theme: &Theme, area: Rect, hits: &mut Vec<HitBox>) {
-    let row = Rect::new(area.x, area.y, area.width, 1);
-    if app.settings_row == 1 {
-        fill(frame, row, theme.color("surface0"));
+fn draw_proxy_row(frame: &mut Frame, app: &App, theme: &Theme, hits: &mut Vec<HitBox>, rect: Rect) {
+    if app.settings_row == 4 {
+        fill(frame, rect, theme.color("surface0"));
     }
     frame.render_widget(
-        Paragraph::new("API 代理").style(Style::default().fg(theme.color("subtext1"))),
-        Rect::new(row.x + 1, row.y, 10, 1),
+        Paragraph::new("API 代理喵~").style(Style::default().fg(theme.color("subtext1"))),
+        Rect::new(rect.x + 1, rect.y, 12, 1),
     );
     if app.editing_proxy {
-        fill(
-            frame,
-            Rect::new(area.x, area.y + 1, area.width, 1),
-            theme.color("mantle"),
-        );
-        let input_width = area.width.saturating_sub(3);
-        let (visible, _) = visible_input(&app.proxy_input, true, input_width);
+        let input_width = rect.width.saturating_sub(14);
+        let (visible, cursor_column) = visible_input(&app.proxy_input, true, input_width);
         frame.render_widget(
-            Paragraph::new(format::truncate(&visible, input_width as usize))
-                .style(Style::default().fg(theme.color("text"))),
-            Rect::new(area.x + 2, area.y + 1, input_width, 1),
+            Paragraph::new(visible).style(Style::default().fg(theme.color("text"))),
+            Rect::new(rect.x + 13, rect.y, input_width, 1),
         );
+        let x = rect
+            .x
+            .saturating_add(13)
+            .saturating_add(cursor_column.min(input_width.saturating_sub(1)));
+        frame.set_cursor_position(Position::new(x, rect.y));
         return;
     }
-    let proxy = format::truncate(app.client.proxy(), area.width.saturating_sub(14) as usize);
     frame.render_widget(
-        Paragraph::new(proxy).style(Style::default().fg(theme.color("subtext0"))),
-        Rect::new(area.x + 10, row.y, area.width.saturating_sub(20), 1),
+        Paragraph::new(format::truncate(
+            app.client.proxy(),
+            rect.width.saturating_sub(23) as usize,
+        ))
+        .style(Style::default().fg(theme.color("subtext0"))),
+        Rect::new(rect.x + 13, rect.y, rect.width.saturating_sub(23), 1),
     );
-    let edit_action = Action::StartProxyEdit;
-    let edit_width = 8;
-    let edit_rect = Rect::new(
-        area.x + area.width.saturating_sub(edit_width),
-        row.y,
-        edit_width,
-        1,
-    );
-    let hovered = app.hover.as_ref() == Some(&edit_action);
-    fill(
+    let edit_rect = Rect::new(rect.x + rect.width.saturating_sub(9), rect.y, 8, 1);
+    draw_button(
         frame,
+        app,
+        theme,
+        hits,
         edit_rect,
-        if hovered {
-            theme.color("surface1")
-        } else {
-            theme.color("surface0")
-        },
+        "编辑喵~",
+        Action::StartProxyEdit,
+        false,
     );
-    frame.render_widget(
-        Paragraph::new("编辑")
-            .alignment(Alignment::Center)
-            .style(Style::default().fg(theme.color("text"))),
-        edit_rect,
-    );
-    register(hits, row, Action::SetSettingsRow(1));
-    register(hits, edit_rect, edit_action);
+    register(hits, rect, Action::SetSettingsRow(4));
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -2388,7 +3371,7 @@ fn draw_ttl_row(
     }
     frame.render_widget(
         Paragraph::new(label).style(Style::default().fg(theme.color("subtext1"))),
-        Rect::new(area.x + 1, area.y, 12, 1),
+        Rect::new(area.x + 1, area.y, 16, 1),
     );
     let value = match kind {
         TtlKind::Repositories => app.config.repos_ttl_secs,
@@ -2397,7 +3380,7 @@ fn draw_ttl_row(
     };
     frame.render_widget(
         Paragraph::new(format::ttl_label(value)).style(Style::default().fg(theme.color("text"))),
-        Rect::new(area.x + 14, area.y, 12, 1),
+        Rect::new(area.x + 17, area.y, 12, 1),
     );
     let minus = Action::Ttl(kind, -1);
     let plus = Action::Ttl(kind, 1);
@@ -2547,7 +3530,313 @@ fn draw_center_message(frame: &mut Frame, theme: &Theme, area: Rect, title: &str
     );
 }
 
-fn draw_help(frame: &mut Frame, _app: &App, theme: &Theme, area: Rect, hits: &mut Vec<HitBox>) {
+fn draw_repo_edit_overlay(
+    frame: &mut Frame,
+    app: &mut App,
+    theme: &Theme,
+    area: Rect,
+    hits: &mut Vec<HitBox>,
+) {
+    let Some(edit) = app.repo_edit.clone() else {
+        return;
+    };
+    let width = area.width.saturating_sub(12).min(72);
+    let height = area.height.saturating_sub(8).min(18);
+    let rect = Rect::new(
+        area.x + (area.width.saturating_sub(width)) / 2,
+        area.y + (area.height.saturating_sub(height)) / 2,
+        width,
+        height,
+    );
+    app.layout.overlay = rect;
+    frame.render_widget(Clear, rect);
+    fill(frame, rect, theme.color("mantle"));
+    frame.render_widget(
+        Block::new()
+            .borders(Borders::ALL)
+            .border_style(Style::default().fg(theme.color("blue"))),
+        rect,
+    );
+    let inner = Rect::new(
+        rect.x + 2,
+        rect.y + 1,
+        rect.width.saturating_sub(4),
+        rect.height.saturating_sub(2),
+    );
+    frame.render_widget(
+        Paragraph::new(icons::label(icons::COGS, "改改自己的仓库喵~")).style(
+            Style::default()
+                .fg(theme.color("text"))
+                .add_modifier(Modifier::BOLD),
+        ),
+        Rect::new(inner.x, inner.y, inner.width.saturating_sub(12), 1),
+    );
+    frame.render_widget(
+        Paragraph::new(format::truncate(
+            &format!("{} 只会改你自己的仓库喵~", edit.full_name),
+            inner.width as usize,
+        ))
+        .style(Style::default().fg(theme.color("overlay0"))),
+        Rect::new(inner.x, inner.y + 1, inner.width, 1),
+    );
+
+    let mut y = inner.y + 3;
+    for (row, label) in ["简介", "主页", "主题", "可见性", "归档"]
+        .iter()
+        .enumerate()
+    {
+        if y >= inner.y + inner.height - 3 {
+            break;
+        }
+        let active = edit.row == row;
+        let editing = active && edit.editing;
+        if active {
+            fill(
+                frame,
+                Rect::new(inner.x, y, inner.width, 1),
+                theme.color("surface0"),
+            );
+        }
+        frame.render_widget(
+            Paragraph::new(format!("{label}喵~")).style(if active {
+                Style::default()
+                    .fg(theme.color("blue"))
+                    .add_modifier(Modifier::BOLD)
+            } else {
+                Style::default().fg(theme.color("subtext0"))
+            }),
+            Rect::new(inner.x + 1, y, 11, 1),
+        );
+        let value_x = inner.x + 12;
+        let value_width = inner.width.saturating_sub(12);
+        let (value, cursor) = match row {
+            0 => visible_input(&edit.description, editing, value_width),
+            1 => visible_input(&edit.homepage, editing, value_width),
+            2 => visible_input(&edit.topics, editing, value_width),
+            3 => (
+                if edit.private {
+                    "私有 · 只有自己能看到喵~".to_string()
+                } else {
+                    "公开 · 大家都看得到喵~".to_string()
+                },
+                0,
+            ),
+            _ => (
+                if edit.archived {
+                    "已归档 · 只读状态喵~".to_string()
+                } else {
+                    "正常 · 还能继续折腾喵~".to_string()
+                },
+                0,
+            ),
+        };
+        let empty = match row {
+            0 => edit.description.is_empty(),
+            1 => edit.homepage.is_empty(),
+            2 => edit.topics.is_empty(),
+            _ => false,
+        };
+        let placeholder = match row {
+            0 => "还没写简介喵~",
+            1 => "没有主页喵~",
+            2 => "还没有主题喵~",
+            _ => "",
+        };
+        let shown = if empty {
+            placeholder.to_string()
+        } else {
+            value
+        };
+        frame.render_widget(
+            Paragraph::new(format::truncate(&shown, value_width as usize)).style(if empty {
+                Style::default().fg(theme.color("overlay0"))
+            } else {
+                Style::default().fg(theme.color("text"))
+            }),
+            Rect::new(value_x, y, value_width, 1),
+        );
+        if editing && !empty {
+            let cursor_x = value_x.saturating_add(cursor.min(value_width.saturating_sub(1)));
+            frame.set_cursor_position(Position::new(cursor_x, y));
+        }
+        register(
+            hits,
+            Rect::new(inner.x, y, inner.width, 1),
+            Action::EditRepoRow(row),
+        );
+        y += 1;
+    }
+
+    if let Some(error) = edit.error.as_deref() {
+        frame.render_widget(
+            Paragraph::new(format::truncate(error, inner.width as usize))
+                .style(Style::default().fg(theme.color("red"))),
+            Rect::new(inner.x, y + 1, inner.width, 1),
+        );
+    }
+
+    let actions_y = inner.y + inner.height.saturating_sub(2);
+    let save_label = if edit.saving {
+        format!("{} 保存中喵~", app.spinner())
+    } else {
+        icons::label(icons::SAVE, "保存喵~")
+    };
+    let save_width = format::text_width(&save_label) as u16 + 4;
+    draw_button(
+        frame,
+        app,
+        theme,
+        hits,
+        Rect::new(inner.x, actions_y, save_width, 1),
+        &save_label,
+        Action::SaveRepoEdit,
+        true,
+    );
+    draw_button(
+        frame,
+        app,
+        theme,
+        hits,
+        Rect::new(inner.x + save_width + 2, actions_y, 12, 1),
+        "取消喵~",
+        Action::CloseOverlay,
+        false,
+    );
+    if actions_y > inner.y + 2 {
+        frame.render_widget(
+            Paragraph::new("j/k 选   Enter 改   Ctrl+S 保存   Esc 关掉喵~")
+                .alignment(Alignment::Right)
+                .style(Style::default().fg(theme.color("overlay0"))),
+            Rect::new(inner.x, actions_y - 2, inner.width, 1),
+        );
+    }
+}
+
+fn draw_languages_overlay(
+    frame: &mut Frame,
+    app: &mut App,
+    theme: &Theme,
+    area: Rect,
+    hits: &mut Vec<HitBox>,
+) {
+    let choices = app.language_choices();
+    let width = area.width.saturating_sub(12).min(58);
+    let height = area.height.saturating_sub(8).clamp(10, 24);
+    let rect = Rect::new(
+        area.x + (area.width.saturating_sub(width)) / 2,
+        area.y + (area.height.saturating_sub(height)) / 2,
+        width,
+        height,
+    );
+    app.layout.overlay = rect;
+    frame.render_widget(Clear, rect);
+    fill(frame, rect, theme.color("mantle"));
+    frame.render_widget(
+        Block::new()
+            .borders(Borders::ALL)
+            .border_style(Style::default().fg(theme.color("blue"))),
+        rect,
+    );
+    let inner = Rect::new(
+        rect.x + 2,
+        rect.y + 1,
+        rect.width.saturating_sub(4),
+        rect.height.saturating_sub(2),
+    );
+    frame.render_widget(
+        Paragraph::new(icons::label(icons::CODE, "挑一个语言喵~")).style(
+            Style::default()
+                .fg(theme.color("text"))
+                .add_modifier(Modifier::BOLD),
+        ),
+        Rect::new(inner.x, inner.y, inner.width.saturating_sub(10), 1),
+    );
+    let close = Rect::new(inner.x + inner.width.saturating_sub(9), inner.y, 9, 1);
+    draw_button(
+        frame,
+        app,
+        theme,
+        hits,
+        close,
+        "关掉喵~",
+        Action::CloseOverlay,
+        false,
+    );
+    frame.render_widget(
+        Paragraph::new(format!("一共 {} 项，人家都给你列出来啦喵~", choices.len()))
+            .style(Style::default().fg(theme.color("overlay0"))),
+        Rect::new(inner.x, inner.y + 1, inner.width, 1),
+    );
+    let list = Rect::new(
+        inner.x,
+        inner.y + 3,
+        inner.width,
+        inner.height.saturating_sub(4),
+    );
+    app.language_viewport = list.height as usize;
+    let max_offset = choices.len().saturating_sub(app.language_viewport.max(1));
+    app.language_offset = app.language_offset.min(max_offset);
+    for (row, (value, label, count)) in choices
+        .iter()
+        .skip(app.language_offset)
+        .take(app.language_viewport)
+        .enumerate()
+    {
+        let index = app.language_offset + row;
+        let rect = Rect::new(list.x, list.y + row as u16, list.width, 1);
+        let active = value.as_deref() == app.language_filter.as_deref();
+        let selected = index == app.language_selected;
+        if active || selected {
+            fill(
+                frame,
+                rect,
+                if active {
+                    theme.color("surface1")
+                } else {
+                    theme.color("surface0")
+                },
+            );
+        }
+        if active {
+            fill(frame, Rect::new(rect.x, rect.y, 1, 1), theme.color("blue"));
+        }
+        frame.render_widget(
+            Paragraph::new(format!(
+                "{} {}",
+                if active { icons::CHECK } else { icons::SQUARE },
+                label
+            ))
+            .style(if active {
+                Style::default()
+                    .fg(theme.color("blue"))
+                    .add_modifier(Modifier::BOLD)
+            } else {
+                Style::default().fg(theme.color("subtext1"))
+            }),
+            Rect::new(rect.x + 1, rect.y, rect.width.saturating_sub(10), 1),
+        );
+        frame.render_widget(
+            Paragraph::new(count.to_string())
+                .alignment(Alignment::Right)
+                .style(Style::default().fg(theme.color("overlay0"))),
+            Rect::new(rect.x, rect.y, rect.width.saturating_sub(2), 1),
+        );
+        register(hits, rect, Action::Language(value.clone()));
+    }
+    frame.render_widget(
+        Paragraph::new("j/k 挑选   Enter 决定   Esc 关掉喵~")
+            .alignment(Alignment::Center)
+            .style(Style::default().fg(theme.color("overlay0"))),
+        Rect::new(
+            inner.x,
+            inner.y + inner.height.saturating_sub(1),
+            inner.width,
+            1,
+        ),
+    );
+}
+
+fn draw_help(frame: &mut Frame, app: &mut App, theme: &Theme, area: Rect, hits: &mut Vec<HitBox>) {
     let width = area.width.saturating_sub(10).min(76);
     let height = area.height.saturating_sub(6).min(22);
     let rect = Rect::new(
@@ -2571,17 +3860,31 @@ fn draw_help(frame: &mut Frame, _app: &App, theme: &Theme, area: Rect, hits: &mu
         rect.height.saturating_sub(2),
     );
     let lines = [
-        ("页面", "1 仓库   2 收藏   3 搜索   4 设置   Tab 切页"),
-        ("移动", "j / k   上 / 下   g / G   首 / 尾"),
-        ("仓库", "Enter 打开仓库页   o 浏览器   y 复制克隆地址"),
-        ("搜索", "/ 聚焦搜索   Enter 搜索   Esc 离开输入框"),
-        ("设置", "j / k 选择   h / l 调整   Enter 操作   Ctrl+S 保存"),
-        ("鼠标", "单击选择，双击打开仓库页，滚轮滚动列表"),
-        ("返回", "Esc 返回列表   ? 关闭帮助   q 退出"),
+        (
+            "换页喵~",
+            "1 仓库  2 收藏  3 搜索  4 账号  5 设置  Tab 切页喵~",
+        ),
+        (
+            "挑挑喵~",
+            "j / k 上下挑  [ ] 翻页  g / G 首尾页  PgUp/PgDn 翻页喵~",
+        ),
+        ("看仓库喵~", "Enter 进仓库页  o 去浏览器  y 复制克隆地址喵~"),
+        (
+            "改自己喵~",
+            "自己的仓库按 e 改简介、主页、主题、可见性和归档喵~",
+        ),
+        ("找找喵~", "/ 去找仓库  Enter 开找  Esc 离开输入喵~"),
+        ("账号喵~", "4 看账号信息，还能查 GitHub API 额度喵~"),
+        (
+            "改设置喵~",
+            "j / k 选  h / l 调  Enter 动手  Ctrl+S 保存喵~",
+        ),
+        ("鼠标喵~", "点一下挑，点两下进仓库页，滚轮随便滚喵~"),
+        ("回去喵~", "Esc 回列表  ? 关掉说明  q 退出人家喵~"),
     ];
     let mut y = inner.y;
     frame.render_widget(
-        Paragraph::new(icons::label(icons::INFO, "操作说明")).style(
+        Paragraph::new(icons::label(icons::INFO, "人家能帮你做什么喵~")).style(
             Style::default()
                 .fg(theme.color("text"))
                 .add_modifier(Modifier::BOLD),
@@ -2608,34 +3911,33 @@ fn draw_help(frame: &mut Frame, _app: &App, theme: &Theme, area: Rect, hits: &mu
     let close = Rect::new(inner.x, inner.y + inner.height.saturating_sub(1), 10, 1);
     draw_button(
         frame,
-        _app,
+        app,
         theme,
         hits,
         close,
-        "关闭",
+        "关掉喵~",
         Action::CloseOverlay,
         false,
     );
-    let hit = Rect::new(rect.x, rect.y, rect.width, rect.height);
-    register(hits, hit, Action::CloseOverlay);
+    app.layout.overlay = rect;
 }
 
 fn draw_too_small(frame: &mut Frame, area: Rect, theme: &Theme) {
     fill(frame, area, theme.color("base"));
     let lines = vec![
         Line::from(Span::styled(
-            "终端再大一点嘛",
+            "终端再大一点嘛喵~",
             Style::default()
                 .fg(theme.color("text"))
                 .add_modifier(Modifier::BOLD),
         )),
         Line::from(""),
         Line::from(Span::styled(
-            format!("至少要 {MIN_WIDTH} x {MIN_HEIGHT}，现在有点挤。"),
+            format!("至少要 {MIN_WIDTH} x {MIN_HEIGHT}，现在有点挤喵~"),
             Style::default().fg(theme.color("overlay0")),
         )),
         Line::from(Span::styled(
-            "按 Ctrl+C 可以退出。",
+            "按 Ctrl+C 可以退出喵~",
             Style::default().fg(theme.color("overlay0")),
         )),
     ];
@@ -2670,7 +3972,7 @@ fn language_color(theme: &Theme, language: &str) -> Color {
     const NAMES: [&str; 10] = [
         "blue", "mauve", "green", "peach", "teal", "yellow", "sapphire", "lavender", "pink", "sky",
     ];
-    if language == "未标注" {
+    if language == "未标注喵~" {
         return theme.color("overlay0");
     }
     let hash = language.bytes().fold(0usize, |acc, byte| {
@@ -2716,4 +4018,20 @@ fn visible_input(input: &TextInput, focused: bool, max_width: u16) -> (String, u
         visible.push(ch);
     }
     (visible, cursor_column.min(max_width as u16))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn strips_nested_markdown_images() {
+        let line = "[![GitHub last commit](https://img.example/a)](https://github.com/x)";
+        assert_eq!(strip_markdown_inline(line), "");
+        assert!(strip_markdown_images("![badge](https://img) text").contains(" text"));
+        assert_eq!(
+            strip_markdown_inline("**bold** and `code`"),
+            "bold and code"
+        );
+    }
 }

@@ -1,7 +1,14 @@
-use crate::model::{Release, Repo, SearchOutcome, SearchResponse, SearchSort, User};
+use crate::format::base64_decode;
+use crate::model::{
+    RateLimit, ReadmeContent, Release, Repo, SearchOutcome, SearchResponse, SearchSort,
+    TreeResponse, User,
+};
 use serde::de::DeserializeOwned;
+use std::fs;
+use std::io::{Read, Write};
+use std::path::{Path, PathBuf};
 use std::process::Command;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 const API: &str = "https://api.github.com";
 const USER_AGENT: &str = "gitx-tui/0.1";
@@ -9,21 +16,19 @@ const USER_AGENT: &str = "gitx-tui/0.1";
 #[derive(Clone)]
 pub struct ApiClient {
     agent: ureq::Agent,
+    download_agent: ureq::Agent,
     token: Option<String>,
     proxy: String,
 }
 
 impl ApiClient {
     pub fn new(proxy: String) -> Self {
-        let config = ureq::Agent::config_builder()
-            .timeout_global(Some(Duration::from_secs(15)))
-            .timeout_connect(Some(Duration::from_secs(10)))
-            .http_status_as_error(false)
-            .user_agent(USER_AGENT)
-            .build();
+        let agent = build_agent(Duration::from_secs(15));
+        let download_agent = build_agent(Duration::from_secs(3600));
         let token = detect_token();
         Self {
-            agent: config.into(),
+            agent,
+            download_agent,
             token,
             proxy: proxy.trim_end_matches('/').to_string(),
         }
@@ -46,7 +51,7 @@ impl ApiClient {
     }
 
     pub fn repositories(&self) -> Result<Vec<Repo>, String> {
-        self.get_json(
+        self.get_pages(
             &format!(
                 "{API}/user/repos?per_page=100&sort=updated&direction=desc&affiliation=owner,collaborator,organization_member"
             ),
@@ -55,7 +60,7 @@ impl ApiClient {
     }
 
     pub fn starred(&self) -> Result<Vec<Repo>, String> {
-        self.get_json(
+        self.get_pages(
             &format!("{API}/user/starred?per_page=100&sort=updated&direction=desc"),
             true,
         )
@@ -79,10 +84,42 @@ impl ApiClient {
         }
     }
 
+    pub fn rate_limit(&self) -> Result<RateLimit, String> {
+        self.get_json(&format!("{API}/rate_limit"), self.token.is_some())
+    }
+
+    pub fn update_repository(
+        &self,
+        full_name: &str,
+        patch: &serde_json::Value,
+    ) -> Result<Repo, String> {
+        let Some(token) = self.token.as_deref() else {
+            return Err("还没有登录 GitHub，改不了仓库哦喵~先运行 gh auth login 吧喵~".to_string());
+        };
+        let url = format!("{API}/repos/{full_name}");
+        let response = self
+            .agent
+            .patch(&url)
+            .header("Accept", "application/vnd.github+json")
+            .header("X-GitHub-Api-Version", "2022-11-28")
+            .header("Authorization", format!("Bearer {token}"))
+            .send_json(patch)
+            .map_err(|err| format_transport_error(&err))?;
+        let status = response.status().as_u16();
+        let mut response = response;
+        let body = response.body_mut().read_to_string().unwrap_or_default();
+        if (200..300).contains(&status) {
+            serde_json::from_str(&body)
+                .map_err(|err| format!("GitHub 改完仓库送回来的数据人家看不懂：{err}喵~"))
+        } else {
+            Err(status_message(status, &body))
+        }
+    }
+
     pub fn search(&self, query: &str, sort: SearchSort) -> Result<SearchOutcome, String> {
         let encoded = percent_encode(query.trim());
         let url = format!(
-            "{API}/search/repositories?q={encoded}&per_page=40{}",
+            "{API}/search/repositories?q={encoded}&per_page=100{}",
             sort.api_params()
         );
         let response: SearchResponse = self.get_public_with_fallback(&url)?;
@@ -92,15 +129,214 @@ impl ApiClient {
         })
     }
 
+    pub fn file_tree(
+        &self,
+        full_name: &str,
+        branch: &str,
+        private: bool,
+    ) -> Result<TreeResponse, String> {
+        let branch = if branch.trim().is_empty() {
+            "HEAD"
+        } else {
+            branch
+        };
+        let url = format!(
+            "{API}/repos/{full_name}/git/trees/{}?recursive=1",
+            percent_encode(branch)
+        );
+        if private {
+            self.get_json(&url, true)
+        } else {
+            self.get_public_with_fallback(&url)
+        }
+    }
+
+    pub fn readme(&self, full_name: &str, private: bool) -> Result<ReadmeContent, String> {
+        let url = format!("{API}/repos/{full_name}/readme");
+        let raw: ReadmeApi = if private {
+            self.get_json(&url, true)?
+        } else {
+            self.get_public_with_fallback(&url)?
+        };
+        if raw.encoding != "base64" {
+            return Ok(ReadmeContent {
+                name: raw.name,
+                path: raw.path,
+                html_url: raw.html_url,
+                content: raw.content,
+            });
+        }
+        let bytes = base64_decode(&raw.content)
+            .ok_or_else(|| "README 的编码人家没看懂，暂时读不出来喵~".to_string())?;
+        let content = String::from_utf8(bytes)
+            .map_err(|_| "README 不是 UTF-8 文本，人家读不了呢喵~".to_string())?;
+        Ok(ReadmeContent {
+            name: raw.name,
+            path: raw.path,
+            html_url: raw.html_url,
+            content,
+        })
+    }
+
+    pub fn set_starred(&self, full_name: &str, starred: bool) -> Result<(), String> {
+        let Some(token) = self.token.as_deref() else {
+            return Err("还没有登录 GitHub，改不了收藏哦喵~先运行 gh auth login 吧喵~".to_string());
+        };
+        let url = format!("{API}/user/starred/{full_name}");
+        let request = if starred {
+            self.agent
+                .put(&url)
+                .header("Accept", "application/vnd.github+json")
+                .header("X-GitHub-Api-Version", "2022-11-28")
+                .header("Authorization", format!("Bearer {token}"))
+                .send_empty()
+        } else {
+            self.agent
+                .delete(&url)
+                .header("Accept", "application/vnd.github+json")
+                .header("X-GitHub-Api-Version", "2022-11-28")
+                .header("Authorization", format!("Bearer {token}"))
+                .call()
+        };
+        let response = request.map_err(|err| format_transport_error(&err))?;
+        let status = response.status().as_u16();
+        let mut response = response;
+        let body = response.body_mut().read_to_string().unwrap_or_default();
+        if (200..300).contains(&status) {
+            Ok(())
+        } else {
+            Err(status_message(status, &body))
+        }
+    }
+
+    pub fn download_asset<F>(
+        &self,
+        asset_url: &str,
+        private: bool,
+        destination: &Path,
+        mut progress: F,
+    ) -> Result<u64, String>
+    where
+        F: FnMut(u64, Option<u64>),
+    {
+        if let Some(parent) = destination.parent() {
+            fs::create_dir_all(parent)
+                .map_err(|err| format!("下载目录建不出来：{err}喵~检查一下设置里的路径嘛喵~"))?;
+        }
+        let attempts: Vec<(String, bool)> = if private {
+            vec![(asset_url.to_string(), true)]
+        } else {
+            vec![
+                (self.accelerated(asset_url), false),
+                (asset_url.to_string(), self.token.is_some()),
+            ]
+        };
+        let mut errors = Vec::new();
+        for (url, authenticated) in attempts {
+            match self.download_once(&url, authenticated, destination, &mut progress) {
+                Ok(size) => return Ok(size),
+                Err(error) => errors.push(error),
+            }
+        }
+        Err(format!("下载没有成功：{}喵~", errors.join("；")))
+    }
+
     pub fn accelerated(&self, github_url: &str) -> String {
         join_proxy(&self.proxy, github_url)
     }
 
-    pub fn source_zip(&self, full_name: &str, branch: &str) -> String {
-        let branch = if branch.is_empty() { "HEAD" } else { branch };
-        self.accelerated(&format!(
-            "https://github.com/{full_name}/archive/refs/heads/{branch}.zip"
-        ))
+    fn get_pages<T: DeserializeOwned>(
+        &self,
+        base: &str,
+        authenticated: bool,
+    ) -> Result<Vec<T>, String> {
+        let mut all = Vec::new();
+        for page in 1..=1000 {
+            let separator = if base.contains('?') { '&' } else { '?' };
+            let url = format!("{base}{separator}page={page}");
+            let chunk: Vec<T> = self.get_json(&url, authenticated)?;
+            let count = chunk.len();
+            all.extend(chunk);
+            if count < 100 {
+                break;
+            }
+        }
+        Ok(all)
+    }
+
+    fn download_once<F>(
+        &self,
+        url: &str,
+        authenticated: bool,
+        destination: &Path,
+        progress: &mut F,
+    ) -> Result<u64, String>
+    where
+        F: FnMut(u64, Option<u64>),
+    {
+        let mut request = self
+            .download_agent
+            .get(url)
+            .header("Accept", "application/octet-stream");
+        if authenticated && let Some(token) = self.token.as_deref() {
+            request = request.header("Authorization", format!("Bearer {token}"));
+        }
+        let mut response = request.call().map_err(|err| format_transport_error(&err))?;
+        let status = response.status().as_u16();
+        if !(200..300).contains(&status) {
+            let body = response.body_mut().read_to_string().unwrap_or_default();
+            return Err(status_message(status, &body));
+        }
+        let total = response
+            .headers()
+            .get("content-length")
+            .and_then(|value| value.to_str().ok())
+            .and_then(|value| value.parse::<u64>().ok());
+        let mut part = destination.as_os_str().to_os_string();
+        part.push(format!(".part-{}", std::process::id()));
+        let part = PathBuf::from(part);
+        let mut file = fs::File::create(&part).map_err(|err| {
+            let _ = fs::remove_file(&part);
+            format!("临时文件写不进去：{err}喵~")
+        })?;
+        let mut reader = response.body_mut().as_reader();
+        let mut buffer = [0_u8; 64 * 1024];
+        let mut received = 0_u64;
+        let mut last_emit = Instant::now();
+        progress(0, total);
+        loop {
+            let read = match reader.read(&mut buffer) {
+                Ok(0) => break,
+                Ok(read) => read,
+                Err(err) => {
+                    drop(file);
+                    let _ = fs::remove_file(&part);
+                    return Err(format!("下载到一半断掉了：{err}喵~再点一次试试嘛喵~"));
+                }
+            };
+            if let Err(err) = file.write_all(&buffer[..read]) {
+                drop(file);
+                let _ = fs::remove_file(&part);
+                return Err(format!("文件写不进去：{err}喵~"));
+            }
+            received += read as u64;
+            if last_emit.elapsed() >= Duration::from_millis(120) {
+                progress(received, total);
+                last_emit = Instant::now();
+            }
+        }
+        if let Err(err) = file.flush() {
+            drop(file);
+            let _ = fs::remove_file(&part);
+            return Err(format!("文件没有写完：{err}喵~"));
+        }
+        drop(file);
+        if let Err(err) = fs::rename(&part, destination) {
+            let _ = fs::remove_file(&part);
+            return Err(format!("下载好了，但是改名没成功：{err}喵~"));
+        }
+        progress(received, total);
+        Ok(received)
     }
 
     fn get_public_with_fallback<T: DeserializeOwned>(&self, url: &str) -> Result<T, String> {
@@ -112,7 +348,7 @@ impl ApiClient {
                 match direct {
                     Ok(value) => Ok(value),
                     Err(direct_error) => Err(format!(
-                        "加速通道没有成功：{proxy_error}；直连也没有成功：{direct_error}"
+                        "加速通道没有成功：{proxy_error}；直连也没有成功：{direct_error}喵~"
                     )),
                 }
             }
@@ -122,13 +358,13 @@ impl ApiClient {
     fn get_json<T: DeserializeOwned>(&self, url: &str, authenticated: bool) -> Result<T, String> {
         if authenticated && self.token.is_none() {
             return Err(
-                "还没有可用的 GitHub 凭据，人家读不到你的仓库。先在终端运行 gh auth login 哦。"
+                "还没有可用的 GitHub 凭据，人家读不到你的仓库喵~先在终端运行 gh auth login 哦喵~"
                     .to_string(),
             );
         }
         let body = self.fetch_text(url, authenticated)?;
         serde_json::from_str(&body)
-            .map_err(|err| format!("GitHub 返回的数据看不懂：{err}。稍后再试试嘛。"))
+            .map_err(|err| format!("GitHub 送来的数据人家看不懂：{err}喵~稍后再试试嘛喵~"))
     }
 
     fn fetch_text(&self, url: &str, authenticated: bool) -> Result<String, String> {
@@ -171,10 +407,34 @@ impl ApiClient {
             return Err(status_message(status, &body));
         }
         if last_error.is_empty() {
-            last_error = "网络暂时没有响应，再试一次吧。".to_string();
+            last_error = "网络暂时没有响应，再试一次吧喵~".to_string();
         }
         Err(last_error)
     }
+}
+
+#[derive(serde::Deserialize)]
+struct ReadmeApi {
+    #[serde(default)]
+    name: String,
+    #[serde(default)]
+    path: String,
+    #[serde(default)]
+    html_url: String,
+    #[serde(default)]
+    content: String,
+    #[serde(default)]
+    encoding: String,
+}
+
+fn build_agent(timeout: Duration) -> ureq::Agent {
+    let config = ureq::Agent::config_builder()
+        .timeout_global(Some(timeout))
+        .timeout_connect(Some(Duration::from_secs(10)))
+        .http_status_as_error(false)
+        .user_agent(USER_AGENT)
+        .build();
+    config.into()
 }
 
 fn detect_token() -> Option<String> {
@@ -232,29 +492,29 @@ fn status_message(status: u16, body: &str) -> String {
         })
         .filter(|message| !message.trim().is_empty());
     match status {
-        401 => "GitHub 凭据失效了，运行 gh auth login 重新登录一下吧。".to_string(),
-        404 => "没有找到这个仓库，可能是私有仓库，也可能已经被删掉了。".to_string(),
+        401 => "GitHub 凭据失效啦，运行 gh auth login 重新登录一下嘛喵~".to_string(),
+        404 => "这个仓库人家找不到呢，可能是私有仓库，也可能已经被删掉了喵~".to_string(),
         403 => format!(
-            "GitHub 不想给人家开门（403）。{}",
-            api_message.unwrap_or_else(|| "可能是访问频率到上限了，等几分钟再试。".to_string())
+            "GitHub 不想给人家开门（403）喵~ {}",
+            api_message.unwrap_or_else(|| "可能是访问太频繁啦，等几分钟再试嘛喵~".to_string())
         ),
-        429 => "请求有点密集，GitHub 让缓一缓。过一会儿再刷新嘛。".to_string(),
+        429 => "请求有点太密集啦，GitHub 让人家缓一缓喵~过一会儿再刷新嘛喵~".to_string(),
         _ => {
             let detail = api_message.unwrap_or_else(|| {
                 let compact = body.split_whitespace().collect::<Vec<_>>().join(" ");
                 if compact.is_empty() {
-                    "没有更多说明".to_string()
+                    "它也没多说呢喵~".to_string()
                 } else {
                     compact.chars().take(140).collect()
                 }
             });
-            format!("GitHub 返回了 {status}：{detail}")
+            format!("GitHub 回了 {status} 呢：{detail} 喵~")
         }
     }
 }
 
 fn format_transport_error(error: &ureq::Error) -> String {
-    format!("网络没有连上，人家再试了一次：{error}")
+    format!("网络没连上呢，人家再试一次：{error}喵~")
 }
 
 #[cfg(test)]

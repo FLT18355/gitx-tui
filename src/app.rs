@@ -2,7 +2,11 @@ use crate::api::ApiClient;
 use crate::cache::{Cache, CacheStats, now_epoch, search_key};
 use crate::config::{Config, Paths};
 use crate::format::{self, base64};
-use crate::model::{Release, Repo, RepoSort, SearchResponse, SearchSort, User, key_part};
+use crate::icons;
+use crate::model::{
+    RateLimit, ReadmeContent, Release, Repo, RepoSort, SearchResponse, SearchSort, TreeResponse,
+    User, key_part,
+};
 use crate::theme::{FLAVORS, Theme};
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers, MouseButton, MouseEvent, MouseEventKind};
 use ratatui::layout::Rect;
@@ -15,6 +19,7 @@ pub enum Page {
     Repositories,
     Starred,
     Search,
+    Account,
     Settings,
     Repo,
 }
@@ -25,7 +30,8 @@ impl Page {
             Self::Repositories => Some(0),
             Self::Starred => Some(1),
             Self::Search => Some(2),
-            Self::Settings => Some(3),
+            Self::Account => Some(3),
+            Self::Settings => Some(4),
             Self::Repo => None,
         }
     }
@@ -34,18 +40,20 @@ impl Page {
         match index {
             1 => Self::Starred,
             2 => Self::Search,
-            3 => Self::Settings,
+            3 => Self::Account,
+            4 => Self::Settings,
             _ => Self::Repositories,
         }
     }
 
     pub fn title(self) -> &'static str {
         match self {
-            Self::Repositories => "我的仓库",
-            Self::Starred => "收藏仓库",
-            Self::Search => "搜索仓库",
-            Self::Settings => "设置",
-            Self::Repo => "仓库详情",
+            Self::Repositories => "人家的仓库喵~",
+            Self::Starred => "星星收藏喵~",
+            Self::Search => "找仓库喵~",
+            Self::Account => "账号喵~",
+            Self::Settings => "设置喵~",
+            Self::Repo => "仓库详情喵~",
         }
     }
 }
@@ -53,6 +61,15 @@ impl Page {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Overlay {
     Help,
+    Languages,
+    EditRepo,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum RepoPane {
+    Tree,
+    Releases,
+    Readme,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -93,15 +110,29 @@ pub enum Action {
     CopyClone,
     SetTheme(String),
     StartProxyEdit,
+    StartDownloadDirEdit,
+    ToggleFileTree,
+    ToggleReadme,
     Ttl(TtlKind, i32),
     ClearCache,
     SaveConfig,
+    OpenDownloadDir,
     SetSettingsRow(usize),
-    OpenAsset { release: usize, asset: usize },
+    OpenLanguages,
+    DownloadAsset { release: usize, asset: usize },
+    DownloadSource,
     OpenReleasePage(usize),
-    SourceZip,
-    Topic(String),
+    OpenTreePath { path: String, directory: bool },
+    FocusRepoPane(RepoPane),
+    OpenExternal(String),
+    ToggleStar,
     CloseOverlay,
+    PrevListPage,
+    NextListPage,
+    OpenRepoEdit,
+    EditRepoRow(usize),
+    SaveRepoEdit,
+    RefreshRateLimit,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -115,8 +146,11 @@ pub struct LayoutRects {
     pub list: Rect,
     pub detail: Rect,
     pub page_releases: Rect,
+    pub page_tree: Rect,
+    pub page_readme: Rect,
     pub settings: Rect,
     pub search: Rect,
+    pub overlay: Rect,
 }
 
 impl LayoutRects {
@@ -202,6 +236,55 @@ struct PendingDetail {
     at: Instant,
 }
 
+#[derive(Clone)]
+pub struct RepoEdit {
+    pub full_name: String,
+    pub description: TextInput,
+    pub homepage: TextInput,
+    pub topics: TextInput,
+    pub private: bool,
+    pub archived: bool,
+    pub row: usize,
+    pub editing: bool,
+    pub saving: bool,
+    pub error: Option<String>,
+}
+
+impl RepoEdit {
+    pub fn from_repo(repo: &Repo) -> Self {
+        Self {
+            full_name: repo.display_full_name(),
+            description: TextInput::new(repo.description.clone().unwrap_or_default()),
+            homepage: TextInput::new(repo.homepage.clone().unwrap_or_default()),
+            topics: TextInput::new(repo.topics.join(" ")),
+            private: repo.private,
+            archived: repo.archived,
+            row: 0,
+            editing: false,
+            saving: false,
+            error: None,
+        }
+    }
+
+    pub fn topics_list(&self) -> Vec<String> {
+        self.topics
+            .value
+            .split(|ch: char| ch.is_whitespace() || ch == ',')
+            .map(str::trim)
+            .filter(|topic| !topic.is_empty())
+            .map(|topic| topic.trim_start_matches('#').to_ascii_lowercase())
+            .collect()
+    }
+}
+
+#[derive(Debug, Clone)]
+pub struct DownloadJob {
+    pub id: u64,
+    pub label: String,
+    pub received: u64,
+    pub total: Option<u64>,
+}
+
 #[allow(clippy::large_enum_variant)]
 enum Msg {
     User(Result<User, String>),
@@ -226,6 +309,32 @@ enum Msg {
         name: String,
         result: Result<Vec<Release>, String>,
     },
+    Tree {
+        name: String,
+        branch: String,
+        result: Result<TreeResponse, String>,
+    },
+    Readme {
+        name: String,
+        result: Result<ReadmeContent, String>,
+    },
+    StarToggled {
+        name: String,
+        starred: bool,
+        result: Result<(), String>,
+    },
+    DownloadProgress {
+        id: u64,
+        received: u64,
+        total: Option<u64>,
+    },
+    DownloadDone {
+        id: u64,
+        label: String,
+        result: Result<std::path::PathBuf, String>,
+    },
+    RateLimit(Result<crate::model::RateLimit, String>),
+    RepoUpdated(Result<Repo, String>),
 }
 
 pub struct App {
@@ -236,6 +345,9 @@ pub struct App {
     pub cache: Cache,
     pub user: Option<User>,
     pub login: Option<String>,
+    pub rate_limit: Option<RateLimit>,
+    pub rate_loading: bool,
+    pub rate_fetched_at: Option<i64>,
     pub page: Page,
     pub return_page: Page,
     pub overlay: Option<Overlay>,
@@ -269,12 +381,34 @@ pub struct App {
     pub page_repo: Option<Repo>,
     pub page_scroll: u16,
     pub page_scroll_max: u16,
+    pub repo_pane: RepoPane,
+    pub tree: Option<TreeResponse>,
+    pub tree_for: Option<String>,
+    pub tree_branch: String,
+    pub tree_fetched_at: Option<i64>,
+    pub tree_loading: Option<String>,
+    pub tree_scroll: u16,
+    pub tree_scroll_max: u16,
+    pub readme: Option<ReadmeContent>,
+    pub readme_for: Option<String>,
+    pub readme_fetched_at: Option<i64>,
+    pub readme_loading: Option<String>,
+    pub readme_scroll: u16,
+    pub readme_scroll_max: u16,
 
+    pub repo_edit: Option<RepoEdit>,
     pub settings_row: usize,
     pub editing_proxy: bool,
     pub proxy_input: TextInput,
+    pub editing_download_dir: bool,
+    pub download_input: TextInput,
     pub config_dirty: bool,
     pub cache_stats: CacheStats,
+    pub download_job: Option<DownloadJob>,
+    pub star_loading: Option<String>,
+    pub language_selected: usize,
+    pub language_offset: usize,
+    pub language_viewport: usize,
 
     pub user_loading: bool,
     pub repos_loading: bool,
@@ -291,6 +425,7 @@ pub struct App {
     pub last_click: Option<(Instant, String)>,
     pub detail_scroll_reset: bool,
 
+    download_seq: u64,
     fetched_repos_at: Option<i64>,
     fetched_starred_at: Option<i64>,
     pending_detail: Option<PendingDetail>,
@@ -308,6 +443,7 @@ impl App {
         let client = ApiClient::new(config.proxy.clone());
         let cache = Cache::new(paths.cache_dir().to_path_buf());
         let cache_stats = cache.stats();
+        let download_dir_initial = config.download_dir.clone();
         let (tx, rx) = mpsc::channel();
         let mut app = Self {
             paths,
@@ -317,6 +453,9 @@ impl App {
             cache,
             user: None,
             login: None,
+            rate_limit: None,
+            rate_loading: false,
+            rate_fetched_at: None,
             page: Page::Repositories,
             return_page: Page::Repositories,
             overlay: None,
@@ -347,11 +486,33 @@ impl App {
             page_repo: None,
             page_scroll: 0,
             page_scroll_max: 0,
+            repo_pane: RepoPane::Releases,
+            tree: None,
+            tree_for: None,
+            tree_branch: String::new(),
+            tree_fetched_at: None,
+            tree_loading: None,
+            tree_scroll: 0,
+            tree_scroll_max: 0,
+            readme: None,
+            readme_for: None,
+            readme_fetched_at: None,
+            readme_loading: None,
+            readme_scroll: 0,
+            readme_scroll_max: 0,
+            repo_edit: None,
             settings_row: 0,
             editing_proxy: false,
             proxy_input: TextInput::new(""),
+            editing_download_dir: false,
+            download_input: TextInput::new(download_dir_initial),
             config_dirty: false,
             cache_stats,
+            download_job: None,
+            star_loading: None,
+            language_selected: 0,
+            language_offset: 0,
+            language_viewport: 12,
             user_loading: false,
             repos_loading: false,
             starred_loading: false,
@@ -359,7 +520,7 @@ impl App {
             detail_loading: None,
             releases_loading: None,
             status: Status {
-                text: "准备就绪，人家先看看缓存里有什么。".to_string(),
+                text: "准备就绪，人家先看看缓存里有什么喵~".to_string(),
                 kind: StatusKind::Info,
             },
             hitboxes: Vec::new(),
@@ -368,6 +529,7 @@ impl App {
             started_at: Instant::now(),
             last_click: None,
             detail_scroll_reset: false,
+            download_seq: 0,
             fetched_repos_at: None,
             fetched_starred_at: None,
             pending_detail: None,
@@ -382,7 +544,7 @@ impl App {
         if !self.client.token_present() {
             self.set_status(
                 StatusKind::Error,
-                "还没有登录 GitHub，只能查看公开内容。先在终端运行 gh auth login 哦。",
+                "还没有登录 GitHub，只能看公开内容哦喵~先在终端跑一下 gh auth login 嘛喵~",
             );
         }
 
@@ -391,9 +553,14 @@ impl App {
             self.login = Some(cached.data.login.clone());
             self.load_account_cache();
         }
+        if let Some(cached) = self.cache.load::<RateLimit>("rate_limit") {
+            self.rate_limit = Some(cached.data);
+            self.rate_fetched_at = Some(cached.fetched_at);
+        }
 
         if self.client.token_present() {
             self.fetch_user();
+            self.fetch_rate_limit(false);
             if self.login.is_some() {
                 self.fetch_repos_if_needed(false);
                 self.fetch_starred_if_needed(false);
@@ -451,7 +618,7 @@ impl App {
                         }
                         self.set_status(
                             StatusKind::Ok,
-                            &format!("已经连上 GitHub，当前账号是 {}。", login),
+                            &format!("已经连上 GitHub，当前账号是 {}喵~", login),
                         );
                         if self.repos.is_empty() || self.repos_stale() {
                             self.fetch_repos_if_needed(false);
@@ -483,7 +650,7 @@ impl App {
                         self.refresh_cache_stats();
                         self.set_status(
                             StatusKind::Ok,
-                            &format!("仓库已经同步好啦，一共 {} 个。", self.repos.len()),
+                            &format!("仓库都搬过来啦，一共 {} 个呢喵~", self.repos.len()),
                         );
                     }
                     Err(error) => self.set_status(StatusKind::Error, &error),
@@ -507,7 +674,7 @@ impl App {
                         self.refresh_cache_stats();
                         self.set_status(
                             StatusKind::Ok,
-                            &format!("收藏已经同步好啦，一共 {} 个。", self.starred.len()),
+                            &format!("星星都整理好啦，一共 {} 个哦喵~", self.starred.len()),
                         );
                     }
                     Err(error) => self.set_status(StatusKind::Error, &error),
@@ -542,12 +709,15 @@ impl App {
                         if self.search_results.is_empty() {
                             self.set_status(
                                 StatusKind::Info,
-                                "没有找到符合条件的仓库，换个词试试嘛。",
+                                "没有找到符合条件的仓库呢，换个词试试嘛喵~",
                             );
                         } else {
                             self.set_status(
                                 StatusKind::Ok,
-                                &format!("找到 {} 个仓库，先展示前 40 个。", outcome.total),
+                                &format!(
+                                    "找到 {} 个仓库，人家先摆出前 100 个，可以分页翻喵~",
+                                    outcome.total
+                                ),
                             );
                         }
                     }
@@ -564,9 +734,13 @@ impl App {
                         let _ = self.cache.save(&key, &repo);
                         self.refresh_cache_stats();
                         if self.matches_current_repo(&name) {
+                            let extra_repo = repo.clone();
                             self.detail = Some(repo);
                             self.detail_for = Some(name);
                             self.detail_fetched_at = Some(now_epoch());
+                            if self.page == Page::Repo {
+                                self.schedule_repo_extras(&extra_repo, false);
+                            }
                         }
                     }
                     Err(error) => {
@@ -597,6 +771,160 @@ impl App {
                     }
                 }
             }
+            Msg::Tree {
+                name,
+                branch,
+                result,
+            } => {
+                if self.tree_loading.as_deref() == Some(name.as_str()) {
+                    self.tree_loading = None;
+                }
+                match result {
+                    Ok(tree) => {
+                        let _ = self.cache.save(&tree_cache_key(&name, &branch), &tree);
+                        self.refresh_cache_stats();
+                        if self.matches_current_repo(&name) {
+                            self.tree = Some(tree);
+                            self.tree_for = Some(name);
+                            self.tree_branch = branch;
+                            self.tree_fetched_at = Some(now_epoch());
+                        }
+                    }
+                    Err(error) => {
+                        if self.matches_current_repo(&name) {
+                            self.set_status(StatusKind::Error, &error);
+                        }
+                    }
+                }
+            }
+            Msg::Readme { name, result } => {
+                if self.readme_loading.as_deref() == Some(name.as_str()) {
+                    self.readme_loading = None;
+                }
+                match result {
+                    Ok(readme) => {
+                        let _ = self.cache.save(&readme_cache_key(&name), &readme);
+                        self.refresh_cache_stats();
+                        if self.matches_current_repo(&name) {
+                            self.readme = Some(readme);
+                            self.readme_for = Some(name);
+                            self.readme_fetched_at = Some(now_epoch());
+                        }
+                    }
+                    Err(error) => {
+                        if self.matches_current_repo(&name) {
+                            self.set_status(StatusKind::Error, &error);
+                        }
+                    }
+                }
+            }
+            Msg::StarToggled {
+                name,
+                starred,
+                result,
+            } => {
+                if self.star_loading.as_deref() == Some(name.as_str()) {
+                    self.star_loading = None;
+                }
+                match result {
+                    Ok(()) => {
+                        if starred {
+                            if let Some(repo) = self
+                                .page_repo
+                                .clone()
+                                .or_else(|| self.selected_repo())
+                                .or_else(|| self.detail.clone())
+                                && !self
+                                    .starred
+                                    .iter()
+                                    .any(|item| item.display_full_name() == name)
+                            {
+                                self.starred.insert(0, repo);
+                            }
+                        } else {
+                            self.starred.retain(|item| item.display_full_name() != name);
+                        }
+                        if let Some(login) = self.login.clone() {
+                            let _ = self.cache.save(&starred_cache_key(&login), &self.starred);
+                        }
+                        self.clamp_selection();
+                        self.refresh_cache_stats();
+                        self.set_status(
+                            StatusKind::Ok,
+                            if starred {
+                                "收藏好啦，这颗星星已经记在人家的小本本上啦喵~"
+                            } else {
+                                "取消收藏啦，星星还给 GitHub 了喵~"
+                            },
+                        );
+                        self.schedule_selected_detail();
+                    }
+                    Err(error) => self.set_status(StatusKind::Error, &error),
+                }
+            }
+            Msg::RateLimit(result) => {
+                self.rate_loading = false;
+                match result {
+                    Ok(rate) => {
+                        self.rate_limit = Some(rate.clone());
+                        self.rate_fetched_at = Some(now_epoch());
+                        let _ = self.cache.save("rate_limit", &rate);
+                        self.refresh_cache_stats();
+                    }
+                    Err(error) => {
+                        if self.page == Page::Account {
+                            self.set_status(StatusKind::Error, &error);
+                        }
+                    }
+                }
+            }
+            Msg::RepoUpdated(result) => {
+                if let Some(edit) = self.repo_edit.as_mut() {
+                    edit.saving = false;
+                }
+                match result {
+                    Ok(repo) => {
+                        self.apply_updated_repo(repo);
+                        self.repo_edit = None;
+                        self.overlay = None;
+                        self.set_status(StatusKind::Ok, "仓库信息改好啦，GitHub 那边已经记上了喵~");
+                    }
+                    Err(error) => {
+                        if let Some(edit) = self.repo_edit.as_mut() {
+                            edit.error = Some(error.clone());
+                        } else {
+                            self.set_status(StatusKind::Error, &error);
+                        }
+                    }
+                }
+            }
+            Msg::DownloadProgress {
+                id,
+                received,
+                total,
+            } => {
+                if let Some(job) = self.download_job.as_mut()
+                    && job.id == id
+                {
+                    job.received = received;
+                    job.total = total;
+                }
+            }
+            Msg::DownloadDone { id, label, result } => {
+                if self.download_job.as_ref().is_some_and(|job| job.id == id) {
+                    self.download_job = None;
+                }
+                match result {
+                    Ok(path) => self.set_status(
+                        StatusKind::Ok,
+                        &format!(
+                            "{label} 下载好啦，人家放在 {} 啦喵~",
+                            format::display_path(&path)
+                        ),
+                    ),
+                    Err(error) => self.set_status(StatusKind::Error, &error),
+                }
+            }
         }
     }
 
@@ -611,6 +939,238 @@ impl App {
                 .unwrap_or(false)
     }
 
+    fn apply_updated_repo(&mut self, repo: Repo) {
+        let name = repo.display_full_name();
+        let key = repo.cache_key();
+        let _ = self.cache.save(&key, &repo);
+        for list in [&mut self.repos, &mut self.starred, &mut self.search_results] {
+            for item in list.iter_mut() {
+                if item.display_full_name() == name {
+                    *item = repo.clone();
+                }
+            }
+        }
+        if self
+            .detail
+            .as_ref()
+            .is_some_and(|detail| detail.display_full_name() == name)
+        {
+            self.detail = Some(repo.clone());
+            self.detail_fetched_at = Some(now_epoch());
+        }
+        if self
+            .page_repo
+            .as_ref()
+            .is_some_and(|page_repo| page_repo.display_full_name() == name)
+        {
+            self.page_repo = Some(repo);
+        }
+        if let Some(login) = self.login.clone() {
+            let _ = self.cache.save(&repos_cache_key(&login), &self.repos);
+            let _ = self.cache.save(&starred_cache_key(&login), &self.starred);
+        }
+        self.refresh_cache_stats();
+        self.clamp_selection();
+        self.schedule_selected_detail();
+    }
+
+    fn fetch_rate_limit(&mut self, force: bool) {
+        if self.rate_loading {
+            return;
+        }
+        if !force
+            && self
+                .rate_fetched_at
+                .map(|at| now_epoch() - at <= 60)
+                .unwrap_or(false)
+        {
+            return;
+        }
+        self.rate_loading = true;
+        let tx = self.tx.clone();
+        let client = self.client.clone();
+        std::thread::spawn(move || {
+            let _ = tx.send(Msg::RateLimit(client.rate_limit()));
+        });
+    }
+
+    pub fn open_account(&mut self) {
+        self.navigate(Page::Account);
+        self.fetch_rate_limit(false);
+    }
+
+    pub fn is_own_repo(&self, repo: &Repo) -> bool {
+        self.login
+            .as_deref()
+            .map(|login| login.eq_ignore_ascii_case(repo.owner_name()))
+            .unwrap_or(false)
+    }
+
+    pub fn open_repo_edit(&mut self) {
+        let Some(repo) = self.effective_repo() else {
+            self.set_status(StatusKind::Info, "先挑一个仓库嘛，人家才知道要改哪个喵~");
+            return;
+        };
+        if !self.is_own_repo(&repo) {
+            self.set_status(StatusKind::Info, "这个仓库不是你的哦，人家只能帮你看看喵~");
+            return;
+        }
+        if !self.client.token_present() {
+            self.set_status(StatusKind::Error, "还没登录呢，改不了仓库喵~");
+            return;
+        }
+        self.repo_edit = Some(RepoEdit::from_repo(&repo));
+        self.overlay = Some(Overlay::EditRepo);
+    }
+
+    pub fn move_repo_edit_row(&mut self, delta: i32) {
+        let Some(edit) = self.repo_edit.as_mut() else {
+            return;
+        };
+        let next = (edit.row as i32 + delta).clamp(0, 4) as usize;
+        edit.row = next;
+    }
+
+    pub fn toggle_repo_visibility(&mut self) {
+        if let Some(edit) = self.repo_edit.as_mut() {
+            edit.private = !edit.private;
+        }
+    }
+
+    pub fn toggle_repo_archived(&mut self) {
+        if let Some(edit) = self.repo_edit.as_mut() {
+            edit.archived = !edit.archived;
+        }
+    }
+
+    pub fn save_repo_edit(&mut self) {
+        let Some(edit) = self.repo_edit.as_mut() else {
+            return;
+        };
+        if edit.saving {
+            return;
+        }
+        edit.editing = false;
+        edit.error = None;
+        edit.saving = true;
+        let full_name = edit.full_name.clone();
+        let description = edit.description.value.trim().to_string();
+        let homepage = edit.homepage.value.trim().to_string();
+        let topics = edit.topics_list();
+        let private = edit.private;
+        let archived = edit.archived;
+        let patch = serde_json::json!({
+            "description": if description.is_empty() { serde_json::Value::Null } else { serde_json::Value::String(description) },
+            "homepage": if homepage.is_empty() { serde_json::Value::Null } else { serde_json::Value::String(homepage) },
+            "topics": topics,
+            "private": private,
+            "archived": archived,
+        });
+        let tx = self.tx.clone();
+        let client = self.client.clone();
+        std::thread::spawn(move || {
+            let result = client.update_repository(&full_name, &patch);
+            let _ = tx.send(Msg::RepoUpdated(result));
+        });
+    }
+
+    fn handle_repo_edit_key(&mut self, key: KeyEvent) {
+        let Some(edit) = self.repo_edit.as_mut() else {
+            self.overlay = None;
+            return;
+        };
+        if edit.saving {
+            return;
+        }
+        if edit.editing {
+            match key.code {
+                KeyCode::Enter | KeyCode::Esc => edit.editing = false,
+                KeyCode::Backspace => match edit.row {
+                    0 => edit.description.backspace(),
+                    1 => edit.homepage.backspace(),
+                    2 => edit.topics.backspace(),
+                    _ => {}
+                },
+                KeyCode::Delete => match edit.row {
+                    0 => edit.description.delete(),
+                    1 => edit.homepage.delete(),
+                    2 => edit.topics.delete(),
+                    _ => {}
+                },
+                KeyCode::Left => match edit.row {
+                    0 => edit.description.left(),
+                    1 => edit.homepage.left(),
+                    2 => edit.topics.left(),
+                    _ => {}
+                },
+                KeyCode::Right => match edit.row {
+                    0 => edit.description.right(),
+                    1 => edit.homepage.right(),
+                    2 => edit.topics.right(),
+                    _ => {}
+                },
+                KeyCode::Home => match edit.row {
+                    0 => edit.description.home(),
+                    1 => edit.homepage.home(),
+                    2 => edit.topics.home(),
+                    _ => {}
+                },
+                KeyCode::End => match edit.row {
+                    0 => edit.description.end(),
+                    1 => edit.homepage.end(),
+                    2 => edit.topics.end(),
+                    _ => {}
+                },
+                KeyCode::Char(ch) => match edit.row {
+                    0 => edit.description.insert(ch),
+                    1 => edit.homepage.insert(ch),
+                    2 => edit.topics.insert(ch),
+                    _ => {}
+                },
+                _ => {}
+            }
+            return;
+        }
+        let row = edit.row;
+        match key.code {
+            KeyCode::Esc | KeyCode::Char('q') => {
+                self.overlay = None;
+                self.repo_edit = None;
+            }
+            KeyCode::Up | KeyCode::Char('k') => self.move_repo_edit_row(-1),
+            KeyCode::Down | KeyCode::Char('j') => self.move_repo_edit_row(1),
+            KeyCode::Char('g') | KeyCode::Home => {
+                if let Some(edit) = self.repo_edit.as_mut() {
+                    edit.row = 0;
+                }
+            }
+            KeyCode::Char('G') | KeyCode::End => {
+                if let Some(edit) = self.repo_edit.as_mut() {
+                    edit.row = 4;
+                }
+            }
+            KeyCode::Enter => match row {
+                0..=2 => {
+                    if let Some(edit) = self.repo_edit.as_mut() {
+                        edit.editing = true;
+                    }
+                }
+                3 => self.toggle_repo_visibility(),
+                4 => self.toggle_repo_archived(),
+                _ => {}
+            },
+            KeyCode::Left | KeyCode::Right => {
+                if row == 3 {
+                    self.toggle_repo_visibility();
+                } else if row == 4 {
+                    self.toggle_repo_archived();
+                }
+            }
+            KeyCode::Char('s') => self.save_repo_edit(),
+            _ => {}
+        }
+    }
+
     pub fn tick(&mut self) {
         if let Some(pending) = self.pending_detail.take() {
             if pending.at.elapsed() >= Duration::from_millis(220) {
@@ -623,24 +1183,73 @@ impl App {
 
     pub fn busy_text(&self) -> Option<&'static str> {
         if self.user_loading {
-            return Some("人家正在确认身份...");
+            return Some("人家正在确认身份喵~...");
+        }
+        if self.page == Page::Account && self.rate_loading {
+            return Some("人家正在数 API 额度喵~...");
+        }
+        if self.repo_edit.as_ref().is_some_and(|edit| edit.saving) {
+            return Some("人家正在把改动递给 GitHub 喵~...");
         }
         if self.repos_loading && self.page == Page::Repositories {
-            return Some("人家正在搬仓库列表...");
+            return Some("人家正在一页一页搬仓库列表喵~...");
         }
         if self.starred_loading && self.page == Page::Starred {
-            return Some("人家正在整理收藏...");
+            return Some("人家正在把全部收藏都整理出来喵~...");
         }
         if self.search_loading && self.page == Page::Search {
-            return Some("人家正在找仓库...");
+            return Some("人家正在翻找仓库喵~...");
+        }
+        if self.star_loading.is_some() {
+            return Some("人家正在改星星喵~...");
+        }
+        if self.page == Page::Repo && self.tree_loading.is_some() {
+            return Some("人家正在翻仓库的文件树喵~...");
+        }
+        if self.page == Page::Repo && self.readme_loading.is_some() {
+            return Some("人家正在读 README 喵~...");
         }
         if self.page == Page::Repo && self.releases_loading.is_some() {
-            return Some("人家正在取发行版...");
+            return Some("人家正在取发行版喵~...");
         }
-        if self.detail_loading.is_some() {
-            return Some("人家正在读仓库详情...");
+        if self.detail_loading.is_some()
+            && matches!(
+                self.page,
+                Page::Repositories | Page::Starred | Page::Search | Page::Repo
+            )
+        {
+            return Some("人家正在读仓库详情喵~...");
         }
         None
+    }
+
+    pub fn download_summary(&self) -> Option<String> {
+        let job = self.download_job.as_ref()?;
+        let progress = job
+            .total
+            .filter(|total| *total > 0)
+            .map(|total| (job.received.saturating_mul(100) / total).min(100));
+        let size = match job.total {
+            Some(total) => format!(
+                "{} / {}",
+                format::format_size(job.received),
+                format::format_size(total)
+            ),
+            None => format::format_size(job.received),
+        };
+        Some(format!(
+            "{} 下载 {} · {} · {}喵~",
+            icons::DOWNLOAD,
+            format::truncate(&job.label, 36),
+            size,
+            progress
+                .map(|value| format!("{value}%"))
+                .unwrap_or_else(|| "进行中喵~".to_string())
+        ))
+    }
+
+    pub fn download_path_label(&self) -> String {
+        format::display_path(&self.config.expanded_download_dir())
     }
 
     pub fn spinner(&self) -> &'static str {
@@ -760,15 +1369,6 @@ impl App {
         self.set_selected_visible(next);
     }
 
-    pub fn move_selection_to(&mut self, end: bool) {
-        let page = self.current_list_page();
-        let len = self.visible_indices_for(page).len();
-        if len == 0 {
-            return;
-        }
-        self.set_selected_visible(if end { len - 1 } else { 0 });
-    }
-
     pub fn follow_selection(&mut self) {
         let len = self.visible_indices().len();
         if len == 0 {
@@ -776,14 +1376,91 @@ impl App {
             return;
         }
         let selected = self.selection_for(self.current_list_page());
-        let viewport = self.viewport_cards.max(1);
-        if selected < self.list_offset {
-            self.list_offset = selected;
-        } else if selected >= self.list_offset + viewport {
-            self.list_offset = selected + 1 - viewport;
-        }
-        let max_offset = len.saturating_sub(viewport);
+        let page_size = self.page_size();
+        self.list_offset = page_start(selected, page_size);
+        let max_offset = ((len - 1) / page_size) * page_size;
         self.list_offset = self.list_offset.min(max_offset);
+    }
+
+    pub fn page_size(&self) -> usize {
+        self.viewport_cards.max(1)
+    }
+
+    pub fn page_count_for(&self, page: Page) -> usize {
+        let len = self.visible_indices_for(page).len();
+        page_count(len, self.page_size())
+    }
+
+    pub fn current_page_for(&self, page: Page) -> usize {
+        page_index(self.selection_for(page), self.page_size()).min(self.page_count_for(page) - 1)
+    }
+
+    pub fn page_label(&self) -> String {
+        let page = self.current_list_page();
+        let len = self.visible_indices_for(page).len();
+        format!(
+            "第 {}/{} 页 · {} 个喵~",
+            self.current_page_for(page) + 1,
+            self.page_count_for(page),
+            len
+        )
+    }
+
+    fn is_list_page(page: Page) -> bool {
+        matches!(page, Page::Repositories | Page::Starred | Page::Search)
+    }
+
+    pub fn next_list_page(&mut self) {
+        let page = self.current_list_page();
+        if !Self::is_list_page(page) {
+            return;
+        }
+        let current = self.current_page_for(page);
+        if current + 1 >= self.page_count_for(page) {
+            self.set_status(StatusKind::Info, "已经是最后一页啦喵~");
+            return;
+        }
+        self.set_list_page(current + 1);
+    }
+
+    pub fn prev_list_page(&mut self) {
+        let page = self.current_list_page();
+        if !Self::is_list_page(page) {
+            return;
+        }
+        let current = self.current_page_for(page);
+        if current == 0 {
+            self.set_status(StatusKind::Info, "已经是第一页啦喵~");
+            return;
+        }
+        self.set_list_page(current - 1);
+    }
+
+    pub fn first_list_page(&mut self) {
+        if Self::is_list_page(self.current_list_page()) {
+            self.set_list_page(0);
+        }
+    }
+
+    pub fn last_list_page(&mut self) {
+        let page = self.current_list_page();
+        if !Self::is_list_page(page) {
+            return;
+        }
+        let last = self.page_count_for(page).saturating_sub(1);
+        self.set_list_page(last);
+    }
+
+    fn set_list_page(&mut self, target: usize) {
+        let page = self.current_list_page();
+        let len = self.visible_indices_for(page).len();
+        if len == 0 {
+            return;
+        }
+        let start = target.min(self.page_count_for(page) - 1) * self.page_size();
+        self.set_selection_for(page, start.min(len - 1));
+        self.follow_selection();
+        self.schedule_selected_detail();
     }
 
     pub fn selected_index(&self) -> usize {
@@ -824,9 +1501,6 @@ impl App {
             std::collections::BTreeMap::new();
         for repo in &self.repos {
             let language = repo.language_label().to_string();
-            if language == "未标注" {
-                continue;
-            }
             *counts.entry(language).or_insert(0) += 1;
         }
         let mut counts: Vec<_> = counts.into_iter().collect();
@@ -837,8 +1511,53 @@ impl App {
                     .cmp(&right.0.to_ascii_lowercase())
             })
         });
-        counts.truncate(7);
         counts
+    }
+
+    pub fn language_choices(&self) -> Vec<(Option<String>, String, usize)> {
+        let mut choices = vec![(None, "全部语言喵~".to_string(), self.repos.len())];
+        for (language, count) in self.language_counts() {
+            choices.push((Some(language.clone()), language, count));
+        }
+        choices
+    }
+
+    pub fn open_languages(&mut self) {
+        self.overlay = Some(Overlay::Languages);
+        let choices = self.language_choices();
+        self.language_selected = choices
+            .iter()
+            .position(|(value, _, _)| value.as_deref() == self.language_filter.as_deref())
+            .unwrap_or(0);
+        let viewport = self.language_viewport.max(1);
+        if self.language_selected >= viewport {
+            self.language_offset = self.language_selected + 1 - viewport;
+        } else {
+            self.language_offset = 0;
+        }
+    }
+
+    pub fn move_language_selection(&mut self, delta: i32) {
+        let len = self.language_choices().len();
+        if len == 0 {
+            return;
+        }
+        let next = (self.language_selected as i32 + delta).clamp(0, len as i32 - 1) as usize;
+        self.language_selected = next;
+        let viewport = self.language_viewport.max(1);
+        if next < self.language_offset {
+            self.language_offset = next;
+        } else if next >= self.language_offset + viewport {
+            self.language_offset = next + 1 - viewport;
+        }
+    }
+
+    pub fn choose_language_selection(&mut self) {
+        let choices = self.language_choices();
+        let Some((value, _, _)) = choices.get(self.language_selected) else {
+            return;
+        };
+        self.set_language(value.clone());
     }
 
     pub fn repo_stats(&self) -> (usize, usize, usize, u64) {
@@ -869,33 +1588,39 @@ impl App {
 
     pub fn search_depth_label(&self) -> String {
         let Some(query) = self.search_submitted.as_deref() else {
-            return "还没有开始搜索呢".to_string();
+            return "人家还没开始找呢喵~".to_string();
         };
         let total = self
             .search_total
             .map(format::human_count)
             .unwrap_or_else(|| "?".to_string());
-        format!("「{query}」找到 {total} 个结果")
+        format!("「{query}」一共找到 {total} 个呢喵~")
     }
 
     pub fn auth_label(&self) -> String {
         if !self.client.token_present() {
-            "未登录".to_string()
+            "未登录喵~".to_string()
         } else {
             self.login
                 .clone()
-                .or_else(|| Some("读取中".to_string()))
-                .unwrap_or_else(|| "已登录".to_string())
+                .or_else(|| Some("读取中喵~".to_string()))
+                .unwrap_or_else(|| "已登录喵~".to_string())
         }
     }
 
     fn repos_stale(&self) -> bool {
+        if self.repos.len() == 100 {
+            return true;
+        }
         self.fetched_repos_at
             .map(|at| now_epoch() - at > self.config.repos_ttl_secs as i64)
             .unwrap_or(true)
     }
 
     fn starred_stale(&self) -> bool {
+        if self.starred.len() == 100 {
+            return true;
+        }
         self.fetched_starred_at
             .map(|at| now_epoch() - at > self.config.repos_ttl_secs as i64)
             .unwrap_or(true)
@@ -925,7 +1650,7 @@ impl App {
             return;
         }
         if !self.client.token_present() {
-            self.set_status(StatusKind::Error, "还没有登录 GitHub，读不到仓库列表哦。");
+            self.set_status(StatusKind::Error, "还没登录呢，人家读不到仓库列表哦喵~");
             return;
         }
         self.repos_loading = true;
@@ -951,7 +1676,7 @@ impl App {
             return;
         }
         if !self.client.token_present() {
-            self.set_status(StatusKind::Error, "还没有登录 GitHub，读不到收藏哦。");
+            self.set_status(StatusKind::Error, "还没登录呢，人家读不到收藏哦喵~");
             return;
         }
         self.starred_loading = true;
@@ -1060,6 +1785,107 @@ impl App {
         });
     }
 
+    fn schedule_repo_extras(&mut self, repo: &Repo, force: bool) {
+        let name = repo.display_full_name();
+        let branch = repo.default_branch.clone();
+        if self.config.show_file_tree {
+            if self.tree_for.as_deref() != Some(name.as_str()) || self.tree_branch != branch {
+                self.load_tree_cache(repo);
+            }
+            let fresh = self
+                .tree_fetched_at
+                .map(|at| now_epoch() - at <= self.config.detail_ttl_secs as i64)
+                .unwrap_or(false);
+            if force || !fresh {
+                self.fetch_tree(repo);
+            }
+        }
+        if self.config.show_readme {
+            if self.readme_for.as_deref() != Some(name.as_str()) {
+                self.load_readme_cache(repo);
+            }
+            let fresh = self
+                .readme_fetched_at
+                .map(|at| now_epoch() - at <= self.config.detail_ttl_secs as i64)
+                .unwrap_or(false);
+            if force || !fresh {
+                self.fetch_readme(repo);
+            }
+        }
+        if !self.config.show_file_tree && self.repo_pane == RepoPane::Tree {
+            self.repo_pane = RepoPane::Releases;
+        }
+        if !self.config.show_readme && self.repo_pane == RepoPane::Readme {
+            self.repo_pane = RepoPane::Releases;
+        }
+    }
+
+    fn load_tree_cache(&mut self, repo: &Repo) {
+        let name = repo.display_full_name();
+        let branch = repo.default_branch.clone();
+        self.tree = None;
+        self.tree_fetched_at = None;
+        self.tree_for = Some(name.clone());
+        self.tree_branch = branch.clone();
+        self.tree_scroll = 0;
+        self.tree_scroll_max = 0;
+        if let Some(cached) = self
+            .cache
+            .load::<TreeResponse>(&tree_cache_key(&name, &branch))
+        {
+            self.tree = Some(cached.data);
+            self.tree_fetched_at = Some(cached.fetched_at);
+        }
+    }
+
+    fn load_readme_cache(&mut self, repo: &Repo) {
+        let name = repo.display_full_name();
+        self.readme = None;
+        self.readme_fetched_at = None;
+        self.readme_for = Some(name.clone());
+        self.readme_scroll = 0;
+        self.readme_scroll_max = 0;
+        if let Some(cached) = self.cache.load::<ReadmeContent>(&readme_cache_key(&name)) {
+            self.readme = Some(cached.data);
+            self.readme_fetched_at = Some(cached.fetched_at);
+        }
+    }
+
+    fn fetch_tree(&mut self, repo: &Repo) {
+        let name = repo.display_full_name();
+        if self.tree_loading.as_deref() == Some(name.as_str()) {
+            return;
+        }
+        self.tree_loading = Some(name.clone());
+        let tx = self.tx.clone();
+        let client = self.client.clone();
+        let branch = repo.default_branch.clone();
+        let private = repo.private;
+        std::thread::spawn(move || {
+            let result = client.file_tree(&name, &branch, private);
+            let _ = tx.send(Msg::Tree {
+                name,
+                branch,
+                result,
+            });
+        });
+    }
+
+    fn fetch_readme(&mut self, repo: &Repo) {
+        let name = repo.display_full_name();
+        if self.readme_loading.as_deref() == Some(name.as_str()) {
+            return;
+        }
+        self.readme_loading = Some(name.clone());
+        let tx = self.tx.clone();
+        let client = self.client.clone();
+        let private = repo.private;
+        std::thread::spawn(move || {
+            let result = client.readme(&name, private);
+            let _ = tx.send(Msg::Readme { name, result });
+        });
+    }
+
     pub fn refresh_current(&mut self) {
         match self.page {
             Page::Repositories => self.fetch_repos_if_needed(true),
@@ -1071,8 +1897,13 @@ impl App {
             }
             Page::Repo => {
                 if let Some(repo) = self.page_repo.clone().or_else(|| self.selected_repo()) {
-                    self.fetch_detail_if_needed(repo, true);
+                    self.fetch_detail_if_needed(repo.clone(), true);
+                    self.schedule_repo_extras(&repo, true);
                 }
+            }
+            Page::Account => {
+                self.fetch_user();
+                self.fetch_rate_limit(true);
             }
             Page::Settings => self.refresh_cache_stats(),
         }
@@ -1084,6 +1915,9 @@ impl App {
                 self.search_focus = true;
             }
             return;
+        }
+        if self.editing_download_dir {
+            self.commit_download_dir_edit();
         }
         if self.editing_proxy {
             self.commit_proxy_edit();
@@ -1099,6 +1933,7 @@ impl App {
         if page == Page::Settings {
             self.refresh_cache_stats();
             self.editing_proxy = false;
+            self.editing_download_dir = false;
         }
         if matches!(page, Page::Repositories | Page::Starred) {
             self.schedule_selected_detail();
@@ -1106,6 +1941,9 @@ impl App {
         }
         if page == Page::Search {
             self.schedule_selected_detail();
+        }
+        if page == Page::Account {
+            self.fetch_rate_limit(false);
         }
     }
 
@@ -1116,7 +1954,7 @@ impl App {
             .filter(|_| self.page == Page::Repo)
             .or_else(|| self.selected_repo())
         else {
-            self.set_status(StatusKind::Info, "先选一个仓库，人家才知道你要看哪个嘛。");
+            self.set_status(StatusKind::Info, "先挑一个仓库嘛，人家才知道你想看哪个喵~");
             return;
         };
         if self.page != Page::Repo {
@@ -1133,6 +1971,14 @@ impl App {
         self.detail_fetched_at = None;
         self.releases_fetched_at = None;
         self.load_detail_cache(&repo);
+        self.repo_pane = RepoPane::Releases;
+        self.tree = None;
+        self.readme = None;
+        self.tree_for = None;
+        self.readme_for = None;
+        self.tree_fetched_at = None;
+        self.readme_fetched_at = None;
+        self.schedule_repo_extras(&repo, false);
         self.pending_detail = Some(PendingDetail {
             repo,
             at: Instant::now(),
@@ -1152,7 +1998,7 @@ impl App {
     pub fn perform_search(&mut self, force: bool) {
         let query = self.search_input.value.trim().to_string();
         if query.is_empty() {
-            self.set_status(StatusKind::Info, "搜索框还是空的，先告诉人家想找什么嘛。");
+            self.set_status(StatusKind::Info, "搜索框空空的，先告诉人家想找什么嘛喵~");
             self.search_focus = true;
             return;
         }
@@ -1172,7 +2018,7 @@ impl App {
                 self.search_loading = false;
                 self.schedule_selected_detail();
                 self.refresh_cache_stats();
-                self.set_status(StatusKind::Info, "这组结果刚从缓存里拿出来啦。");
+                self.set_status(StatusKind::Info, "这组结果刚从缓存里拿出来啦喵~");
                 return;
             }
         }
@@ -1238,12 +2084,22 @@ impl App {
         self.language_filter = language;
         self.repo_selected = 0;
         self.list_offset = 0;
+        self.overlay = None;
         self.schedule_selected_detail();
+    }
+
+    pub fn open_profile(&mut self) {
+        let Some(user) = self.user.as_ref() else {
+            self.set_status(StatusKind::Info, "还没有账号信息呢，先登录一下嘛喵~");
+            return;
+        };
+        let url = user.html_url.clone();
+        self.open_url(&url);
     }
 
     pub fn open_current(&mut self) {
         let Some(repo) = self.effective_repo() else {
-            self.set_status(StatusKind::Info, "还没有选中仓库呢。");
+            self.set_status(StatusKind::Info, "还没有选中仓库呢喵~");
             return;
         };
         self.open_url(&repo.html_url);
@@ -1251,7 +2107,7 @@ impl App {
 
     pub fn copy_clone(&mut self) {
         let Some(repo) = self.effective_repo() else {
-            self.set_status(StatusKind::Info, "还没有选中仓库呢。");
+            self.set_status(StatusKind::Info, "还没有选中仓库呢喵~");
             return;
         };
         let url = if !repo.ssh_url.is_empty() {
@@ -1261,7 +2117,7 @@ impl App {
         } else {
             format!("https://github.com/{}.git", repo.display_full_name())
         };
-        self.copy_text(&url, "克隆地址");
+        self.copy_text(&url, "克隆地址喵~");
     }
 
     fn effective_repo(&self) -> Option<Repo> {
@@ -1281,19 +2137,19 @@ impl App {
 
     fn open_url(&mut self, url: &str) {
         if url.trim().is_empty() {
-            self.set_status(StatusKind::Error, "这个地址是空的，打不开呢。");
+            self.set_status(StatusKind::Error, "这个地址是空的，打不开呢喵~");
             return;
         }
         let result = open_external(url);
         match result {
-            Ok(()) => self.set_status(StatusKind::Ok, "已经交给浏览器打开啦。"),
+            Ok(()) => self.set_status(StatusKind::Ok, "已经交给浏览器打开啦喵~"),
             Err(error) => self.set_status(StatusKind::Error, &error),
         }
     }
 
     fn copy_text(&mut self, text: &str, label: &str) {
         if text.trim().is_empty() {
-            self.set_status(StatusKind::Error, "没有可以复制的内容哦。");
+            self.set_status(StatusKind::Error, "没有可以复制的内容哦喵~");
             return;
         }
         let encoded = base64(text);
@@ -1307,11 +2163,11 @@ impl App {
         let _ = stdout.flush();
         self.set_status(
             StatusKind::Ok,
-            &format!("{label}已经放进剪贴板啦（终端要支持 OSC 52 才行）。"),
+            &format!("{label}已经放进剪贴板啦（终端要支持 OSC 52 才行）喵~"),
         );
     }
 
-    pub fn open_asset(&mut self, release_index: usize, asset_index: usize) {
+    pub fn download_asset(&mut self, release_index: usize, asset_index: usize) {
         let Some(asset) = self
             .releases
             .get(release_index)
@@ -1320,8 +2176,15 @@ impl App {
         else {
             return;
         };
-        let url = self.client.accelerated(&asset.browser_download_url);
-        self.open_url(&url);
+        let Some(repo) = self.page_repo.clone().or_else(|| self.selected_repo()) else {
+            return;
+        };
+        self.start_download(
+            asset.name.clone(),
+            asset.browser_download_url,
+            repo.private,
+            asset.name,
+        );
     }
 
     pub fn open_release_page(&mut self, index: usize) {
@@ -1335,53 +2198,202 @@ impl App {
         self.open_url(&url);
     }
 
-    pub fn open_source_zip(&mut self) {
+    pub fn download_source_zip(&mut self) {
         let Some(repo) = self.effective_repo() else {
             return;
         };
-        let url = self
-            .client
-            .source_zip(&repo.display_full_name(), &repo.default_branch);
+        let branch = if repo.default_branch.is_empty() {
+            "HEAD".to_string()
+        } else {
+            repo.default_branch.clone()
+        };
+        let safe_repo = repo.display_full_name().replace('/', "-");
+        let url = format!(
+            "https://github.com/{}/archive/refs/heads/{branch}.zip",
+            repo.display_full_name()
+        );
+        self.start_download(
+            format!("{safe_repo}-{branch}.zip"),
+            url,
+            repo.private,
+            format!("{safe_repo}-{branch}.zip"),
+        );
+    }
+
+    fn start_download(&mut self, label: String, url: String, private: bool, filename: String) {
+        if self.download_job.is_some() {
+            self.set_status(
+                StatusKind::Info,
+                "上一份还在下载呢，等人家下完再点下一份嘛喵~",
+            );
+            return;
+        }
+        let directory = self.config.expanded_download_dir();
+        if let Err(error) = std::fs::create_dir_all(&directory) {
+            self.set_status(
+                StatusKind::Error,
+                &format!("下载目录建不出来：{error}喵~到设置里换一个路径嘛喵~"),
+            );
+            return;
+        }
+        let filename = safe_download_name(&filename);
+        let destination = unique_download_path(&directory, &filename);
+        self.download_seq = self.download_seq.wrapping_add(1);
+        let id = self.download_seq;
+        self.download_job = Some(DownloadJob {
+            id,
+            label: label.clone(),
+            received: 0,
+            total: None,
+        });
+        self.set_status(
+            StatusKind::Info,
+            &format!(
+                "开始下载 {label}，人家放到 {} 里啦喵~",
+                format::display_path(&directory)
+            ),
+        );
+        let tx = self.tx.clone();
+        let client = self.client.clone();
+        std::thread::spawn(move || {
+            let progress_tx = tx.clone();
+            let result =
+                client.download_asset(&url, private, &destination, move |received, total| {
+                    let _ = progress_tx.send(Msg::DownloadProgress {
+                        id,
+                        received,
+                        total,
+                    });
+                });
+            let result = result.map(|_| destination);
+            let _ = tx.send(Msg::DownloadDone { id, label, result });
+        });
+    }
+
+    pub fn open_download_dir(&mut self) {
+        let directory = self.config.expanded_download_dir();
+        if let Err(error) = std::fs::create_dir_all(&directory) {
+            self.set_status(StatusKind::Error, &format!("下载目录建不出来：{error}喵~"));
+            return;
+        }
+        match open_external(&directory.display().to_string()) {
+            Ok(()) => self.set_status(StatusKind::Ok, "下载目录已经打开啦喵~"),
+            Err(error) => self.set_status(StatusKind::Error, &error),
+        }
+    }
+
+    pub fn is_current_starred(&self) -> bool {
+        let Some(repo) = self.effective_repo() else {
+            return false;
+        };
+        self.starred
+            .iter()
+            .any(|item| item.display_full_name() == repo.display_full_name())
+    }
+
+    pub fn toggle_current_star(&mut self) {
+        let Some(repo) = self.effective_repo() else {
+            self.set_status(StatusKind::Info, "先选一个仓库，人家才改得了收藏嘛喵~");
+            return;
+        };
+        if !self.client.token_present() {
+            self.set_status(StatusKind::Error, "还没登录呢，人家改不了收藏哦喵~");
+            return;
+        }
+        let name = repo.display_full_name();
+        if self.star_loading.is_some() {
+            self.set_status(StatusKind::Info, "星星还在路上呢，等人家一下下嘛喵~");
+            return;
+        }
+        let starred = !self.is_current_starred();
+        self.star_loading = Some(name.clone());
+        self.set_status(
+            StatusKind::Info,
+            if starred {
+                "人家正在把星星点上去喵~..."
+            } else {
+                "人家正在把星星摘下来喵~..."
+            },
+        );
+        let tx = self.tx.clone();
+        let client = self.client.clone();
+        std::thread::spawn(move || {
+            let result = client.set_starred(&name, starred);
+            let _ = tx.send(Msg::StarToggled {
+                name,
+                starred,
+                result,
+            });
+        });
+    }
+
+    pub fn open_external_url(&mut self, url: &str) {
+        self.open_url(url);
+    }
+
+    pub fn open_tree_path(&mut self, path: &str, directory: bool) {
+        let Some(repo) = self.page_repo.clone().or_else(|| self.selected_repo()) else {
+            return;
+        };
+        let branch = if repo.default_branch.is_empty() {
+            "main"
+        } else {
+            &repo.default_branch
+        };
+        let kind = if directory { "tree" } else { "blob" };
+        let url = format!(
+            "{}/{kind}/{branch}/{}",
+            repo.html_url.trim_end_matches('/'),
+            path.trim_start_matches('/')
+        );
         self.open_url(&url);
     }
 
-    pub fn search_topic(&mut self, topic: String) {
-        let query = format!("topic:{topic}");
-        self.page = Page::Search;
-        self.return_page = Page::Search;
-        self.search_input = TextInput::new(query);
-        self.search_sort = SearchSort::BestMatch;
-        self.search_focus = false;
-        self.perform_search(false);
-    }
-
     pub fn scroll(&mut self, x: u16, y: u16, delta: i32) {
+        if self.overlay == Some(Overlay::Languages) {
+            let choices = self.language_choices().len();
+            let viewport = self.language_viewport.max(1);
+            let max = choices.saturating_sub(viewport);
+            let next = self.language_offset as i32 + delta;
+            self.language_offset = next.clamp(0, max as i32) as usize;
+            return;
+        }
         if self.overlay.is_some() {
             return;
         }
         let layout = self.layout;
-        if self.page == Page::Repo
-            && (layout.contains(layout.page_releases, x, y) || layout.contains(layout.detail, x, y))
-        {
-            let step = 3_i32 * delta;
-            let max = self.page_scroll_max as i32;
-            self.page_scroll = (self.page_scroll as i32 + step).clamp(0, max.max(0)) as u16;
-            return;
+        if self.page == Page::Repo {
+            if layout.contains(layout.page_tree, x, y) {
+                self.repo_pane = RepoPane::Tree;
+                let max = self.tree_scroll_max as i32;
+                self.tree_scroll = (self.tree_scroll as i32 + 3 * delta).clamp(0, max) as u16;
+                return;
+            }
+            if layout.contains(layout.page_readme, x, y) {
+                self.repo_pane = RepoPane::Readme;
+                let max = self.readme_scroll_max as i32;
+                self.readme_scroll = (self.readme_scroll as i32 + 3 * delta).clamp(0, max) as u16;
+                return;
+            }
+            if layout.contains(layout.page_releases, x, y) {
+                self.repo_pane = RepoPane::Releases;
+                let max = self.page_scroll_max as i32;
+                self.page_scroll = (self.page_scroll as i32 + 3 * delta).clamp(0, max) as u16;
+                return;
+            }
         }
         if self.page == Page::Settings {
             if delta > 0 {
-                self.settings_row = (self.settings_row + 1).min(6);
+                self.settings_row = (self.settings_row + 1).min(9);
             } else {
                 self.settings_row = self.settings_row.saturating_sub(1);
             }
             return;
         }
         if layout.contains(layout.list, x, y) {
-            let len = self.visible_indices().len();
-            let viewport = self.viewport_cards.max(1);
-            let max = len.saturating_sub(viewport);
-            let next = self.list_offset as i32 + delta;
-            self.list_offset = next.clamp(0, max as i32) as usize;
+            if delta != 0 {
+                self.move_selection(delta.signum());
+            }
         } else if layout.contains(layout.detail, x, y) {
             let step = 3_i32 * delta;
             let max = self.detail_scroll_max as i32;
@@ -1404,7 +2416,43 @@ impl App {
         if key.modifiers.contains(KeyModifiers::CONTROL)
             && matches!(key.code, KeyCode::Char('s') | KeyCode::Char('S'))
         {
-            self.save_config(true);
+            if self.overlay == Some(Overlay::EditRepo) {
+                self.save_repo_edit();
+            } else {
+                if self.editing_proxy {
+                    self.commit_proxy_edit();
+                }
+                if self.editing_download_dir {
+                    self.commit_download_dir_edit();
+                }
+                self.save_config(true);
+            }
+            return;
+        }
+        if self.overlay == Some(Overlay::EditRepo) {
+            self.handle_repo_edit_key(key);
+            return;
+        }
+        if self.overlay == Some(Overlay::Languages) {
+            match key.code {
+                KeyCode::Esc | KeyCode::Char('q') => self.overlay = None,
+                KeyCode::Up | KeyCode::Char('k') => self.move_language_selection(-1),
+                KeyCode::Down | KeyCode::Char('j') => self.move_language_selection(1),
+                KeyCode::Char('g') | KeyCode::Home => {
+                    self.language_selected = 0;
+                    self.language_offset = 0;
+                }
+                KeyCode::Char('G') | KeyCode::End => {
+                    let len = self.language_choices().len();
+                    if len > 0 {
+                        self.language_selected = len - 1;
+                        let viewport = self.language_viewport.max(1);
+                        self.language_offset = len.saturating_sub(viewport);
+                    }
+                }
+                KeyCode::Enter => self.choose_language_selection(),
+                _ => {}
+            }
             return;
         }
         if self.overlay.is_some() {
@@ -1436,6 +2484,25 @@ impl App {
             return;
         }
 
+        if self.editing_download_dir {
+            match key.code {
+                KeyCode::Enter => self.commit_download_dir_edit(),
+                KeyCode::Esc => {
+                    self.editing_download_dir = false;
+                    self.download_input = TextInput::new(self.config.download_dir.clone());
+                }
+                KeyCode::Backspace => self.download_input.backspace(),
+                KeyCode::Delete => self.download_input.delete(),
+                KeyCode::Left => self.download_input.left(),
+                KeyCode::Right => self.download_input.right(),
+                KeyCode::Home => self.download_input.home(),
+                KeyCode::End => self.download_input.end(),
+                KeyCode::Char(ch) => self.download_input.insert(ch),
+                _ => {}
+            }
+            return;
+        }
+
         if self.search_focus {
             match key.code {
                 KeyCode::Enter => self.submit_search(),
@@ -1456,6 +2523,10 @@ impl App {
             return;
         }
 
+        if self.page == Page::Repo && key.code == KeyCode::Tab {
+            self.cycle_repo_pane();
+            return;
+        }
         match key.code {
             KeyCode::Char('q') => self.quit(),
             KeyCode::Char('?') => self.overlay = Some(Overlay::Help),
@@ -1463,20 +2534,31 @@ impl App {
             KeyCode::Char('1') => self.navigate(Page::Repositories),
             KeyCode::Char('2') => self.navigate(Page::Starred),
             KeyCode::Char('3') => self.navigate(Page::Search),
-            KeyCode::Char('4') => self.navigate(Page::Settings),
+            KeyCode::Char('4') => self.open_account(),
+            KeyCode::Char('5') => self.navigate(Page::Settings),
             KeyCode::Tab => self.navigate_next_page(),
             KeyCode::Esc => match self.page {
                 Page::Repo => self.go_back(),
-                Page::Settings => self.navigate(Page::Repositories),
+                Page::Settings | Page::Account => self.navigate(Page::Repositories),
                 _ => {}
             },
             KeyCode::Char('r') => self.refresh_current(),
             KeyCode::Char('o') => self.open_current(),
             KeyCode::Char('y') => self.copy_clone(),
+            KeyCode::Char('f') => self.toggle_current_star(),
+            KeyCode::Char('e') => self.open_repo_edit(),
+            KeyCode::Char('[') => self.prev_list_page(),
+            KeyCode::Char(']') => self.next_list_page(),
+            KeyCode::Char('l') => {
+                if self.page == Page::Repositories {
+                    self.open_languages();
+                }
+            }
             KeyCode::Char('t') => self.cycle_theme(1),
             KeyCode::Enter => match self.page {
                 Page::Settings => self.activate_settings_row(),
                 Page::Repo => self.open_current(),
+                Page::Account => self.open_profile(),
                 _ => self.open_repo_page(),
             },
             KeyCode::Up | KeyCode::Char('k') => self.key_up(),
@@ -1496,13 +2578,13 @@ impl App {
             .page
             .nav_index()
             .unwrap_or_else(|| self.return_page.nav_index().unwrap_or(0));
-        let next = (current + 1) % 4;
+        let next = (current + 1) % 5;
         self.navigate(Page::from_nav(next));
     }
 
     fn key_up(&mut self) {
         match self.page {
-            Page::Repo => self.page_scroll = self.page_scroll.saturating_sub(1),
+            Page::Repo => self.scroll_repo_pane(-1),
             Page::Settings => self.settings_row = self.settings_row.saturating_sub(1),
             _ => self.move_selection(-1),
         }
@@ -1510,41 +2592,119 @@ impl App {
 
     fn key_down(&mut self) {
         match self.page {
-            Page::Repo => self.page_scroll = (self.page_scroll + 1).min(self.page_scroll_max),
-            Page::Settings => self.settings_row = (self.settings_row + 1).min(6),
+            Page::Repo => self.scroll_repo_pane(1),
+            Page::Settings => self.settings_row = (self.settings_row + 1).min(9),
             _ => self.move_selection(1),
         }
     }
 
     fn key_home(&mut self) {
         match self.page {
-            Page::Repo => self.page_scroll = 0,
+            Page::Repo => self.set_repo_pane_scroll(0),
             Page::Settings => self.settings_row = 0,
-            _ => self.move_selection_to(false),
+            Page::Account => {}
+            _ => self.first_list_page(),
         }
     }
 
     fn key_end(&mut self) {
         match self.page {
-            Page::Repo => self.page_scroll = self.page_scroll_max,
-            Page::Settings => self.settings_row = 6,
-            _ => self.move_selection_to(true),
+            Page::Repo => self.set_repo_pane_scroll(u16::MAX),
+            Page::Settings => self.settings_row = 9,
+            Page::Account => {}
+            _ => self.last_list_page(),
         }
     }
 
     fn key_page_up(&mut self) {
         match self.page {
-            Page::Repo => self.page_scroll = self.page_scroll.saturating_sub(10),
+            Page::Repo => self.scroll_repo_pane(-10),
             Page::Settings => self.settings_row = self.settings_row.saturating_sub(3),
-            _ => self.move_selection(-5),
+            Page::Account => {}
+            _ => self.prev_list_page(),
         }
     }
 
     fn key_page_down(&mut self) {
         match self.page {
-            Page::Repo => self.page_scroll = (self.page_scroll + 10).min(self.page_scroll_max),
-            Page::Settings => self.settings_row = (self.settings_row + 3).min(6),
-            _ => self.move_selection(5),
+            Page::Repo => self.scroll_repo_pane(10),
+            Page::Settings => self.settings_row = (self.settings_row + 3).min(9),
+            Page::Account => {}
+            _ => self.next_list_page(),
+        }
+    }
+
+    pub fn cycle_repo_pane(&mut self) {
+        let order = [RepoPane::Tree, RepoPane::Releases, RepoPane::Readme];
+        let enabled = |pane: RepoPane| match pane {
+            RepoPane::Tree => self.config.show_file_tree,
+            RepoPane::Readme => self.config.show_readme,
+            RepoPane::Releases => true,
+        };
+        let start = order
+            .iter()
+            .position(|pane| *pane == self.repo_pane)
+            .unwrap_or(1);
+        for step in 1..=order.len() {
+            let pane = order[(start + step) % order.len()];
+            if enabled(pane) {
+                self.repo_pane = pane;
+                return;
+            }
+        }
+    }
+
+    pub fn set_repo_pane(&mut self, pane: RepoPane) {
+        let available = match pane {
+            RepoPane::Tree => self.config.show_file_tree,
+            RepoPane::Readme => self.config.show_readme,
+            RepoPane::Releases => true,
+        };
+        if available {
+            self.repo_pane = pane;
+        }
+    }
+
+    fn scroll_repo_pane(&mut self, delta: i32) {
+        match self.repo_pane {
+            RepoPane::Tree => {
+                let max = self.tree_scroll_max as i32;
+                self.tree_scroll = (self.tree_scroll as i32 + delta).clamp(0, max) as u16;
+            }
+            RepoPane::Readme => {
+                let max = self.readme_scroll_max as i32;
+                self.readme_scroll = (self.readme_scroll as i32 + delta).clamp(0, max) as u16;
+            }
+            RepoPane::Releases => {
+                let max = self.page_scroll_max as i32;
+                self.page_scroll = (self.page_scroll as i32 + delta).clamp(0, max) as u16;
+            }
+        }
+    }
+
+    fn set_repo_pane_scroll(&mut self, value: u16) {
+        match self.repo_pane {
+            RepoPane::Tree => {
+                self.tree_scroll = if value == u16::MAX {
+                    self.tree_scroll_max
+                } else {
+                    value
+                };
+            }
+            RepoPane::Readme => {
+                self.readme_scroll = if value == u16::MAX {
+                    self.readme_scroll_max
+                } else {
+                    value
+                };
+            }
+            RepoPane::Releases => {
+                self.page_scroll = if value == u16::MAX {
+                    self.page_scroll_max
+                } else {
+                    value
+                };
+            }
         }
     }
 
@@ -1563,9 +2723,11 @@ impl App {
     fn adjust_settings(&mut self, direction: i32) {
         match self.settings_row {
             0 => self.cycle_theme(direction),
-            2 => self.adjust_ttl(TtlKind::Repositories, direction),
-            3 => self.adjust_ttl(TtlKind::Detail, direction),
-            4 => self.adjust_ttl(TtlKind::Search, direction),
+            1 => self.toggle_file_tree(),
+            2 => self.toggle_readme(),
+            5 => self.adjust_ttl(TtlKind::Repositories, direction),
+            6 => self.adjust_ttl(TtlKind::Detail, direction),
+            7 => self.adjust_ttl(TtlKind::Search, direction),
             _ => {}
         }
     }
@@ -1573,12 +2735,15 @@ impl App {
     fn activate_settings_row(&mut self) {
         match self.settings_row {
             0 => self.cycle_theme(1),
-            1 => self.start_proxy_edit(),
-            2 => self.adjust_ttl(TtlKind::Repositories, 1),
-            3 => self.adjust_ttl(TtlKind::Detail, 1),
-            4 => self.adjust_ttl(TtlKind::Search, 1),
-            5 => self.clear_cache(),
-            6 => self.save_config(true),
+            1 => self.toggle_file_tree(),
+            2 => self.toggle_readme(),
+            3 => self.start_download_dir_edit(),
+            4 => self.start_proxy_edit(),
+            5 => self.adjust_ttl(TtlKind::Repositories, 1),
+            6 => self.adjust_ttl(TtlKind::Detail, 1),
+            7 => self.adjust_ttl(TtlKind::Search, 1),
+            8 => self.clear_cache(),
+            9 => self.save_config(true),
             _ => {}
         }
     }
@@ -1602,7 +2767,7 @@ impl App {
         self.set_status(
             StatusKind::Info,
             &format!(
-                "主题换成 {} 啦，记得到设置页保存哦。",
+                "主题换成 {} 啦，记得到设置页保存哦喵~",
                 Theme::label(&flavor)
             ),
         );
@@ -1611,7 +2776,92 @@ impl App {
     pub fn start_proxy_edit(&mut self) {
         self.editing_proxy = true;
         self.proxy_input = TextInput::new(self.config.proxy.clone());
+        self.settings_row = 4;
+    }
+
+    pub fn start_download_dir_edit(&mut self) {
+        self.editing_download_dir = true;
+        self.download_input = TextInput::new(self.config.download_dir.clone());
+        self.settings_row = 3;
+    }
+
+    fn commit_download_dir_edit(&mut self) {
+        let value = self.download_input.value.trim().to_string();
+        if value.is_empty() {
+            self.set_status(StatusKind::Error, "下载目录不能空着呀，给人家一个路径嘛喵~");
+            return;
+        }
+        let expanded = crate::config::expand_tilde(&value);
+        if !expanded.is_absolute() {
+            self.set_status(
+                StatusKind::Error,
+                "下载目录最好写绝对路径，或者用 ~/ 开头的路径哦喵~",
+            );
+            return;
+        }
+        self.config.download_dir = value;
+        self.editing_download_dir = false;
+        self.config_dirty = true;
+        if let Err(error) = std::fs::create_dir_all(self.config.expanded_download_dir()) {
+            self.set_status(
+                StatusKind::Error,
+                &format!("下载目录建不出来：{error}，换一个路径试试嘛喵~"),
+            );
+            return;
+        }
+        self.set_status(
+            StatusKind::Info,
+            &format!(
+                "下载目录改成 {} 啦，记得保存哦喵~",
+                self.download_path_label()
+            ),
+        );
+    }
+
+    pub fn toggle_file_tree(&mut self) {
         self.settings_row = 1;
+        self.config.show_file_tree = !self.config.show_file_tree;
+        self.config_dirty = true;
+        if !self.config.show_file_tree && self.repo_pane == RepoPane::Tree {
+            self.repo_pane = RepoPane::Releases;
+        }
+        if self.config.show_file_tree
+            && self.page == Page::Repo
+            && let Some(repo) = self.page_repo.clone()
+        {
+            self.schedule_repo_extras(&repo, false);
+        }
+        self.set_status(
+            StatusKind::Info,
+            if self.config.show_file_tree {
+                "文件树预览打开啦，到仓库页就能看到呢喵~"
+            } else {
+                "文件树预览关掉啦喵~"
+            },
+        );
+    }
+
+    pub fn toggle_readme(&mut self) {
+        self.settings_row = 2;
+        self.config.show_readme = !self.config.show_readme;
+        self.config_dirty = true;
+        if !self.config.show_readme && self.repo_pane == RepoPane::Readme {
+            self.repo_pane = RepoPane::Releases;
+        }
+        if self.config.show_readme
+            && self.page == Page::Repo
+            && let Some(repo) = self.page_repo.clone()
+        {
+            self.schedule_repo_extras(&repo, false);
+        }
+        self.set_status(
+            StatusKind::Info,
+            if self.config.show_readme {
+                "README 预览打开啦，会放在仓库页最下面哦喵~"
+            } else {
+                "README 预览关掉啦喵~"
+            },
+        );
     }
 
     fn commit_proxy_edit(&mut self) {
@@ -1624,7 +2874,7 @@ impl App {
         if !(value.starts_with("https://") || value.starts_with("http://")) {
             self.set_status(
                 StatusKind::Error,
-                "代理地址要以 http:// 或 https:// 开头哦。",
+                "代理地址要以 http:// 或 https:// 开头哦喵~",
             );
             return;
         }
@@ -1632,7 +2882,10 @@ impl App {
         self.client.set_proxy(&value);
         self.editing_proxy = false;
         self.config_dirty = true;
-        self.set_status(StatusKind::Info, "代理设置改好了，保存之后会写进配置文件。");
+        self.set_status(
+            StatusKind::Info,
+            "代理地址改好啦，保存之后才会写进配置文件哦喵~",
+        );
     }
 
     pub fn adjust_ttl(&mut self, kind: TtlKind, direction: i32) {
@@ -1652,22 +2905,26 @@ impl App {
         self.config_dirty = true;
         self.set_status(
             StatusKind::Info,
-            &format!("缓存时间调成 {} 了，记得保存哦。", format::ttl_label(next)),
+            &format!("缓存时间调成 {} 了，记得保存哦喵~", format::ttl_label(next)),
         );
     }
 
     pub fn save_config(&mut self, announce: bool) {
         if let Err(error) = self.config.save(&self.paths) {
-            self.set_status(StatusKind::Error, &format!("配置文件没有写进去：{error}"));
+            self.set_status(
+                StatusKind::Error,
+                &format!("配置文件没写进去呢：{error}喵~"),
+            );
             return;
         }
         self.client.set_proxy(&self.config.proxy);
+        let _ = std::fs::create_dir_all(self.config.expanded_download_dir());
         self.config_dirty = false;
         if announce {
             self.set_status(
                 StatusKind::Ok,
                 &format!(
-                    "配置保存好啦：{}",
+                    "配置写好啦：{}喵~",
                     format::display_path(&self.paths.config_file())
                 ),
             );
@@ -1678,21 +2935,40 @@ impl App {
         match self.cache.clear() {
             Ok(()) => {
                 self.refresh_cache_stats();
-                self.set_status(StatusKind::Ok, "缓存已经清空啦，下次会重新拉取。");
+                self.set_status(StatusKind::Ok, "缓存清干净啦，下次人家会重新取喵~");
             }
-            Err(error) => self.set_status(StatusKind::Error, &format!("缓存没清掉：{error}")),
+            Err(error) => self.set_status(StatusKind::Error, &format!("缓存没清掉呢：{error}喵~")),
         }
     }
 
     pub fn handle_settings_row(&mut self, row: usize) {
-        self.settings_row = row.min(6);
+        self.settings_row = row.min(9);
     }
 
     pub fn handle_paste(&mut self, text: &str) {
+        if self.overlay == Some(Overlay::EditRepo) {
+            if let Some(edit) = self.repo_edit.as_mut()
+                && edit.editing
+            {
+                for ch in text.chars().filter(|ch| *ch != '\n' && *ch != '\r') {
+                    match edit.row {
+                        0 => edit.description.insert(ch),
+                        1 => edit.homepage.insert(ch),
+                        2 => edit.topics.insert(ch),
+                        _ => {}
+                    }
+                }
+            }
+            return;
+        }
         if self.overlay.is_some() {
             return;
         }
-        if self.editing_proxy {
+        if self.editing_download_dir {
+            for ch in text.chars().filter(|ch| *ch != '\n' && *ch != '\r') {
+                self.download_input.insert(ch);
+            }
+        } else if self.editing_proxy {
             for ch in text.chars().filter(|ch| *ch != '\n' && *ch != '\r') {
                 self.proxy_input.insert(ch);
             }
@@ -1706,7 +2982,7 @@ impl App {
     pub fn handle_mouse(&mut self, mouse: MouseEvent) {
         match mouse.kind {
             MouseEventKind::Moved => {
-                if self.overlay.is_some() {
+                if self.overlay == Some(Overlay::Help) {
                     self.hover = None;
                     return;
                 }
@@ -1717,8 +2993,19 @@ impl App {
             MouseEventKind::ScrollUp => self.scroll(mouse.column, mouse.row, -1),
             MouseEventKind::ScrollDown => self.scroll(mouse.column, mouse.row, 1),
             MouseEventKind::Down(MouseButton::Left) => {
-                if self.overlay.is_some() {
+                if self.overlay == Some(Overlay::Help) {
                     self.overlay = None;
+                    return;
+                }
+                if self.overlay == Some(Overlay::Languages) {
+                    if let Some(hit) = self.hit_at(mouse.column, mouse.row).cloned() {
+                        self.handle_action(hit.action);
+                    } else if !self
+                        .layout
+                        .contains(self.layout.overlay, mouse.column, mouse.row)
+                    {
+                        self.overlay = None;
+                    }
                     return;
                 }
                 if let Some(hit) = self.hit_at(mouse.column, mouse.row).cloned() {
@@ -1770,19 +3057,49 @@ impl App {
             Action::CopyClone => self.copy_clone(),
             Action::SetTheme(flavor) => self.set_theme(flavor),
             Action::StartProxyEdit => self.start_proxy_edit(),
+            Action::StartDownloadDirEdit => self.start_download_dir_edit(),
+            Action::ToggleFileTree => self.toggle_file_tree(),
+            Action::ToggleReadme => self.toggle_readme(),
             Action::Ttl(kind, direction) => self.adjust_ttl(kind, direction),
             Action::ClearCache => self.clear_cache(),
             Action::SaveConfig => self.save_config(true),
+            Action::OpenDownloadDir => self.open_download_dir(),
             Action::SetSettingsRow(row) => self.handle_settings_row(row),
-            Action::OpenAsset { release, asset } => self.open_asset(release, asset),
+            Action::OpenLanguages => self.open_languages(),
+            Action::DownloadAsset { release, asset } => self.download_asset(release, asset),
+            Action::DownloadSource => self.download_source_zip(),
             Action::OpenReleasePage(index) => self.open_release_page(index),
-            Action::SourceZip => self.open_source_zip(),
-            Action::Topic(topic) => self.search_topic(topic),
-            Action::CloseOverlay => self.overlay = None,
+            Action::OpenTreePath { path, directory } => self.open_tree_path(&path, directory),
+            Action::FocusRepoPane(pane) => self.set_repo_pane(pane),
+            Action::OpenExternal(url) => self.open_external_url(&url),
+            Action::ToggleStar => self.toggle_current_star(),
+            Action::CloseOverlay => {
+                self.overlay = None;
+                self.repo_edit = None;
+            }
+            Action::PrevListPage => self.prev_list_page(),
+            Action::NextListPage => self.next_list_page(),
+            Action::OpenRepoEdit => self.open_repo_edit(),
+            Action::EditRepoRow(row) => {
+                if let Some(edit) = self.repo_edit.as_mut() {
+                    edit.row = row.min(4);
+                    edit.editing = row <= 2;
+                    if row == 3 {
+                        edit.private = !edit.private;
+                    } else if row == 4 {
+                        edit.archived = !edit.archived;
+                    }
+                }
+            }
+            Action::SaveRepoEdit => self.save_repo_edit(),
+            Action::RefreshRateLimit => self.fetch_rate_limit(true),
         }
     }
 
     pub fn quit(&mut self) {
+        if self.editing_download_dir {
+            self.commit_download_dir_edit();
+        }
         if self.editing_proxy {
             self.commit_proxy_edit();
         }
@@ -1795,6 +3112,58 @@ impl App {
     pub fn config_file_label(&self) -> String {
         format::display_path(&self.paths.config_file())
     }
+}
+
+fn tree_cache_key(name: &str, branch: &str) -> String {
+    format!("tree_{}_{}", key_part(name), key_part(branch))
+}
+
+fn readme_cache_key(name: &str) -> String {
+    format!("readme_{}", key_part(name))
+}
+
+fn safe_download_name(name: &str) -> String {
+    let base = std::path::Path::new(name)
+        .file_name()
+        .and_then(|value| value.to_str())
+        .unwrap_or("download");
+    let mut out: String = base
+        .chars()
+        .filter(|ch| {
+            !ch.is_control() && !matches!(ch, '/' | '\\' | ':' | '*' | '?' | '"' | '<' | '>' | '|')
+        })
+        .take(180)
+        .collect();
+    out = out.trim().trim_matches('.').to_string();
+    if out.is_empty() {
+        "download".to_string()
+    } else {
+        out
+    }
+}
+
+fn unique_download_path(directory: &std::path::Path, filename: &str) -> std::path::PathBuf {
+    let path = directory.join(filename);
+    if !path.exists() {
+        return path;
+    }
+    let path_buf = std::path::Path::new(filename);
+    let stem = path_buf
+        .file_stem()
+        .and_then(|value| value.to_str())
+        .unwrap_or(filename);
+    let extension = path_buf
+        .extension()
+        .and_then(|value| value.to_str())
+        .map(|value| format!(".{value}"))
+        .unwrap_or_default();
+    for index in 1..=10_000 {
+        let candidate = directory.join(format!("{stem} ({index}){extension}"));
+        if !candidate.exists() {
+            return candidate;
+        }
+    }
+    directory.join(format!("{stem}-{}{extension}", std::process::id()))
 }
 
 fn sort_indices(raw: &[Repo], indices: &mut [usize], sort: RepoSort) {
@@ -1830,6 +3199,18 @@ fn cycle_ttl(current: u64, direction: i32) -> u64 {
     STEPS[next]
 }
 
+fn page_count(len: usize, size: usize) -> usize {
+    len.div_ceil(size.max(1)).max(1)
+}
+
+fn page_index(selected: usize, size: usize) -> usize {
+    selected / size.max(1)
+}
+
+fn page_start(selected: usize, size: usize) -> usize {
+    page_index(selected, size) * size.max(1)
+}
+
 fn open_external(url: &str) -> Result<(), String> {
     #[cfg(target_os = "macos")]
     let mut command = {
@@ -1854,7 +3235,7 @@ fn open_external(url: &str) -> Result<(), String> {
         .stderr(std::process::Stdio::null())
         .spawn()
         .map(|_| ())
-        .map_err(|error| format!("没能调起浏览器：{error}"))
+        .map_err(|error| format!("没能调起浏览器：{error}喵~"))
 }
 
 #[cfg(test)]
@@ -1867,6 +3248,54 @@ mod tests {
         assert_eq!(cycle_ttl(60, 1), 300);
         assert_eq!(cycle_ttl(300, 1), 600);
         assert_eq!(cycle_ttl(86_400, 1), 86_400);
+    }
+
+    #[test]
+    fn download_names_are_safe() {
+        assert_eq!(safe_download_name("../../evil.tar.gz"), "evil.tar.gz");
+        assert_eq!(safe_download_name("a/b/c.zip"), "c.zip");
+        assert_eq!(safe_download_name(""), "download");
+        assert!(!safe_download_name("a:b?.zip").contains(':'));
+    }
+
+    #[test]
+    fn unique_download_path_keeps_existing_files() {
+        let dir = std::env::temp_dir().join(format!("gitx-download-test-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let first = unique_download_path(&dir, "app.zip");
+        assert_eq!(first.file_name().unwrap(), "app.zip");
+        std::fs::write(&first, b"x").unwrap();
+        let second = unique_download_path(&dir, "app.zip");
+        assert_eq!(second.file_name().unwrap(), "app (1).zip");
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn pagination_math_is_stable() {
+        assert_eq!(page_count(0, 4), 1);
+        assert_eq!(page_count(8, 4), 2);
+        assert_eq!(page_count(9, 4), 3);
+        assert_eq!(page_index(0, 4), 0);
+        assert_eq!(page_index(5, 4), 1);
+        assert_eq!(page_start(5, 4), 4);
+        assert_eq!(page_start(9, 4), 8);
+    }
+
+    #[test]
+    fn repo_edit_normalizes_topics() {
+        let repo = Repo {
+            name: "demo".to_string(),
+            owner: crate::model::Owner {
+                login: "me".to_string(),
+                ..Default::default()
+            },
+            topics: vec!["Rust".to_string(), "CLI".to_string()],
+            ..Default::default()
+        };
+        let mut edit = RepoEdit::from_repo(&repo);
+        edit.topics = TextInput::new("#Rust, cli  TUI");
+        assert_eq!(edit.topics_list(), vec!["rust", "cli", "tui"]);
     }
 
     #[test]
