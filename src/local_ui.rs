@@ -1,7 +1,7 @@
 use crate::format;
 use crate::icons;
 use crate::local::StatusFile;
-use crate::local_app::{LocalApp, LocalPane, PromptKind};
+use crate::local_app::{LocalApp, LocalLayout, LocalPane, PromptKind};
 use crate::theme::Theme;
 use ratatui::Frame;
 use ratatui::layout::{Alignment, Constraint, Layout, Position, Rect};
@@ -15,6 +15,7 @@ const MIN_HEIGHT: u16 = 22;
 pub fn draw(frame: &mut Frame, app: &mut LocalApp) {
     let area = frame.area();
     let theme = app.theme.clone();
+    app.layout = LocalLayout::default();
     fill(frame, area, theme.color("base"));
     if area.width < MIN_WIDTH || area.height < MIN_HEIGHT {
         draw_center(
@@ -200,6 +201,7 @@ fn draw_branches(frame: &mut Frame, app: &mut LocalApp, theme: &Theme, area: Rec
         )
     );
     let body = panel(frame, theme, area, &title, app.pane == LocalPane::Branches);
+    app.layout.branches = body;
     app.branch_rows = body.height.max(1) as usize;
     if body.height == 0 {
         return;
@@ -253,6 +255,7 @@ fn draw_tags(frame: &mut Frame, app: &mut LocalApp, theme: &Theme, area: Rect) {
         page_label(app.repo.tags.len(), app.tag_selected, app.tag_rows)
     );
     let body = panel(frame, theme, area, &title, app.pane == LocalPane::Tags);
+    app.layout.tags = body;
     app.tag_rows = body.height.max(1) as usize;
     if body.height == 0 {
         return;
@@ -300,6 +303,7 @@ fn draw_status(frame: &mut Frame, app: &mut LocalApp, theme: &Theme, area: Rect)
         page_label(app.repo.files.len(), app.file_selected, app.status_rows)
     );
     let body = panel(frame, theme, area, &title, app.pane == LocalPane::Status);
+    app.layout.status = body;
     app.status_rows = body.height.max(1) as usize;
     if body.height == 0 {
         return;
@@ -373,6 +377,7 @@ fn draw_diff(frame: &mut Frame, app: &mut LocalApp, theme: &Theme, area: Rect) {
         }
     );
     let body = panel(frame, theme, area, &title, app.pane == LocalPane::Diff);
+    app.layout.diff = body;
     app.diff_scroll_max = app
         .diff_text
         .lines()
@@ -420,6 +425,7 @@ fn draw_commits(frame: &mut Frame, app: &mut LocalApp, theme: &Theme, area: Rect
         page_label(app.repo.commits.len(), app.commit_selected, app.commit_rows)
     );
     let body = panel(frame, theme, area, &title, app.pane == LocalPane::Commits);
+    app.layout.commits = body;
     app.commit_rows = (body.height / 2).max(1) as usize;
     if body.height == 0 {
         return;
@@ -495,7 +501,7 @@ fn draw_footer(frame: &mut Frame, app: &LocalApp, theme: &Theme, area: Rect) {
     );
     frame.render_widget(
         Paragraph::new(format::truncate(
-            "Tab 面板  j/k 选  [ ] 翻页  s/u 暂存 S/U 全部  d 差异  c 提交  t 标签  p 推送  P 推标签  f 取回  L 拉取  r 刷新  q 退出喵~",
+            "Tab 面板  j/k 选  [ ] 翻页  s/u 暂存 S/U 全部  d 差异  c 提交 A 改提交  t 标签  b 分支  x 丢弃  z/Z stash  p/P 推送  f 取回  L 拉取  r 刷新  q 退出喵~",
             area.width.saturating_sub(4) as usize,
         ))
         .style(Style::default().fg(theme.color("overlay0"))),
@@ -509,7 +515,10 @@ fn draw_prompt(frame: &mut Frame, app: &mut LocalApp, theme: &Theme, area: Rect)
     };
     let (title, placeholder) = match prompt.kind {
         PromptKind::Commit => ("提交信息喵~", "写点什么喵~"),
+        PromptKind::Amend => ("修改提交信息喵~", "新的提交信息喵~"),
         PromptKind::Tag => ("标签名喵~", "比如 v0.1.2 喵~"),
+        PromptKind::Branch => ("新分支名喵~", "比如 feature/xxx 喵~"),
+        PromptKind::Discard => ("确认丢弃喵~", ""),
     };
     let width = area.width.saturating_sub(12).min(70);
     let height = 8.min(area.height.saturating_sub(4));
@@ -536,6 +545,25 @@ fn draw_prompt(frame: &mut Frame, app: &mut LocalApp, theme: &Theme, area: Rect)
     let inner = block.inner(rect);
     frame.render_widget(block, rect);
     fill(frame, inner, theme.color("mantle"));
+    if prompt.kind == PromptKind::Discard {
+        let path = prompt.target.as_deref().unwrap_or("");
+        frame.render_widget(
+            Paragraph::new(format::truncate(path, inner.width as usize))
+                .style(Style::default().fg(theme.color("peach"))),
+            Rect::new(inner.x, inner.y + 1, inner.width, 1),
+        );
+        frame.render_widget(
+            Paragraph::new("这个文件的全部改动都会被丢弃喵~")
+                .style(Style::default().fg(theme.color("red"))),
+            Rect::new(inner.x, inner.y + 2, inner.width, 1),
+        );
+        frame.render_widget(
+            Paragraph::new("Enter 确认丢弃   Esc 取消喵~")
+                .style(Style::default().fg(theme.color("overlay0"))),
+            Rect::new(inner.x, inner.y + 4, inner.width, 1),
+        );
+        return;
+    }
     let input_rect = Rect::new(inner.x, inner.y + 1, inner.width, 1);
     fill(frame, input_rect, theme.color("surface0"));
     let (shown, cursor_column) = prompt.input.visible_window(inner.width as usize);

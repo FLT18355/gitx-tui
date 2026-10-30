@@ -10,6 +10,7 @@ use crate::model::{
 use crate::theme::{FLAVORS, Theme};
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers, MouseButton, MouseEvent, MouseEventKind};
 use ratatui::layout::Rect;
+use std::collections::HashSet;
 use std::io::Write;
 use std::sync::mpsc::{self, Receiver, Sender};
 use std::time::{Duration, Instant};
@@ -124,6 +125,7 @@ pub enum Action {
     DownloadAsset { release: usize, asset: usize },
     DownloadSource,
     OpenReleasePage(usize),
+    ToggleReleaseAssets(usize),
     OpenTreePath { path: String, directory: bool },
     FocusRepoPane(RepoPane),
     OpenExternal(String),
@@ -475,6 +477,7 @@ pub struct App {
     pub detail_fetched_at: Option<i64>,
     pub releases: Vec<Release>,
     pub releases_fetched_at: Option<i64>,
+    pub expanded_releases: HashSet<String>,
     pub detail_scroll: u16,
     pub detail_scroll_max: u16,
     pub page_repo: Option<Repo>,
@@ -623,6 +626,7 @@ impl App {
             detail_fetched_at: None,
             releases: Vec::new(),
             releases_fetched_at: None,
+            expanded_releases: HashSet::new(),
             detail_scroll: 0,
             detail_scroll_max: 0,
             page_repo: None,
@@ -2716,6 +2720,7 @@ impl App {
         self.detail_for = None;
         self.detail = None;
         self.releases.clear();
+        self.expanded_releases.clear();
         self.detail_fetched_at = None;
         self.releases_fetched_at = None;
         self.load_detail_cache(&repo);
@@ -3918,6 +3923,14 @@ impl App {
             Action::DownloadAsset { release, asset } => self.download_asset(release, asset),
             Action::DownloadSource => self.download_source_zip(),
             Action::OpenReleasePage(index) => self.open_release_page(index),
+            Action::ToggleReleaseAssets(index) => {
+                if let Some(release) = self.releases.get(index) {
+                    let tag = release.tag_name.clone();
+                    if !self.expanded_releases.remove(&tag) {
+                        self.expanded_releases.insert(tag);
+                    }
+                }
+            }
             Action::OpenTreePath { path, directory } => self.open_tree_path(&path, directory),
             Action::FocusRepoPane(pane) => self.set_repo_pane(pane),
             Action::OpenExternal(url) => self.open_external_url(&url),

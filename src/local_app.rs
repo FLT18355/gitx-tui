@@ -6,8 +6,12 @@ use crate::local_ops;
 use crate::local_ui;
 use crate::theme::{FLAVORS, Theme};
 use anyhow::Result;
-use crossterm::event::{self, Event, KeyCode, KeyEvent, KeyEventKind, KeyModifiers};
+use crossterm::event::{
+    self, Event, KeyCode, KeyEvent, KeyEventKind, KeyModifiers, MouseButton, MouseEvent,
+    MouseEventKind,
+};
 use ratatui::DefaultTerminal;
+use ratatui::layout::Rect;
 use std::path::Path;
 use std::sync::mpsc::{self, Receiver, Sender};
 use std::time::{Duration, Instant};
@@ -24,12 +28,25 @@ pub enum LocalPane {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum PromptKind {
     Commit,
+    Amend,
     Tag,
+    Branch,
+    Discard,
 }
 
 pub struct Prompt {
     pub kind: PromptKind,
     pub input: TextInput,
+    pub target: Option<String>,
+}
+
+#[derive(Debug, Clone, Copy, Default)]
+pub struct LocalLayout {
+    pub branches: Rect,
+    pub tags: Rect,
+    pub status: Rect,
+    pub diff: Rect,
+    pub commits: Rect,
 }
 
 struct LocalMsg {
@@ -39,6 +56,7 @@ struct LocalMsg {
 pub struct LocalApp {
     pub theme: Theme,
     pub repo: LocalRepo,
+    pub layout: LocalLayout,
     pub pane: LocalPane,
     pub diff_context: LocalPane,
     pub file_selected: usize,
@@ -86,6 +104,7 @@ impl LocalApp {
         let mut app = Self {
             theme,
             repo,
+            layout: LocalLayout::default(),
             pane: LocalPane::Status,
             diff_context: LocalPane::Status,
             file_selected: 0,
@@ -451,8 +470,24 @@ impl LocalApp {
         self.prompt = Some(Prompt {
             kind: PromptKind::Commit,
             input: TextInput::new(""),
+            target: None,
         });
         self.message = "写提交信息，Enter 提交，Esc 取消喵~".to_string();
+        self.message_error = false;
+    }
+
+    fn begin_amend(&mut self) {
+        let Some(commit) = self.repo.commits.first() else {
+            self.message = "还没有提交可以 amend 喵~".to_string();
+            self.message_error = true;
+            return;
+        };
+        self.prompt = Some(Prompt {
+            kind: PromptKind::Amend,
+            input: TextInput::new(commit.summary.clone()),
+            target: None,
+        });
+        self.message = "修改最后一条提交信息，Enter 确认，Esc 取消喵~".to_string();
         self.message_error = false;
     }
 
@@ -460,8 +495,34 @@ impl LocalApp {
         self.prompt = Some(Prompt {
             kind: PromptKind::Tag,
             input: TextInput::new(""),
+            target: None,
         });
         self.message = "写标签名，Enter 创建，Esc 取消喵~".to_string();
+        self.message_error = false;
+    }
+
+    fn begin_branch(&mut self) {
+        self.prompt = Some(Prompt {
+            kind: PromptKind::Branch,
+            input: TextInput::new(""),
+            target: None,
+        });
+        self.message = "写新分支名，Enter 创建并切换，Esc 取消喵~".to_string();
+        self.message_error = false;
+    }
+
+    fn begin_discard(&mut self) {
+        let Some(file) = self.selected_file().cloned() else {
+            self.message = "先选中一个文件再丢弃喵~".to_string();
+            self.message_error = true;
+            return;
+        };
+        self.prompt = Some(Prompt {
+            kind: PromptKind::Discard,
+            input: TextInput::new(""),
+            target: Some(file.path),
+        });
+        self.message = "这条改动会真实丢弃，Enter 确认，Esc 取消喵~".to_string();
         self.message_error = false;
     }
 
@@ -470,18 +531,27 @@ impl LocalApp {
             return;
         };
         let kind = prompt.kind;
+        let target = prompt.target.clone();
         let value = prompt.input.value.trim().to_string();
-        if value.is_empty() {
+        if !matches!(kind, PromptKind::Discard) && value.is_empty() {
             self.message = match kind {
-                PromptKind::Commit => "提交信息不能空着喵~".to_string(),
+                PromptKind::Commit | PromptKind::Amend => "提交信息不能空着喵~".to_string(),
                 PromptKind::Tag => "标签名不能空着喵~".to_string(),
+                PromptKind::Branch => "分支名不能空着喵~".to_string(),
+                PromptKind::Discard => String::new(),
             };
             self.message_error = true;
             return;
         }
         let result = match kind {
             PromptKind::Commit => local_ops::commit(&self.repo.root, &value),
+            PromptKind::Amend => local_ops::amend(&self.repo.root, &value),
             PromptKind::Tag => local_ops::create_tag(&self.repo.root, &value),
+            PromptKind::Branch => local_ops::create_branch(&self.repo.root, &value),
+            PromptKind::Discard => match target.as_deref() {
+                Some(path) => local_ops::discard(&self.repo.root, path),
+                None => Err("没有选中要丢弃的文件喵~".to_string()),
+            },
         };
         match result {
             Ok(()) => {
@@ -489,8 +559,41 @@ impl LocalApp {
                 self.refresh();
                 self.message = match kind {
                     PromptKind::Commit => "提交好啦喵~".to_string(),
+                    PromptKind::Amend => "最后一条提交改好啦喵~".to_string(),
                     PromptKind::Tag => format!("标签 {value} 创建好啦喵~"),
+                    PromptKind::Branch => format!("分支 {value} 建好并切过去啦喵~"),
+                    PromptKind::Discard => {
+                        format!("{} 的改动丢弃啦喵~", target.unwrap_or_default())
+                    }
                 };
+                self.message_error = false;
+            }
+            Err(error) => {
+                self.message = error;
+                self.message_error = true;
+            }
+        }
+    }
+
+    fn stash_save(&mut self) {
+        match local_ops::stash_save(&self.repo.root) {
+            Ok(message) => {
+                self.refresh();
+                self.message = message;
+                self.message_error = false;
+            }
+            Err(error) => {
+                self.message = error;
+                self.message_error = true;
+            }
+        }
+    }
+
+    fn stash_pop(&mut self) {
+        match local_ops::stash_pop(&self.repo.root) {
+            Ok(message) => {
+                self.refresh();
+                self.message = message;
                 self.message_error = false;
             }
             Err(error) => {
@@ -583,7 +686,10 @@ impl LocalApp {
                 self.prompt = None;
                 self.message = match kind {
                     Some(PromptKind::Commit) => "取消提交啦喵~".to_string(),
+                    Some(PromptKind::Amend) => "取消修改提交啦喵~".to_string(),
                     Some(PromptKind::Tag) => "取消创建标签啦喵~".to_string(),
+                    Some(PromptKind::Branch) => "取消创建分支啦喵~".to_string(),
+                    Some(PromptKind::Discard) => "取消丢弃啦喵~".to_string(),
                     None => String::new(),
                 };
                 self.message_error = false;
@@ -594,6 +700,9 @@ impl LocalApp {
         let Some(prompt) = self.prompt.as_mut() else {
             return;
         };
+        if prompt.kind == PromptKind::Discard {
+            return;
+        }
         match key.code {
             KeyCode::Backspace => prompt.input.backspace(),
             KeyCode::Delete => prompt.input.delete(),
@@ -602,6 +711,126 @@ impl LocalApp {
             KeyCode::Home => prompt.input.home(),
             KeyCode::End => prompt.input.end(),
             KeyCode::Char(ch) => prompt.input.insert(ch),
+            _ => {}
+        }
+    }
+
+    fn pane_at(&self, x: u16, y: u16) -> Option<LocalPane> {
+        let rects = [
+            (LocalPane::Branches, self.layout.branches),
+            (LocalPane::Tags, self.layout.tags),
+            (LocalPane::Status, self.layout.status),
+            (LocalPane::Diff, self.layout.diff),
+            (LocalPane::Commits, self.layout.commits),
+        ];
+        rects.into_iter().find_map(|(pane, rect)| {
+            (rect.width > 0
+                && rect.height > 0
+                && x >= rect.x
+                && x < rect.x.saturating_add(rect.width)
+                && y >= rect.y
+                && y < rect.y.saturating_add(rect.height))
+            .then_some(pane)
+        })
+    }
+
+    fn focus_pane(&mut self, pane: LocalPane) {
+        self.pane = pane;
+        if pane != LocalPane::Diff {
+            self.diff_context = pane;
+        }
+    }
+
+    fn select_clicked(&mut self, pane: LocalPane, y: u16) -> bool {
+        let (rect, rows, row_height, len) = match pane {
+            LocalPane::Status => (
+                self.layout.status,
+                self.status_rows.max(1),
+                1,
+                self.repo.files.len(),
+            ),
+            LocalPane::Commits => (
+                self.layout.commits,
+                self.commit_rows.max(1),
+                2,
+                self.repo.commits.len(),
+            ),
+            LocalPane::Branches => (
+                self.layout.branches,
+                self.branch_rows.max(1),
+                1,
+                self.repo.branches.len(),
+            ),
+            LocalPane::Tags => (
+                self.layout.tags,
+                self.tag_rows.max(1),
+                1,
+                self.repo.tags.len(),
+            ),
+            LocalPane::Diff => return false,
+        };
+        if len == 0 || y < rect.y {
+            return false;
+        }
+        let offset = ((y - rect.y) / row_height) as usize;
+        let selected = match pane {
+            LocalPane::Status => self.file_selected,
+            LocalPane::Commits => self.commit_selected,
+            LocalPane::Branches => self.branch_selected,
+            LocalPane::Tags => self.tag_selected,
+            LocalPane::Diff => return false,
+        };
+        let start = (selected / rows) * rows;
+        let index = start + offset;
+        if index >= len {
+            return false;
+        }
+        match pane {
+            LocalPane::Status => self.file_selected = index,
+            LocalPane::Commits => self.commit_selected = index,
+            LocalPane::Branches => self.branch_selected = index,
+            LocalPane::Tags => self.tag_selected = index,
+            LocalPane::Diff => {}
+        }
+        self.refresh_diff();
+        true
+    }
+
+    pub fn handle_mouse(&mut self, mouse: MouseEvent) {
+        if self.prompt.is_some() {
+            return;
+        }
+        match mouse.kind {
+            MouseEventKind::Down(MouseButton::Left) => {
+                if let Some(pane) = self.pane_at(mouse.column, mouse.row) {
+                    let previous = self.pane;
+                    self.focus_pane(pane);
+                    let selected = self.select_clicked(pane, mouse.row);
+                    if self.pane != previous && pane != LocalPane::Diff && !selected {
+                        self.refresh_diff();
+                    }
+                }
+            }
+            MouseEventKind::ScrollUp | MouseEventKind::ScrollDown => {
+                let Some(pane) = self.pane_at(mouse.column, mouse.row) else {
+                    return;
+                };
+                let previous = self.pane;
+                self.focus_pane(pane);
+                let delta = if mouse.kind == MouseEventKind::ScrollUp {
+                    -1
+                } else {
+                    1
+                };
+                if pane == LocalPane::Diff {
+                    self.scroll_diff(delta * 3);
+                } else {
+                    self.move_selection(delta);
+                    if pane != previous {
+                        self.refresh_diff();
+                    }
+                }
+            }
             _ => {}
         }
     }
@@ -639,7 +868,12 @@ impl LocalApp {
             KeyCode::Char('U') => self.unstage_all(),
             KeyCode::Char('d') => self.toggle_diff_staged(),
             KeyCode::Char('c') => self.begin_commit(),
+            KeyCode::Char('A') => self.begin_amend(),
             KeyCode::Char('t') => self.begin_tag(),
+            KeyCode::Char('b') => self.begin_branch(),
+            KeyCode::Char('x') => self.begin_discard(),
+            KeyCode::Char('z') => self.stash_save(),
+            KeyCode::Char('Z') => self.stash_pop(),
             KeyCode::Char('p') => self.push(),
             KeyCode::Char('P') => self.push_tags(),
             KeyCode::Char('f') => self.fetch(),
@@ -688,6 +922,7 @@ pub fn run(
                     }
                 }
                 Event::Paste(text) => app.handle_paste(&text),
+                Event::Mouse(mouse) => app.handle_mouse(mouse),
                 _ => {}
             }
         }

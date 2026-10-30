@@ -3309,7 +3309,13 @@ fn draw_releases_panel(
                 Style::default().fg(theme.color("overlay0")),
             )));
         } else {
-            for (asset_index, asset) in release.assets.iter().take(5).enumerate() {
+            let expanded = app.expanded_releases.contains(&release.tag_name);
+            let shown = if expanded {
+                release.assets.len()
+            } else {
+                release.assets.len().min(5)
+            };
+            for (asset_index, asset) in release.assets.iter().take(shown).enumerate() {
                 let line = Line::from(vec![
                     Span::styled(
                         format!("  {} ", icons::DOWNLOAD),
@@ -3337,9 +3343,21 @@ fn draw_releases_panel(
                 lines.push(line);
             }
             if release.assets.len() > 5 {
+                let (text, color) = if expanded {
+                    ("  收起资产喵~".to_string(), theme.color("overlay0"))
+                } else {
+                    (
+                        format!(
+                            "  还有 {} 个资产，点这里全部展开喵~",
+                            release.assets.len() - 5
+                        ),
+                        theme.color("blue"),
+                    )
+                };
+                actions.push((lines.len(), Action::ToggleReleaseAssets(index)));
                 lines.push(Line::from(Span::styled(
-                    format!("  还有 {} 个资产", release.assets.len() - 5),
-                    Style::default().fg(theme.color("overlay0")),
+                    text,
+                    Style::default().fg(color).add_modifier(Modifier::BOLD),
                 )));
             }
         }

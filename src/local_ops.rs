@@ -27,6 +27,49 @@ pub fn commit(root: &Path, message: &str) -> Result<(), String> {
     git(root, &["commit", "-m", message]).map(|_| ())
 }
 
+pub fn amend(root: &Path, message: &str) -> Result<(), String> {
+    git(root, &["commit", "--amend", "-m", message]).map(|_| ())
+}
+
+pub fn create_branch(root: &Path, name: &str) -> Result<(), String> {
+    git(root, &["switch", "-c", name]).map(|_| ())
+}
+
+pub fn discard(root: &Path, path: &str) -> Result<(), String> {
+    if git(root, &["ls-files", "--error-unmatch", "--", path]).is_ok() {
+        git(
+            root,
+            &[
+                "restore",
+                "--source=HEAD",
+                "--staged",
+                "--worktree",
+                "--",
+                path,
+            ],
+        )
+        .map(|_| ())
+    } else {
+        git(root, &["clean", "-f", "--", path]).map(|_| ())
+    }
+}
+
+pub fn stash_save(root: &Path) -> Result<String, String> {
+    let output = git(
+        root,
+        &["stash", "push", "--include-untracked", "-m", "gxt stash"],
+    )?;
+    if output.contains("No local changes") {
+        return Err("没有可以 stash 的改动喵~".to_string());
+    }
+    Ok("改动 stash 起来啦喵~".to_string())
+}
+
+pub fn stash_pop(root: &Path) -> Result<String, String> {
+    git(root, &["stash", "pop"])?;
+    Ok("stash 恢复好啦喵~".to_string())
+}
+
 pub fn checkout(root: &Path, branch: &str) -> Result<(), String> {
     git(root, &["switch", branch]).map(|_| ())
 }
