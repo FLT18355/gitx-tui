@@ -1,16 +1,17 @@
 # AGENT.md — gitx-tui 续作交接
 
-> 给下一个 Agent：先读本文件，再按「待办」顺序做。当前版本 **0.1.1**，基线提交 `e42a6be`（已 push 到 `origin/main`）。本文件之后可能还有未提交改动，先 `git status` / `git diff` 看清楚。
+> 给下一个 Agent：先读本文件，再按「待办」顺序做。当前版本 **0.1.1**，基线提交 `c1e9220`（已 push 到 `origin/main`）；gxt CLI / 本地仓库 TUI / 设置 TUI 可能还在未提交改动里，先 `git status` / `git diff` 看清楚。
 
 ## 项目速览
 
 - Rust 2024 + ratatui 0.30 + crossterm 0.29 + ureq 3.5（已开 `json` feature）。
-- 单 binary TUI，入口 `src/main.rs`，页面状态在 `src/app.rs`，渲染在 `src/ui.rs`。
+- 单 binary 多入口：`src/main.rs` + `src/cli.rs`；GitHub 页面状态在 `src/app.rs`，渲染在 `src/ui.rs`；本地仓库 TUI 在 `src/local.rs` / `src/local_app.rs` / `src/local_ui.rs`。
 - 认证：`gh auth token --hostname github.com`，回退 `GITHUB_TOKEN` / `GH_TOKEN`。
 - 公开 API 走 `proxy`（默认 `https://v4.gh-proxy.org`），认证请求直连 `api.github.com`。
 - 缓存：`~/.cache/gitx-tui/*.json`，配置：`~/.config/gitx-tui/config.toml`。
 - 文案风格：所有用户可见中文尽量以 `喵~` 结尾；不要用 emoji，图标在 `src/icons.rs`。
-- 页面：`1` 仓库 / `2` 收藏 / `3` 搜索 / `4` 账号额度 / `5` 设置；仓库详情是 `Page::Repo`，`Esc` 返回。
+- 二进制名 `gxt`（`Cargo.toml` 的 `[[bin]]`）；`gxt` 开 GitHub 工作台，`gxt <路径>` 开本地仓库 TUI，`gxt settings` 开独立设置 TUI。
+- 页面：`1` 仓库 / `2` 收藏 / `3` 搜索 / `4` 账号额度；设置按钮已从主导航移除，只从 `gxt settings` 进入；仓库详情是 `Page::Repo`，`Esc` 返回。
 - 列表分页：`[` `]` 翻页，`g` `G` 首尾页，`PgUp` `PgDn`，顶部有上一页/下一页按钮；分页逻辑在 `App::page_count_for` / `current_page_for` / `set_list_page`，渲染 `draw_list_pagination`。
 
 ## 已完成（不要重复做）
@@ -21,8 +22,11 @@
 - 自己的仓库编辑：`e` / 「编辑仓库」按钮打开 `Overlay::EditRepo`，可改 description、homepage、topics、private、archived，`Ctrl+S` 走 `PATCH /repos/{owner}/{repo}`，成功后更新列表/详情/缓存。
 - 工作流页：仓库页按 `a` 进入 `Page::Actions`，左 run / 右 jobs+steps，`Enter`/`o` 去浏览器，缓存 key `actions_*`，详见「待办 4」。
 - 手动运行工作流：Actions 页按 `R`/`x` 或点「运行工作流」，选中工作流 + 分支/标签 + 可选 inputs JSON 后回车走 `POST /repos/{owner}/{repo}/actions/workflows/{id}/dispatches`。
-- 缓存管理：设置页「缓存管理」或全局 `c` 打开 `Overlay::Cache`，按分类清理，`o` 打开缓存目录。
-- 测试 32 项通过，`cargo clippy --all-targets -- -D warnings` 无警告。
+- 缓存管理：设置 TUI「缓存管理」或主界面 `c` 打开 `Overlay::Cache`，按分类清理，`o` 打开缓存目录。
+- gxt CLI：`gxt` / `gxt <路径>` / `gxt settings` / `--theme` / `--help` / `--version`，二进制名改为 `gxt`。
+- 独立设置 TUI：`App::settings` 只显示设置页，跳过 GitHub 网络和 token 探测；主界面导航不再有「设置」按钮。
+- 本地仓库 TUI：`gxt <路径>` 显示分支/改动/提交，支持暂存、取消暂存、提交，文件在 `src/local*`。
+- 测试 40 项通过，`cargo clippy --all-targets -- -D warnings` 无警告。
 
 ## 待办 1：修编辑页 Enter 没用（✅ 已修）
 
@@ -55,7 +59,7 @@
 ./install.sh --debug         # 构建 debug 版
 ```
 
-行为：检查 `cargo` 和 `Cargo.toml` → `cargo build --release --locked` → 把 `target/release/gitx-tui` 装到 `${INSTALL_DIR:-$HOME/.local/bin}`（`install -m 755`，失败时 `cp + chmod` 兜底）→ 提示 PATH。已实现，后续只需在 README 补一行用法。release tarball 里不要放 `install.sh`（没有源码时它跑不起来）。
+行为：检查 `cargo` 和 `Cargo.toml` → `cargo build --release --locked` → 把 `target/release/gxt` 装到 `${INSTALL_DIR:-$HOME/.local/bin}` 并命名为 `gxt`（`install -m 755`，失败时 `cp + chmod` 兜底）→ 提示 PATH。release tarball 里不要放 `install.sh`（没有源码时它跑不起来）。
 
 ## 待办 3：GitHub Actions 构建并发布 Release（✅ 已完成）
 
@@ -71,8 +75,8 @@
   - `aarch64-apple-darwin`（macos-14）
   - `x86_64-pc-windows-msvc`（windows-latest，zip）
 - 步骤：checkout、`dtolnay/rust-toolchain@stable` + target、`Swatinem/rust-cache`、`cargo build --release --target`、打包：
-  - unix：`gitx-tui-${VERSION}-${TARGET}.tar.gz`，包内目录 `gitx-tui-${VERSION}-${TARGET}/gitx-tui` + README + LICENSE + install.sh
-  - windows：`gitx-tui-${VERSION}-${TARGET}.zip`
+  - unix：`gxt-${VERSION}-${TARGET}.tar.gz`，包内目录 `gxt-${VERSION}-${TARGET}/gxt` + README + LICENSE
+  - windows：`gxt-${VERSION}-${TARGET}.zip`
 - 生成 `SHA256SUMS`，用 `softprops/action-gh-release@v2` 上传所有资产，`generate_release_notes: true`。
 - 版本从 tag 去掉 `v`；检查 `Cargo.toml` 版本与 tag 一致，不一致直接失败。
 - 如需要 Linux musl 静态包可加，但先不要扩大矩阵。
@@ -120,6 +124,10 @@
 | `src/model.rs` | 所有 serde 数据结构和测试 |
 | `src/config.rs` | 配置字段、TTL、路径 |
 | `src/cache.rs` | `Cache::load/save`、`Cached`、`now_epoch` |
+| `src/cli.rs` | `gxt` 参数解析、帮助、`settings` / 本地路径分派 |
+| `src/local.rs` | 本地 git 读取、porcelain 解析、暂存/取消暂存/提交 |
+| `src/local_app.rs` | 本地仓库 TUI 状态、按键、事件循环 |
+| `src/local_ui.rs` | 本地仓库 TUI 三栏渲染和提交弹窗 |
 | `README.md` | 功能、页面、键盘、安装、已知限制 |
 
 ## 常用命令
@@ -128,8 +136,10 @@
 cargo fmt
 cargo test
 cargo clippy --all-targets -- -D warnings
-cargo run
-cargo build --release
+cargo run -- --help
+cargo run -- .          # 本地仓库 TUI
+cargo run -- settings   # 设置 TUI
+cargo build --release   # 产物是 target/release/gxt
 ```
 
 ## 约束
@@ -139,14 +149,15 @@ cargo build --release
 - 任何 VCS 操作前先 `git status`；仓库不是 jj 仓库（无 `.jj/`）。
 - 保持现有文案风格：中文 + `喵~`，不用 emoji。
 - 改动后必须跑 `cargo fmt && cargo test && cargo clippy --all-targets -- -D warnings`。
-- 发布/推送前确认版本号：`Cargo.toml` / `Cargo.lock` 的 `gitx-tui` 版本与 tag 一致。
+- 发布/推送前确认版本号：`Cargo.toml` / `Cargo.lock` 的包版本与 tag 一致；二进制名是 `gxt`，包名仍是 `gitx-tui`。
 
 ## 已知小问题（有空再修）
 
 - 设置页在 72 列附近 TTL 行会挤，必要时改成单列或隐藏 `+/-`。
 - 编辑弹窗高度固定偏大，可压缩到 14 行左右。
 - 账号页额度刷新按钮与标题同一行，窄宽度可能重叠。
-- 私有仓库的 Actions 接口需要 token，未登录时要给友好提示。
+- 私有仓库的 Actions 接口需要 token，未登录时会提示。
+- 本地仓库 TUI 只做部分 lazygit：没有 diff 浏览、冲突处理、push/pull、鼠标操作。
 
 ## 验收清单
 
@@ -156,3 +167,6 @@ cargo build --release
 - [x] Actions 页面能列出 run、切换选择、加载 jobs、Esc 返回。
 - [x] `cargo test` 全过，clippy 无警告。
 - [x] README / `--help` / 帮助弹窗同步新按键与安装方式。
+- [x] `gxt settings` 打开独立设置 TUI，主界面不再有设置导航。
+- [x] `gxt <路径>` 打开本地仓库 TUI，暂存/取消暂存/提交可用。
+- [x] 构建产物名为 `target/release/gxt`。

@@ -12,7 +12,7 @@ use std::process::Command;
 use std::time::{Duration, Instant};
 
 const API: &str = "https://api.github.com";
-const USER_AGENT: &str = "gitx-tui/0.1";
+const USER_AGENT: &str = "gxt/0.1";
 
 #[derive(Clone)]
 pub struct ApiClient {
@@ -31,6 +31,15 @@ impl ApiClient {
             agent,
             download_agent,
             token,
+            proxy: proxy.trim_end_matches('/').to_string(),
+        }
+    }
+
+    pub fn without_auth(proxy: String) -> Self {
+        Self {
+            agent: build_agent(Duration::from_secs(15)),
+            download_agent: build_agent(Duration::from_secs(3600)),
+            token: None,
             proxy: proxy.trim_end_matches('/').to_string(),
         }
     }

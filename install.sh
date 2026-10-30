@@ -1,15 +1,15 @@
 #!/bin/sh
-# gitx-tui 本地安装脚本喵~
+# gxt 本地安装脚本喵~
 # 在仓库根目录执行：./install.sh
 # 它会 cargo build --release，然后把二进制装到 ~/.local/bin 喵~
 set -eu
 
 INSTALL_DIR="${INSTALL_DIR:-$HOME/.local/bin}"
-BIN="gitx-tui"
+BIN="gxt"
 
 usage() {
     cat <<'EOF'
-gitx-tui 本地安装脚本喵~
+gxt 本地安装脚本喵~
 
 用法：
   ./install.sh [--dir <安装目录>] [--debug] [--no-locked]
@@ -67,7 +67,7 @@ done
 # 允许从仓库内任意位置执行，也允许 `sh path/to/install.sh`
 script_dir="$(CDPATH= cd -- "$(dirname -- "$0")" 2>/dev/null && pwd || pwd)"
 cd "$script_dir" || die "进不去脚本所在目录喵~"
-[ -f Cargo.toml ] || die "这里没有 Cargo.toml，请在 gitx-tui 仓库根目录运行喵~"
+[ -f Cargo.toml ] || die "这里没有 Cargo.toml，请在 gxt 仓库根目录运行喵~"
 
 have cargo || die "没有找到 cargo，先安装 Rust（https://rustup.rs）喵~"
 

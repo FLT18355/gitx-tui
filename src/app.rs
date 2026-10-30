@@ -32,8 +32,7 @@ impl Page {
             Self::Starred => Some(1),
             Self::Search => Some(2),
             Self::Account => Some(3),
-            Self::Settings => Some(4),
-            Self::Repo | Self::Actions => None,
+            Self::Repo | Self::Actions | Self::Settings => None,
         }
     }
 
@@ -42,7 +41,6 @@ impl Page {
             1 => Self::Starred,
             2 => Self::Search,
             3 => Self::Account,
-            4 => Self::Settings,
             _ => Self::Repositories,
         }
     }
@@ -448,6 +446,7 @@ pub struct App {
     pub return_page: Page,
     pub overlay: Option<Overlay>,
     pub should_quit: bool,
+    pub settings_only: bool,
 
     pub repos: Vec<Repo>,
     pub starred: Vec<Repo>,
@@ -531,12 +530,24 @@ pub struct App {
 
 impl App {
     pub fn new(paths: Paths, theme_override: Option<String>) -> Self {
+        Self::build(paths, theme_override, false)
+    }
+
+    pub fn settings(paths: Paths, theme_override: Option<String>) -> Self {
+        Self::build(paths, theme_override, true)
+    }
+
+    fn build(paths: Paths, theme_override: Option<String>, settings_only: bool) -> Self {
         let config = Config::load(&paths);
         let theme_name = theme_override
             .filter(|value| FLAVORS.contains(&value.as_str()))
             .unwrap_or_else(|| config.theme.clone());
         let theme = Theme::load(&paths, &theme_name);
-        let client = ApiClient::new(config.proxy.clone());
+        let client = if settings_only {
+            ApiClient::without_auth(config.proxy.clone())
+        } else {
+            ApiClient::new(config.proxy.clone())
+        };
         let cache = Cache::new(paths.cache_dir().to_path_buf());
         let cache_stats = cache.stats();
         let download_dir_initial = config.download_dir.clone();
@@ -574,10 +585,19 @@ impl App {
             workflow_running: false,
             workflow_error: None,
             cache_row: 0,
-            page: Page::Repositories,
-            return_page: Page::Repositories,
+            page: if settings_only {
+                Page::Settings
+            } else {
+                Page::Repositories
+            },
+            return_page: if settings_only {
+                Page::Settings
+            } else {
+                Page::Repositories
+            },
             overlay: None,
             should_quit: false,
+            settings_only,
             repos: Vec::new(),
             starred: Vec::new(),
             search_results: Vec::new(),
@@ -638,7 +658,11 @@ impl App {
             detail_loading: None,
             releases_loading: None,
             status: Status {
-                text: "准备就绪，人家先看看缓存里有什么喵~".to_string(),
+                text: if settings_only {
+                    "全局设置喵~改完按 Ctrl+S 保存哦喵~".to_string()
+                } else {
+                    "准备就绪，人家先看看缓存里有什么喵~".to_string()
+                },
                 kind: StatusKind::Info,
             },
             hitboxes: Vec::new(),
@@ -659,6 +683,10 @@ impl App {
     }
 
     fn boot(&mut self) {
+        if self.settings_only {
+            self.refresh_cache_stats();
+            return;
+        }
         if !self.client.token_present() {
             self.set_status(
                 StatusKind::Error,
@@ -2623,6 +2651,9 @@ impl App {
     }
 
     pub fn navigate(&mut self, page: Page) {
+        if self.settings_only && page != Page::Settings {
+            return;
+        }
         if page == Page::Repo || page == self.page {
             if page == Page::Search {
                 self.search_focus = true;
@@ -3255,6 +3286,50 @@ impl App {
             return;
         }
 
+        if self.settings_only {
+            match key.code {
+                KeyCode::Esc => {
+                    self.quit();
+                    return;
+                }
+                KeyCode::Tab => {
+                    self.settings_row = (self.settings_row + 1).min(9);
+                    return;
+                }
+                KeyCode::BackTab => {
+                    self.settings_row = self.settings_row.saturating_sub(1);
+                    return;
+                }
+                KeyCode::Char('h') => {
+                    self.adjust_settings(-1);
+                    return;
+                }
+                KeyCode::Char('l') => {
+                    self.adjust_settings(1);
+                    return;
+                }
+                KeyCode::Char('?') => {
+                    self.set_status(
+                        StatusKind::Info,
+                        "j/k 选  h/l 调  Tab 换行  Enter 操作  Ctrl+S 保存  Esc 退出喵~",
+                    );
+                    return;
+                }
+                KeyCode::Char('1'..='5')
+                | KeyCode::Char('/')
+                | KeyCode::Char('s')
+                | KeyCode::Char('a')
+                | KeyCode::Char('R')
+                | KeyCode::Char('x')
+                | KeyCode::Char('y')
+                | KeyCode::Char('f')
+                | KeyCode::Char('e')
+                | KeyCode::Char('o')
+                | KeyCode::Char('t') => return,
+                _ => {}
+            }
+        }
+
         if self.page == Page::Repo && key.code == KeyCode::Tab {
             self.cycle_repo_pane();
             return;
@@ -3267,7 +3342,6 @@ impl App {
             KeyCode::Char('2') => self.navigate(Page::Starred),
             KeyCode::Char('3') => self.navigate(Page::Search),
             KeyCode::Char('4') => self.open_account(),
-            KeyCode::Char('5') => self.navigate(Page::Settings),
             KeyCode::Tab => self.navigate_next_page(),
             KeyCode::Esc => match self.page {
                 Page::Repo | Page::Actions => self.go_back(),
@@ -3322,7 +3396,7 @@ impl App {
             .page
             .nav_index()
             .unwrap_or_else(|| self.return_page.nav_index().unwrap_or(0));
-        let next = (current + 1) % 5;
+        let next = (current + 1) % 4;
         self.navigate(Page::from_nav(next));
     }
 

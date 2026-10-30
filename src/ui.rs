@@ -72,7 +72,7 @@ fn draw_header(frame: &mut Frame, app: &App, theme: &Theme, area: Rect, hits: &m
             Style::default().fg(theme.color("blue")),
         ),
         Span::styled(
-            "gitx-tui",
+            "gxt",
             Style::default()
                 .fg(theme.color("text"))
                 .add_modifier(Modifier::BOLD),
@@ -85,6 +85,20 @@ fn draw_header(frame: &mut Frame, app: &App, theme: &Theme, area: Rect, hits: &m
         ));
     }
     frame.render_widget(Paragraph::new(Line::from(title)), brand);
+
+    if app.settings_only {
+        frame.render_widget(
+            Paragraph::new("全局设置喵~  Ctrl+S 保存  Esc 退出喵~")
+                .style(Style::default().fg(theme.color("subtext0"))),
+            Rect::new(area.x + 2, area.y + 1, area.width.saturating_sub(4), 1),
+        );
+        fill(
+            frame,
+            Rect::new(area.x, area.y + 2, area.width, 1),
+            theme.color("surface0"),
+        );
+        return;
+    }
 
     let account = format!(
         "{} 账号 {}   {} {}喵~",
@@ -116,14 +130,12 @@ fn draw_header(frame: &mut Frame, app: &App, theme: &Theme, area: Rect, hits: &m
         icons::label(icons::STAR, "收藏喵~"),
         icons::label(icons::SEARCH, "搜索喵~"),
         icons::label(icons::USER, "账号喵~"),
-        icons::label(icons::SETTINGS, "设置喵~"),
     ];
     let pages = [
         Page::Repositories,
         Page::Starred,
         Page::Search,
         Page::Account,
-        Page::Settings,
     ];
     let mut x = area.x + 2;
     for (index, label) in labels.iter().enumerate() {
@@ -4665,10 +4677,7 @@ fn draw_help(frame: &mut Frame, app: &mut App, theme: &Theme, area: Rect, hits: 
         rect.height.saturating_sub(2),
     );
     let lines = [
-        (
-            "换页喵~",
-            "1 仓库  2 收藏  3 搜索  4 账号  5 设置  Tab 切页喵~",
-        ),
+        ("换页喵~", "1 仓库  2 收藏  3 搜索  4 账号  Tab 切页喵~"),
         (
             "挑挑喵~",
             "j / k 上下挑  [ ] 翻页  g / G 首尾页  PgUp/PgDn 翻页喵~",
@@ -4685,10 +4694,7 @@ fn draw_help(frame: &mut Frame, app: &mut App, theme: &Theme, area: Rect, hits: 
             "仓库页按 a 看 Actions，R/x 跑工作流，Tab 填分支和 inputs 喵~",
         ),
         ("缓存喵~", "按 c 分类清理缓存，o 打开缓存目录喵~"),
-        (
-            "改设置喵~",
-            "j / k 选  h / l 调  Enter 动手  Ctrl+S 保存喵~",
-        ),
+        ("设置喵~", "退出后敲 gxt settings，用专门的设置 TUI 调喵~"),
         ("鼠标喵~", "点一下挑，点两下进仓库页，滚轮随便滚喵~"),
         ("回去喵~", "Esc 回列表  ? 关掉说明  q 退出人家喵~"),
     ];

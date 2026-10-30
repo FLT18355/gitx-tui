@@ -1,6 +1,8 @@
-# gitx-tui
+# gitx-tui（命令 `gxt`）
 
-终端里的 GitHub 工作台，使用 ratatui 和 crossterm 写成喵~仓库、收藏、搜索、账号、设置和仓库详情分别占一页，配上 Catppuccin 配色、卡片列表、Nerd Font 图标和鼠标操作，尽量做得像桌面应用喵~
+终端里的 GitHub 工作台，使用 ratatui 和 crossterm 写成喵~仓库、收藏、搜索、账号和仓库详情分别占一页，配上 Catppuccin 配色、卡片列表、Nerd Font 图标和鼠标操作，尽量做得像桌面应用喵~
+
+编译出来的二进制叫 `gxt`，还支持 `gxt <路径>` 打开本地仓库，以及 `gxt settings` 单独调全局设置喵~
 
 界面里没有 emoji，图标都是 Nerd Font 字形喵~终端字体建议使用 Nerd Font，不然图标会显示成方块喵~
 
@@ -15,7 +17,7 @@
   - 左边是文件树预览，点文件或目录会去 GitHub 打开喵~
   - 右边是发行版和资产，点资产就会下载到本地下载目录喵~
   - 最下面是 README 预览，简单的 Markdown 会整理成可读文本喵~
-  - 文件树和 README 默认关闭，需要到设置页手动打开喵~
+  - 文件树和 README 默认关闭，需要到 `gxt settings` 里手动打开喵~
 - 本地下载：
   - 发行版资产和源码包都会下载到配置文件里的下载目录喵~
   - 默认目录是 `~/Downloads/gitx-tui`喵~
@@ -25,8 +27,9 @@
 - 常用入口：主页、克隆地址、源码下载、议题、合并请求和工作流喵~
 - 工作流页：在仓库页按 `a` 或点「工作流」看当前仓库的 Actions 运行记录，左边挑 run，右边看 jobs 和 steps，`Enter` / `o` 去浏览器看日志喵~
 - 运行工作流：工作流页按 `R` / `x` 或点「运行工作流」打开弹窗，挑一个工作流、填分支或标签和 inputs JSON，回车就会向 GitHub 发 `workflow_dispatch`喵~
-- 设置页：主题、预览开关、下载目录、代理地址和缓存时间都在这里改，并写入配置文件喵~
-- 缓存：仓库列表、收藏、搜索、仓库详情、文件树、README 和工作流都存在本地，按有效期自动刷新喵~设置页或 `c` 可以分类清理喵~
+- 全局设置：用 `gxt settings` 打开独立设置 TUI，主题、预览开关、下载目录、代理地址和缓存时间都在这里改，并写入配置文件喵~
+- 本地仓库：`gxt <路径>` 打开 lazygit 风格的本地仓库界面，能看改动、分支和提交，支持暂存、取消暂存和提交喵~
+- 缓存：仓库列表、收藏、搜索、仓库详情、文件树、README 和工作流都存在本地，按有效期自动刷新喵~设置 TUI 或 `c` 可以分类清理喵~
 - 鼠标：单击选择、双击打开仓库页、滚轮滚动、点击标签、按钮、文件树、发行版资产和设置项喵~
 - 主题：Latte、Frappe、Macchiato、Mocha 四套 Catppuccin 主题，每套一个 TOML喵~
 
@@ -44,13 +47,23 @@
 
 ```bash
 cargo build --release
-./target/release/gitx-tui
+./target/release/gxt
 ```
 
 也可以临时指定主题：
 
 ```bash
-./target/release/gitx-tui --theme latte
+./target/release/gxt --theme latte
+```
+
+命令行入口：
+
+```bash
+gxt                  # GitHub 工作台
+gxt <路径>           # 本地仓库 TUI，比如 gxt . 或 gxt ~/code/demo
+gxt settings         # 只开全局设置 TUI
+gxt --theme latte    # 指定主题
+gxt --help           # 看完整帮助
 ```
 
 在仓库根目录跑本地的安装脚本，会 `cargo build --release` 后装到 `~/.local/bin` 喵~
@@ -77,7 +90,6 @@ cargo install --path .
 | 收藏 | 完整的 Starred 列表、统计、排序和详情 |
 | 搜索 | 搜索框、排序、历史记录、结果列表和详情 |
 | 账号 | 账号资料、仓库统计、GitHub API 核心/搜索/GraphQL 额度和恢复时间 |
-| 设置 | 配置文件路径、主题、预览开关、下载目录、代理、缓存管理 |
 | 仓库详情 | 统计、文件树、右侧发行版下载和底部 README；自己的仓库可以编辑喵~ |
 | 工作流 | 当前仓库的 Actions 运行记录、任务与步骤状态，可手动触发工作流，按 `Enter` 去浏览器喵~ |
 
@@ -85,13 +97,13 @@ cargo install --path .
 
 | 按键 | 作用 |
 | --- | --- |
-| `1` `2` `3` `4` `5` | 切换仓库、收藏、搜索、账号、设置 |
+| `1` `2` `3` `4` | 切换仓库、收藏、搜索、账号 |
 | `Tab` | 在仓库页切换文件树、发行版、README 面板；其他页面切页 |
 | `j` `k` | 上下移动或滚动当前面板 |
 | `[` `]` | 上一页 / 下一页 |
 | `g` `G` | 第一页 / 最后一页（仓库页里是面板顶部 / 底部） |
 | `PgUp` `PgDn` | 列表翻页；仓库页里滚动面板 |
-| `Enter` | 打开仓库页；设置页里执行当前项；账号页打开主页；工作流页打开 run；确认语言 |
+| `Enter` | 打开仓库页；账号页打开主页；工作流页打开 run；确认语言 |
 | `Esc` | 离开输入、关闭弹窗或返回列表 |
 | `/` | 聚焦搜索 |
 | `a` | 打开当前仓库的 Actions 工作流页 |
@@ -103,12 +115,29 @@ cargo install --path .
 | `o` | 用浏览器打开当前仓库 |
 | `y` | 复制当前仓库的克隆地址 |
 | `r` | 刷新当前页、账号额度或仓库预览 |
-| `h` `l` | 在设置页调整当前项 |
+| `h` `l` | 在 `gxt settings` 里调整当前项 |
 | `Ctrl+S` | 保存设置；编辑仓库时保存改动 |
 | `?` | 打开操作说明 |
 | `q` | 退出 |
 
 在搜索框里输入时，字母会正常进入输入框喵~搜索框里按 `Enter` 开始搜索，按 `Esc` 离开输入框喵~
+
+### 本地仓库界面
+
+`gxt <路径>` 会打开本地仓库 TUI，界面分成「分支」「改动」「提交」三栏：
+
+| 按键 | 作用 |
+| --- | --- |
+| `Tab` / `Left` / `Right` | 切换分支、改动、提交面板 |
+| `j` `k` / `PgUp` `PgDn` | 移动选择 |
+| `g` `G` | 跳到第一项 / 最后一项 |
+| `s` | 暂存选中的改动 |
+| `u` | 取消暂存选中的改动 |
+| `c` | 写提交信息，`Enter` 提交、`Esc` 取消 |
+| `r` | 重新读取仓库 |
+| `q` / `Esc` | 退出 |
+
+这是部分 lazygit 风格功能：查看状态、分支、最近 50 条提交，以及暂存/取消暂存/提交；不做 diff 浏览、冲突处理和推送喵~
 
 ### 鼠标
 
@@ -132,7 +161,7 @@ cargo install --path .
 ~/.config/gitx-tui/config.toml
 ```
 
-设置页里的改动会写入这个文件喵~也可以直接编辑，重启后生效喵~
+`gxt settings` 里的改动会写入这个文件喵~也可以直接编辑，重启后生效喵~
 
 ```toml
 theme = "mocha"
@@ -200,21 +229,25 @@ https://v4.gh-proxy.org/https://github.com/...
 ~/.cache/gitx-tui
 ```
 
-数据按更新时间保存为 JSON喵~设置页可以清理缓存，也可以在配置里调整各缓存的有效期喵~
+数据按更新时间保存为 JSON喵~`gxt settings` 或主界面的缓存管理可以清理缓存，也可以在配置里调整各缓存的有效期喵~
 
 ## 目录结构
 
 ```text
-src/api.rs      GitHub API、gh 凭据、代理、直连回退和本地下载
-src/app.rs      页面状态、分页、账号额度、仓库编辑、工作流、缓存管理和异步消息
-src/cache.rs    JSON 缓存
-src/config.rs   配置加载与保存
-src/icons.rs    Nerd Font 图标
-src/model.rs    GitHub 数据结构
-src/theme.rs    Catppuccin 主题加载
-src/ui.rs       全部页面渲染、账号页、编辑弹窗、文件树、README 和命中区域
-themes/         四套主题 TOML
-config.toml     随项目发布的默认配置
+src/api.rs       GitHub API、gh 凭据、代理、直连回退和本地下载
+src/app.rs       页面状态、分页、账号额度、仓库编辑、工作流、缓存管理和异步消息
+src/cache.rs     JSON 缓存
+src/cli.rs       gxt 参数解析、帮助与子命令
+src/config.rs    配置加载与保存
+src/icons.rs     Nerd Font 图标
+src/local.rs     本地 git 状态/提交/分支读取与暂存、提交操作
+src/local_app.rs 本地仓库 TUI 状态与按键
+src/local_ui.rs  本地仓库 TUI 渲染
+src/model.rs     GitHub 数据结构
+src/theme.rs     Catppuccin 主题加载
+src/ui.rs        全部页面渲染、账号页、编辑弹窗、文件树、README 和命中区域
+themes/          四套主题 TOML
+config.toml      随项目发布的默认配置
 ```
 
 ## 测试
@@ -237,4 +270,5 @@ cargo clippy --all-targets -- -D warnings
 - 私有仓库的 Actions 记录需要 `gh` 登录凭据，没登录时会提示失败喵~
 - 手动运行工作流要求 token 有 Actions 写权限，且工作流本身声明了 `workflow_dispatch`；需要 inputs 时在弹窗的「inputs JSON」框里按 `{"名字":"值"}` 填，没有参数就留 `{}`，不用去网页喵~
 - 手动运行会真的消耗 GitHub Actions 额度和运行 CI，点「运行喵~」之前要想一下哦喵~
+- 本地仓库 TUI 只做部分 lazygit：不做 diff 浏览、冲突处理、push/pull，也没有鼠标操作喵~
 - Star 操作会真实修改 GitHub 账号状态，点之前要想一下哦喵~

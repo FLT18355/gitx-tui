@@ -7,6 +7,10 @@ description = "A terminal GitHub workspace for repositories, stars and releases"
 license = "MIT"
 repository = "https://github.com/FLT18355/gitx-tui"
 
+[[bin]]
+name = "gxt"
+path = "src/main.rs"
+
 [dependencies]
 anyhow = "1.0"
 crossterm = "0.29"
