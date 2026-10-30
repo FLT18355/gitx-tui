@@ -62,6 +62,7 @@ jobs:
           mkdir -p "dist/$name"
           cp "target/${{ matrix.target }}/release/gxt" "dist/$name/"
           cp README.md LICENSE "dist/$name/" 2>/dev/null || true
+          cp -r docs "dist/$name/" 2>/dev/null || true
           tar -C dist -czf "dist/$name.tar.gz" "$name"
           rm -rf "dist/$name"
 

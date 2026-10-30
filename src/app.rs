@@ -195,6 +195,10 @@ impl TextInput {
         self.value.is_empty()
     }
 
+    pub fn visible_window(&self, max_width: usize) -> (String, u16) {
+        format::visible_text(&self.value, self.cursor, max_width)
+    }
+
     pub fn insert(&mut self, ch: char) {
         self.value.insert(self.cursor, ch);
         self.cursor += ch.len_utf8();

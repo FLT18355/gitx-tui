@@ -12,7 +12,7 @@ use std::process::Command;
 use std::time::{Duration, Instant};
 
 const API: &str = "https://api.github.com";
-const USER_AGENT: &str = "gxt/0.1";
+const USER_AGENT: &str = "gxt/0.1.2";
 
 #[derive(Clone)]
 pub struct ApiClient {

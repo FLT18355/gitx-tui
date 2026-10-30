@@ -4807,33 +4807,11 @@ fn proxy_label(app: &App) -> String {
 }
 
 fn visible_input(input: &TextInput, focused: bool, max_width: u16) -> (String, u16) {
-    let max_width = max_width.max(1) as usize;
-    if !focused {
-        return (format::truncate(&input.value, max_width), 0);
+    if focused {
+        input.visible_window(max_width as usize)
+    } else {
+        (format::truncate(&input.value, max_width.max(1) as usize), 0)
     }
-    let prefix_width = format::text_width(&input.value[..input.cursor]);
-    let start_column = prefix_width.saturating_sub(max_width.saturating_sub(1));
-    let mut visible = String::new();
-    let mut total = 0;
-    let mut cursor_column = 0;
-    for (index, ch) in input.value.char_indices() {
-        let width = unicode_width::UnicodeWidthChar::width(ch).unwrap_or(0);
-        if total + width <= start_column {
-            total += width;
-            continue;
-        }
-        if index < input.cursor {
-            if cursor_column + width as u16 > max_width as u16 {
-                break;
-            }
-            cursor_column += width as u16;
-        }
-        if format::text_width(&visible) + width > max_width {
-            break;
-        }
-        visible.push(ch);
-    }
-    (visible, cursor_column.min(max_width as u16))
 }
 
 #[cfg(test)]

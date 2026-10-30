@@ -1,5 +1,5 @@
+use crate::local_git::git;
 use std::path::{Path, PathBuf};
-use std::process::Command;
 
 #[derive(Debug, Clone)]
 pub struct StatusFile {
@@ -41,6 +41,7 @@ impl StatusFile {
 
 #[derive(Debug, Clone)]
 pub struct Commit {
+    pub hash: String,
     pub short: String,
     pub author: String,
     pub when: String,
@@ -54,6 +55,13 @@ pub struct Branch {
     pub upstream: String,
 }
 
+#[derive(Debug, Clone)]
+pub struct Tag {
+    pub name: String,
+    pub when: String,
+    pub subject: String,
+}
+
 #[derive(Debug, Clone, Default)]
 pub struct LocalRepo {
     pub root: PathBuf,
@@ -64,6 +72,7 @@ pub struct LocalRepo {
     pub files: Vec<StatusFile>,
     pub commits: Vec<Commit>,
     pub branches: Vec<Branch>,
+    pub tags: Vec<Tag>,
 }
 
 impl LocalRepo {
@@ -89,7 +98,12 @@ impl LocalRepo {
         let (branch, upstream, ahead, behind, files) = parse_status(&status);
         let commits = git(
             &root,
-            &["log", "-n", "50", "--pretty=format:%h%x1f%an%x1f%ar%x1f%s"],
+            &[
+                "log",
+                "-n",
+                "100",
+                "--pretty=format:%H%x1f%h%x1f%an%x1f%ar%x1f%s",
+            ],
         )
         .map(|raw| parse_commits(&raw))
         .unwrap_or_default();
@@ -102,6 +116,16 @@ impl LocalRepo {
         )
         .map(|raw| parse_branches(&raw))
         .unwrap_or_default();
+        let tags = git(
+            &root,
+            &[
+                "tag",
+                "--sort=-creatordate",
+                "--format=%(refname:short)\t%(creatordate:relative)\t%(subject)",
+            ],
+        )
+        .map(|raw| parse_tags(&raw))
+        .unwrap_or_default();
         Ok(Self {
             root,
             branch,
@@ -111,6 +135,7 @@ impl LocalRepo {
             files,
             commits,
             branches,
+            tags,
         })
     }
 
@@ -124,40 +149,6 @@ impl LocalRepo {
 
     pub fn display_root(&self) -> String {
         crate::format::display_path(&self.root)
-    }
-}
-
-pub fn stage(root: &Path, path: &str) -> Result<(), String> {
-    git(root, &["add", "--", path]).map(|_| ())
-}
-
-pub fn unstage(root: &Path, path: &str) -> Result<(), String> {
-    if git(root, &["restore", "--staged", "--", path]).is_ok() {
-        return Ok(());
-    }
-    git(root, &["rm", "--cached", "--quiet", "--", path]).map(|_| ())
-}
-
-pub fn commit(root: &Path, message: &str) -> Result<(), String> {
-    git(root, &["commit", "-m", message]).map(|_| ())
-}
-
-fn git(path: &Path, args: &[&str]) -> Result<String, String> {
-    let output = Command::new("git")
-        .arg("-C")
-        .arg(path)
-        .args(args)
-        .output()
-        .map_err(|err| format!("跑不了 git 喵~：{err}"))?;
-    if output.status.success() {
-        Ok(String::from_utf8_lossy(&output.stdout).into_owned())
-    } else {
-        let detail = String::from_utf8_lossy(&output.stderr).trim().to_string();
-        Err(if detail.is_empty() {
-            format!("git {} 没有成功喵~", args.join(" "))
-        } else {
-            detail
-        })
     }
 }
 
@@ -220,11 +211,13 @@ fn parse_commits(raw: &str) -> Vec<Commit> {
     raw.lines()
         .filter_map(|line| {
             let mut fields = line.split('\x1f');
+            let hash = fields.next()?.to_string();
             let short = fields.next()?.to_string();
             let author = fields.next()?.to_string();
             let when = fields.next()?.to_string();
             let summary = fields.next().unwrap_or("").to_string();
             Some(Commit {
+                hash,
                 short,
                 author,
                 when,
@@ -245,6 +238,22 @@ fn parse_branches(raw: &str) -> Vec<Branch> {
                 name,
                 current,
                 upstream,
+            })
+        })
+        .collect()
+}
+
+fn parse_tags(raw: &str) -> Vec<Tag> {
+    raw.lines()
+        .filter_map(|line| {
+            let mut fields = line.split('\t');
+            let name = fields.next()?.to_string();
+            let when = fields.next().unwrap_or("").to_string();
+            let subject = fields.next().unwrap_or("").to_string();
+            Some(Tag {
+                name,
+                when,
+                subject,
             })
         })
         .collect()
@@ -293,13 +302,17 @@ mod tests {
     }
 
     #[test]
-    fn parses_commits_and_branches() {
-        let commits = parse_commits("abc123\x1fme\x1f2 hours ago\x1ffix: 喵\n");
-        assert_eq!(commits[0].short, "abc123");
+    fn parses_commits_branches_and_tags() {
+        let commits = parse_commits("abc123\x1fa1b2c3\x1fme\x1f2 hours ago\x1ffix: 喵\n");
+        assert_eq!(commits[0].hash, "abc123");
+        assert_eq!(commits[0].short, "a1b2c3");
         assert_eq!(commits[0].summary, "fix: 喵");
         let branches = parse_branches("main\t*\torigin/main\nfeature\t\t\n");
         assert!(branches[0].current);
         assert_eq!(branches[0].upstream, "origin/main");
         assert!(!branches[1].current);
+        let tags = parse_tags("v0.1.2\t2 days ago\tRelease 0.1.2\n");
+        assert_eq!(tags[0].name, "v0.1.2");
+        assert_eq!(tags[0].subject, "Release 0.1.2");
     }
 }

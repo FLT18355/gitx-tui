@@ -1,17 +1,18 @@
 use crate::format;
 use crate::icons;
-use crate::local_app::{LocalApp, LocalPane};
+use crate::local::StatusFile;
+use crate::local_app::{LocalApp, LocalPane, PromptKind};
 use crate::theme::Theme;
 use ratatui::Frame;
 use ratatui::layout::{Alignment, Constraint, Layout, Position, Rect};
 use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span, Text};
-use ratatui::widgets::{Block, Borders, Clear, Paragraph};
+use ratatui::widgets::{Block, BorderType, Borders, Clear, Paragraph};
 
-const MIN_WIDTH: u16 = 64;
-const MIN_HEIGHT: u16 = 16;
+const MIN_WIDTH: u16 = 80;
+const MIN_HEIGHT: u16 = 22;
 
-pub fn draw(frame: &mut Frame, app: &LocalApp) {
+pub fn draw(frame: &mut Frame, app: &mut LocalApp) {
     let area = frame.area();
     let theme = app.theme.clone();
     fill(frame, area, theme.color("base"));
@@ -21,7 +22,7 @@ pub fn draw(frame: &mut Frame, app: &LocalApp) {
             &theme,
             area,
             "终端再大一点嘛喵~",
-            "本地仓库页至少要 64 x 16 才摆得下喵~",
+            "本地仓库页至少要 80 x 22 才摆得下喵~",
         );
         return;
     }
@@ -34,8 +35,8 @@ pub fn draw(frame: &mut Frame, app: &LocalApp) {
     draw_header(frame, app, &theme, chunks[0]);
     draw_body(frame, app, &theme, chunks[1]);
     draw_footer(frame, app, &theme, chunks[2]);
-    if app.commit_input.is_some() {
-        draw_commit_input(frame, app, &theme, area);
+    if app.prompt.is_some() {
+        draw_prompt(frame, app, &theme, area);
     }
 }
 
@@ -79,7 +80,7 @@ fn draw_header(frame: &mut Frame, app: &LocalApp, theme: &Theme, area: Rect) {
     ];
     if !app.repo.upstream.is_empty() {
         branch.push(Span::styled(
-            format!("  → {}", app.repo.upstream),
+            format!(" → {}", app.repo.upstream),
             Style::default().fg(theme.color("overlay0")),
         ));
     }
@@ -97,13 +98,21 @@ fn draw_header(frame: &mut Frame, app: &LocalApp, theme: &Theme, area: Rect) {
     }
     branch.push(Span::styled(
         format!(
-            "   {} 个改动    {} 个提交    {} 个分支",
-            app.repo.files.len(),
+            "   {} 暂存 · {} 未暂存 · {} 提交 · {} 标签",
+            app.repo.staged_count(),
+            app.repo.unstaged_count(),
             app.repo.commits.len(),
-            app.repo.branches.len()
+            app.repo.tags.len()
         ),
         Style::default().fg(theme.color("overlay0")),
     ));
+    if let Some(busy) = app.busy.as_deref() {
+        let frame_no = (app.started_at.elapsed().as_millis() / 120) as u64;
+        branch.push(Span::styled(
+            format!("   {} {busy}", format::spinner(frame_no)),
+            Style::default().fg(theme.color("peach")),
+        ));
+    }
     frame.render_widget(
         Paragraph::new(Line::from(branch)),
         Rect::new(area.x + 2, area.y + 1, area.width.saturating_sub(4), 1),
@@ -115,59 +124,83 @@ fn draw_header(frame: &mut Frame, app: &LocalApp, theme: &Theme, area: Rect) {
     );
 }
 
-fn draw_body(frame: &mut Frame, app: &LocalApp, theme: &Theme, area: Rect) {
-    let branch_width = if area.width >= 100 { 24 } else { 18 };
-    let commit_width = if area.width >= 110 {
-        40
-    } else if area.width >= 90 {
-        34
-    } else {
-        27
-    };
-    let columns = Layout::horizontal([
-        Constraint::Length(branch_width),
-        Constraint::Min(20),
-        Constraint::Length(commit_width),
+fn draw_body(frame: &mut Frame, app: &mut LocalApp, theme: &Theme, area: Rect) {
+    let commit_height = (area.height / 3).clamp(5, 9);
+    let chunks = Layout::vertical([
+        Constraint::Min(10),
+        Constraint::Length(1),
+        Constraint::Length(commit_height),
     ])
     .split(area);
-    draw_branches(frame, app, theme, columns[0]);
-    draw_status(frame, app, theme, columns[1]);
-    draw_commits(frame, app, theme, columns[2]);
+    let main = chunks[0];
+    let columns = Layout::horizontal([
+        Constraint::Length(24),
+        Constraint::Length(1),
+        Constraint::Percentage(40),
+        Constraint::Length(1),
+        Constraint::Min(24),
+    ])
+    .split(main);
+    let sidebar = Layout::vertical([
+        Constraint::Percentage(50),
+        Constraint::Length(1),
+        Constraint::Min(5),
+    ])
+    .split(columns[0]);
+    draw_branches(frame, app, theme, sidebar[0]);
+    draw_tags(frame, app, theme, sidebar[2]);
+    draw_status(frame, app, theme, columns[2]);
+    draw_diff(frame, app, theme, columns[4]);
+    draw_commits(frame, app, theme, chunks[2]);
 }
 
 fn panel(frame: &mut Frame, theme: &Theme, area: Rect, title: &str, focused: bool) -> Rect {
-    fill(frame, area, theme.color("mantle"));
-    frame.render_widget(
-        Paragraph::new(title).style(if focused {
-            Style::default()
-                .fg(theme.color("blue"))
-                .add_modifier(Modifier::BOLD)
-        } else {
-            Style::default().fg(theme.color("text"))
-        }),
-        Rect::new(area.x + 1, area.y, area.width.saturating_sub(2), 1),
-    );
-    fill(
-        frame,
-        Rect::new(area.x, area.y + 1, area.width, 1),
-        theme.color("surface0"),
-    );
-    Rect::new(
-        area.x + 1,
-        area.y + 2,
-        area.width.saturating_sub(2),
-        area.height.saturating_sub(2),
-    )
+    let border = if focused {
+        theme.color("blue")
+    } else {
+        theme.color("surface1")
+    };
+    let block = Block::new()
+        .borders(Borders::ALL)
+        .border_type(BorderType::Rounded)
+        .border_style(Style::default().fg(border))
+        .title(Line::from(Span::styled(
+            format!(" {title} "),
+            if focused {
+                Style::default()
+                    .fg(theme.color("blue"))
+                    .add_modifier(Modifier::BOLD)
+            } else {
+                Style::default().fg(theme.color("subtext0"))
+            },
+        )));
+    let inner = block.inner(area);
+    frame.render_widget(block, area);
+    fill(frame, inner, theme.color("mantle"));
+    inner
 }
 
-fn draw_branches(frame: &mut Frame, app: &LocalApp, theme: &Theme, area: Rect) {
-    let body = panel(
-        frame,
-        theme,
-        area,
-        &icons::label(icons::BRANCH, "分支喵~"),
-        app.pane == LocalPane::Branches,
+fn page_label(total: usize, selected: usize, rows: usize) -> String {
+    if total == 0 || rows == 0 {
+        return String::new();
+    }
+    let pages = total.div_ceil(rows);
+    let page = (selected / rows + 1).min(pages);
+    format!("  {page}/{pages}")
+}
+
+fn draw_branches(frame: &mut Frame, app: &mut LocalApp, theme: &Theme, area: Rect) {
+    let title = format!(
+        "{} 分支喵~{}",
+        icons::BRANCH,
+        page_label(
+            app.repo.branches.len(),
+            app.branch_selected,
+            app.branch_rows
+        )
     );
+    let body = panel(frame, theme, area, &title, app.pane == LocalPane::Branches);
+    app.branch_rows = body.height.max(1) as usize;
     if body.height == 0 {
         return;
     }
@@ -175,11 +208,11 @@ fn draw_branches(frame: &mut Frame, app: &LocalApp, theme: &Theme, area: Rect) {
         draw_center(frame, theme, body, "还没有分支喵~", "先提交一次就有啦喵~");
         return;
     }
-    let rows = body.height as usize;
+    let rows = app.branch_rows;
     let selected = app
         .branch_selected
         .min(app.repo.branches.len().saturating_sub(1));
-    let start = selected.saturating_sub(rows.saturating_sub(1));
+    let start = (selected / rows) * rows;
     let end = (start + rows).min(app.repo.branches.len());
     for (offset, index) in (start..end).enumerate() {
         let branch = &app.repo.branches[index];
@@ -188,28 +221,86 @@ fn draw_branches(frame: &mut Frame, app: &LocalApp, theme: &Theme, area: Rect) {
             fill(frame, row, theme.color("surface0"));
         }
         let marker = if branch.current { "*" } else { " " };
-        let text = format!("{} {}  {}", marker, branch.name, branch.upstream);
-        frame.render_widget(
-            Paragraph::new(format::truncate(&text, body.width as usize)).style(if branch.current {
-                Style::default()
-                    .fg(theme.color("blue"))
-                    .add_modifier(Modifier::BOLD)
-            } else {
-                Style::default().fg(theme.color("subtext0"))
-            }),
-            row,
-        );
+        let line = Line::from(vec![
+            Span::styled(marker, Style::default().fg(theme.color("green"))),
+            Span::styled(
+                format!(" {}", format::clean_text(&branch.name)),
+                if branch.current {
+                    Style::default()
+                        .fg(theme.color("blue"))
+                        .add_modifier(Modifier::BOLD)
+                } else {
+                    Style::default().fg(theme.color("text"))
+                },
+            ),
+            Span::styled(
+                if branch.upstream.is_empty() {
+                    String::new()
+                } else {
+                    format!("  {}", branch.upstream)
+                },
+                Style::default().fg(theme.color("overlay0")),
+            ),
+        ]);
+        frame.render_widget(Paragraph::new(line), row);
     }
 }
 
-fn draw_status(frame: &mut Frame, app: &LocalApp, theme: &Theme, area: Rect) {
+fn draw_tags(frame: &mut Frame, app: &mut LocalApp, theme: &Theme, area: Rect) {
     let title = format!(
-        "{} 改动喵~  暂存 {} · 未暂存 {}",
+        "{} 标签喵~{}",
+        icons::TAG,
+        page_label(app.repo.tags.len(), app.tag_selected, app.tag_rows)
+    );
+    let body = panel(frame, theme, area, &title, app.pane == LocalPane::Tags);
+    app.tag_rows = body.height.max(1) as usize;
+    if body.height == 0 {
+        return;
+    }
+    if app.repo.tags.is_empty() {
+        draw_center(frame, theme, body, "还没有标签喵~", "按 t 建一个试试嘛喵~");
+        return;
+    }
+    let rows = app.tag_rows;
+    let selected = app.tag_selected.min(app.repo.tags.len().saturating_sub(1));
+    let start = (selected / rows) * rows;
+    let end = (start + rows).min(app.repo.tags.len());
+    for (offset, index) in (start..end).enumerate() {
+        let tag = &app.repo.tags[index];
+        let row = Rect::new(body.x, body.y + offset as u16, body.width, 1);
+        if app.pane == LocalPane::Tags && index == selected {
+            fill(frame, row, theme.color("surface0"));
+        }
+        let line = Line::from(vec![
+            Span::styled(
+                format!("{} ", icons::TAG),
+                Style::default().fg(theme.color("peach")),
+            ),
+            Span::styled(
+                format::clean_text(&tag.name),
+                Style::default()
+                    .fg(theme.color("text"))
+                    .add_modifier(Modifier::BOLD),
+            ),
+            Span::styled(
+                format!("  {}", tag.when),
+                Style::default().fg(theme.color("overlay0")),
+            ),
+        ]);
+        frame.render_widget(Paragraph::new(line), row);
+    }
+}
+
+fn draw_status(frame: &mut Frame, app: &mut LocalApp, theme: &Theme, area: Rect) {
+    let title = format!(
+        "{} 改动喵~  暂存 {} · 未暂存 {}{}",
         icons::FILE,
         app.repo.staged_count(),
-        app.repo.unstaged_count()
+        app.repo.unstaged_count(),
+        page_label(app.repo.files.len(), app.file_selected, app.status_rows)
     );
     let body = panel(frame, theme, area, &title, app.pane == LocalPane::Status);
+    app.status_rows = body.height.max(1) as usize;
     if body.height == 0 {
         return;
     }
@@ -223,11 +314,11 @@ fn draw_status(frame: &mut Frame, app: &LocalApp, theme: &Theme, area: Rect) {
         );
         return;
     }
-    let rows = body.height as usize;
+    let rows = app.status_rows;
     let selected = app
         .file_selected
         .min(app.repo.files.len().saturating_sub(1));
-    let start = selected.saturating_sub(rows.saturating_sub(1));
+    let start = (selected / rows) * rows;
     let end = (start + rows).min(app.repo.files.len());
     for (offset, index) in (start..end).enumerate() {
         let file = &app.repo.files[index];
@@ -235,35 +326,101 @@ fn draw_status(frame: &mut Frame, app: &LocalApp, theme: &Theme, area: Rect) {
         if app.pane == LocalPane::Status && index == selected {
             fill(frame, row, theme.color("surface0"));
         }
-        let mark = format!(
-            "{}{}",
-            if file.staged() { "S" } else { " " },
-            if file.unstaged() { "U" } else { " " }
-        );
-        let color = if file.untracked() {
-            theme.color("overlay0")
-        } else if file.staged() {
-            theme.color("green")
-        } else {
-            theme.color("peach")
-        };
-        let text = format!("{} {:<6} {}", mark, file.status_label(), file.path);
-        frame.render_widget(
-            Paragraph::new(format::truncate(&text, body.width as usize))
-                .style(Style::default().fg(color)),
-            row,
-        );
+        let (badge, color) = status_badge(file, theme);
+        let line = Line::from(vec![
+            Span::styled(format!("{badge} "), Style::default().fg(color)),
+            Span::styled(
+                format!("{:<6}", file.status_label()),
+                Style::default().fg(color),
+            ),
+            Span::styled(
+                format::clean_text(&file.path),
+                Style::default().fg(theme.color("text")),
+            ),
+        ]);
+        frame.render_widget(Paragraph::new(line), row);
     }
 }
 
-fn draw_commits(frame: &mut Frame, app: &LocalApp, theme: &Theme, area: Rect) {
-    let body = panel(
-        frame,
-        theme,
-        area,
-        &icons::label(icons::CLOCK, "提交喵~"),
-        app.pane == LocalPane::Commits,
+fn status_badge(file: &StatusFile, theme: &Theme) -> (&'static str, Color) {
+    if file.untracked() {
+        ("?", theme.color("overlay0"))
+    } else if file.staged() && file.unstaged() {
+        ("±", theme.color("peach"))
+    } else if file.staged() {
+        ("S", theme.color("green"))
+    } else {
+        ("U", theme.color("peach"))
+    }
+}
+
+fn draw_diff(frame: &mut Frame, app: &mut LocalApp, theme: &Theme, area: Rect) {
+    let rows = area.height.saturating_sub(2) as usize;
+    let title = format!(
+        "{}{}",
+        app.diff_title,
+        if rows > 0 {
+            let lines = app.diff_text.lines().count();
+            if lines > rows {
+                let page = app.diff_scroll as usize / rows + 1;
+                let pages = lines.div_ceil(rows);
+                format!("  {page}/{pages}")
+            } else {
+                String::new()
+            }
+        } else {
+            String::new()
+        }
     );
+    let body = panel(frame, theme, area, &title, app.pane == LocalPane::Diff);
+    app.diff_scroll_max = app
+        .diff_text
+        .lines()
+        .count()
+        .saturating_sub(body.height as usize) as u16;
+    app.diff_scroll = app.diff_scroll.min(app.diff_scroll_max);
+    if body.height == 0 {
+        return;
+    }
+    let lines: Vec<Line> = app
+        .diff_text
+        .lines()
+        .map(|line| {
+            let style = if line.starts_with("+++") || line.starts_with("---") {
+                Style::default()
+                    .fg(theme.color("overlay0"))
+                    .add_modifier(Modifier::BOLD)
+            } else if line.starts_with('+') {
+                Style::default().fg(theme.color("green"))
+            } else if line.starts_with('-') {
+                Style::default().fg(theme.color("red"))
+            } else if line.starts_with("@@") {
+                Style::default().fg(theme.color("blue"))
+            } else if line.starts_with("commit ")
+                || line.starts_with("Author:")
+                || line.starts_with("Date:")
+            {
+                Style::default().fg(theme.color("peach"))
+            } else {
+                Style::default().fg(theme.color("subtext0"))
+            };
+            Line::from(Span::styled(line, style))
+        })
+        .collect();
+    frame.render_widget(
+        Paragraph::new(Text::from(lines)).scroll((app.diff_scroll, 0)),
+        body,
+    );
+}
+
+fn draw_commits(frame: &mut Frame, app: &mut LocalApp, theme: &Theme, area: Rect) {
+    let title = format!(
+        "{} 提交喵~{}",
+        icons::CLOCK,
+        page_label(app.repo.commits.len(), app.commit_selected, app.commit_rows)
+    );
+    let body = panel(frame, theme, area, &title, app.pane == LocalPane::Commits);
+    app.commit_rows = (body.height / 2).max(1) as usize;
     if body.height == 0 {
         return;
     }
@@ -277,11 +434,11 @@ fn draw_commits(frame: &mut Frame, app: &LocalApp, theme: &Theme, area: Rect) {
         );
         return;
     }
-    let rows = (body.height / 2).max(1) as usize;
+    let rows = app.commit_rows;
     let selected = app
         .commit_selected
         .min(app.repo.commits.len().saturating_sub(1));
-    let start = selected.saturating_sub(rows.saturating_sub(1));
+    let start = (selected / rows) * rows;
     let end = (start + rows).min(app.repo.commits.len());
     for (offset, index) in (start..end).enumerate() {
         let commit = &app.repo.commits[index];
@@ -293,7 +450,7 @@ fn draw_commits(frame: &mut Frame, app: &LocalApp, theme: &Theme, area: Rect) {
         if app.pane == LocalPane::Commits && index == selected {
             fill(frame, row, theme.color("surface0"));
         }
-        let text = Line::from(vec![
+        let line = Line::from(vec![
             Span::styled(
                 format!("{} ", commit.short),
                 Style::default().fg(theme.color("blue")),
@@ -306,7 +463,7 @@ fn draw_commits(frame: &mut Frame, app: &LocalApp, theme: &Theme, area: Rect) {
                 Style::default().fg(theme.color("text")),
             ),
         ]);
-        frame.render_widget(Paragraph::new(text), Rect::new(row.x, y, body.width, 1));
+        frame.render_widget(Paragraph::new(line), Rect::new(row.x, y, body.width, 1));
         frame.render_widget(
             Paragraph::new(format::truncate(
                 &format!("  {} · {}", commit.author, commit.when),
@@ -320,14 +477,17 @@ fn draw_commits(frame: &mut Frame, app: &LocalApp, theme: &Theme, area: Rect) {
 
 fn draw_footer(frame: &mut Frame, app: &LocalApp, theme: &Theme, area: Rect) {
     fill(frame, area, theme.color("crust"));
-    let (icon, color) = if app.message_error {
+    let (icon, color) = if app.busy.is_some() {
+        (icons::REFRESH, theme.color("peach"))
+    } else if app.message_error {
         (icons::WARNING, theme.color("red"))
     } else {
         (icons::INFO, theme.color("subtext0"))
     };
+    let message = app.busy.as_deref().unwrap_or(&app.message);
     frame.render_widget(
         Paragraph::new(format::truncate(
-            &format!("{icon}  {}", app.message),
+            &format!("{icon}  {message}"),
             area.width.saturating_sub(4) as usize,
         ))
         .style(Style::default().fg(color)),
@@ -335,7 +495,7 @@ fn draw_footer(frame: &mut Frame, app: &LocalApp, theme: &Theme, area: Rect) {
     );
     frame.render_widget(
         Paragraph::new(format::truncate(
-            "Tab 换面板  j/k 挑  s 暂存  u 取消暂存  c 提交  r 刷新  q 退出喵~",
+            "Tab 面板  j/k 选  [ ] 翻页  s/u 暂存 S/U 全部  d 差异  c 提交  t 标签  p 推送  P 推标签  f 取回  L 拉取  r 刷新  q 退出喵~",
             area.width.saturating_sub(4) as usize,
         ))
         .style(Style::default().fg(theme.color("overlay0"))),
@@ -343,13 +503,17 @@ fn draw_footer(frame: &mut Frame, app: &LocalApp, theme: &Theme, area: Rect) {
     );
 }
 
-fn draw_commit_input(frame: &mut Frame, app: &LocalApp, theme: &Theme, area: Rect) {
-    let Some(input) = app.commit_input.as_ref() else {
+fn draw_prompt(frame: &mut Frame, app: &mut LocalApp, theme: &Theme, area: Rect) {
+    let Some(prompt) = app.prompt.as_ref() else {
         return;
     };
-    let width = area.width.saturating_sub(12).min(64);
-    let height = 7.min(area.height.saturating_sub(4));
-    if width < 30 || height < 5 {
+    let (title, placeholder) = match prompt.kind {
+        PromptKind::Commit => ("提交信息喵~", "写点什么喵~"),
+        PromptKind::Tag => ("标签名喵~", "比如 v0.1.2 喵~"),
+    };
+    let width = area.width.saturating_sub(12).min(70);
+    let height = 8.min(area.height.saturating_sub(4));
+    if width < 36 || height < 6 {
         return;
     }
     let rect = Rect::new(
@@ -359,51 +523,42 @@ fn draw_commit_input(frame: &mut Frame, app: &LocalApp, theme: &Theme, area: Rec
         height,
     );
     frame.render_widget(Clear, rect);
-    fill(frame, rect, theme.color("mantle"));
-    frame.render_widget(
-        Block::new()
-            .borders(Borders::ALL)
-            .border_style(Style::default().fg(theme.color("green"))),
-        rect,
-    );
-    let inner = Rect::new(
-        rect.x + 2,
-        rect.y + 1,
-        rect.width.saturating_sub(4),
-        rect.height.saturating_sub(2),
-    );
-    frame.render_widget(
-        Paragraph::new("提交信息喵~").style(
+    let block = Block::new()
+        .borders(Borders::ALL)
+        .border_type(BorderType::Rounded)
+        .border_style(Style::default().fg(theme.color("green")))
+        .title(Line::from(Span::styled(
+            format!(" {title} "),
             Style::default()
-                .fg(theme.color("text"))
+                .fg(theme.color("green"))
                 .add_modifier(Modifier::BOLD),
-        ),
-        Rect::new(inner.x, inner.y, inner.width, 1),
-    );
+        )));
+    let inner = block.inner(rect);
+    frame.render_widget(block, rect);
+    fill(frame, inner, theme.color("mantle"));
     let input_rect = Rect::new(inner.x, inner.y + 1, inner.width, 1);
     fill(frame, input_rect, theme.color("surface0"));
-    let empty = input.is_empty();
+    let (shown, cursor_column) = prompt.input.visible_window(inner.width as usize);
+    let empty = prompt.input.is_empty();
     let shown = if empty {
-        "写点什么喵~".to_string()
+        placeholder.to_string()
     } else {
-        input.value.clone()
+        shown
     };
     frame.render_widget(
-        Paragraph::new(format::truncate(&shown, inner.width as usize)).style(if empty {
+        Paragraph::new(shown).style(if empty {
             Style::default().fg(theme.color("overlay0"))
         } else {
             Style::default().fg(theme.color("text"))
         }),
         input_rect,
     );
-    let cursor_x = if empty {
-        inner.x
-    } else {
-        inner.x + (input.cursor as u16).min(inner.width.saturating_sub(1))
-    };
-    frame.set_cursor_position(Position::new(cursor_x, inner.y + 1));
+    frame.set_cursor_position(Position::new(
+        inner.x + cursor_column.min(inner.width.saturating_sub(1)),
+        inner.y + 1,
+    ));
     frame.render_widget(
-        Paragraph::new("Enter 提交   Esc 取消喵~")
+        Paragraph::new("Enter 确认   Esc 取消喵~")
             .style(Style::default().fg(theme.color("overlay0"))),
         Rect::new(inner.x, inner.y + 3, inner.width, 1),
     );
@@ -425,9 +580,9 @@ fn draw_center(frame: &mut Frame, theme: &Theme, area: Rect, title: &str, detail
     ];
     let height = lines.len() as u16;
     let rect = Rect::new(
-        area.x + 2,
+        area.x + 1,
         area.y + area.height.saturating_sub(height) / 2,
-        area.width.saturating_sub(4),
+        area.width.saturating_sub(2),
         height.min(area.height),
     );
     frame.render_widget(

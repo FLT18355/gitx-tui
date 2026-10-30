@@ -1,274 +1,48 @@
 # gitx-tui（命令 `gxt`）
 
-终端里的 GitHub 工作台，使用 ratatui 和 crossterm 写成喵~仓库、收藏、搜索、账号和仓库详情分别占一页，配上 Catppuccin 配色、卡片列表、Nerd Font 图标和鼠标操作，尽量做得像桌面应用喵~
+终端里的 GitHub 工作台和本地 git TUI，使用 Rust、ratatui 与 crossterm 写成喵~
 
-编译出来的二进制叫 `gxt`，还支持 `gxt <路径>` 打开本地仓库，以及 `gxt settings` 单独调全局设置喵~
-
-界面里没有 emoji，图标都是 Nerd Font 字形喵~终端字体建议使用 Nerd Font，不然图标会显示成方块喵~
+GitHub 侧覆盖仓库、收藏、搜索、账号额度、仓库详情和 Actions；本地侧用 lazygit 风格查看改动、diff、分支、提交和标签，并支持暂存、提交、推送、拉取、取回和打标签。界面使用 Catppuccin 配色与 Nerd Font 图标，没有 emoji 喵~
 
 ## 功能
 
-- 人家的仓库：读取账号下的公开与私有仓库，支持全部语言筛选、排序、详情和仓库页喵~
-- 列表分页：仓库、收藏、搜索列表都会按当前窗口大小分页，`[` `]`、`g` `G`、`PgUp` `PgDn` 或底部按钮都能翻页喵~
-- 星星收藏：读取完整的 Starred 列表，超过 100 个会自动把接口翻完，界面上再分页展示喵~
-- 找仓库：按关键词搜索 GitHub 仓库，支持最佳匹配、星标优先和最近更新排序，一次最多拿 100 个结果再分页喵~
-- 账号页：看自己的 GitHub 小档案，还能查核心接口、搜索接口和 GraphQL 的额度与恢复时间喵~额度来自 `/rate_limit`，查它本身不消耗额度喵~
-- 仓库页：
-  - 左边是文件树预览，点文件或目录会去 GitHub 打开喵~
-  - 右边是发行版和资产，点资产就会下载到本地下载目录喵~
-  - 最下面是 README 预览，简单的 Markdown 会整理成可读文本喵~
-  - 文件树和 README 默认关闭，需要到 `gxt settings` 里手动打开喵~
-- 本地下载：
-  - 发行版资产和源码包都会下载到配置文件里的下载目录喵~
-  - 默认目录是 `~/Downloads/gitx-tui`喵~
-  - 同名文件会自动加序号，不会覆盖已经下载好的东西喵~
-- 收藏操作：在仓库页可以点赞或取消收藏，结果会同步到收藏页和缓存喵~
-- 自己的仓库：预览到 owner 是自己的仓库时，按 `e` 或点「编辑仓库」就能改简介、主页、主题、可见性和归档状态喵~保存会真实写回 GitHub喵~
-- 常用入口：主页、克隆地址、源码下载、议题、合并请求和工作流喵~
-- 工作流页：在仓库页按 `a` 或点「工作流」看当前仓库的 Actions 运行记录，左边挑 run，右边看 jobs 和 steps，`Enter` / `o` 去浏览器看日志喵~
-- 运行工作流：工作流页按 `R` / `x` 或点「运行工作流」打开弹窗，挑一个工作流、填分支或标签和 inputs JSON，回车就会向 GitHub 发 `workflow_dispatch`喵~
-- 全局设置：用 `gxt settings` 打开独立设置 TUI，主题、预览开关、下载目录、代理地址和缓存时间都在这里改，并写入配置文件喵~
-- 本地仓库：`gxt <路径>` 打开 lazygit 风格的本地仓库界面，能看改动、分支和提交，支持暂存、取消暂存和提交喵~
-- 缓存：仓库列表、收藏、搜索、仓库详情、文件树、README 和工作流都存在本地，按有效期自动刷新喵~设置 TUI 或 `c` 可以分类清理喵~
-- 鼠标：单击选择、双击打开仓库页、滚轮滚动、点击标签、按钮、文件树、发行版资产和设置项喵~
-- 主题：Latte、Frappe、Macchiato、Mocha 四套 Catppuccin 主题，每套一个 TOML喵~
+- GitHub 仓库：账号仓库、收藏、搜索、语言筛选、排序、分页和仓库详情。
+- 仓库详情：文件树、发行版下载、README、议题/合并请求入口和自己的仓库编辑。
+- Actions：运行记录、jobs、steps、状态与耗时，以及手动触发工作流和 inputs。
+- 账号页：资料、仓库统计、GitHub API core/search/GraphQL 额度与恢复时间。
+- 本地仓库 TUI：
+  - 分支、标签、改动、提交四个列表，支持分页和选择；
+  - 选中文件或提交时显示差异；
+  - 暂存、取消暂存、全部暂存、全部取消暂存；
+  - 提交、创建标签、推送当前分支、推送标签、fetch、pull；
+  - 切换分支；
+  - 中文输入、横向滚动和显示宽度正确的光标。
+- 全局设置 TUI：主题、预览开关、下载目录、代理、缓存时间和缓存管理。
+- 主题：Latte、Frappe、Macchiato、Mocha 四套 Catppuccin 配色。
+- 缓存：仓库、收藏、搜索、详情、Actions 与工作流列表都会落盘，按 TTL 刷新。
+- 代理：公开 API 可走加速代理，认证请求直连 GitHub。
 
-## 环境要求
+## 界面
 
-- Rust 1.88 或更新版本
-- GitHub CLI `gh`
-- 已执行 `gh auth login`
-- 终端支持鼠标与真彩色
-- Nerd Font 字体，用于显示图标
+- GitHub 工作台：仓库、收藏、搜索、账号四个页面，以及仓库详情和 Actions。
+- 仓库详情：文件树、发行版、README 和 Actions 入口。
+- 本地仓库 TUI：左侧分支和标签，中间改动，右侧差异，底部提交记录。
+- 设置 TUI：所有全局设置集中在一页。
 
-程序通过 `gh auth token --hostname github.com` 读取登录凭据，也支持 `GITHUB_TOKEN` 或 `GH_TOKEN` 环境变量喵~没有登录时仍然可以搜索公开仓库和查看公开仓库详情喵~
+## 文档
 
-## 构建与运行
+- CLI 用法：运行 `gxt -h`，或看 [docs/CLI.md](docs/CLI.md)。
+- 键位：看 [docs/KEYBINDINGS.md](docs/KEYBINDINGS.md)。
+- 配置、网络与缓存：看 [docs/CONFIG.md](docs/CONFIG.md)。
+- 构建、测试与架构：看 [docs/DEVELOPMENT.md](docs/DEVELOPMENT.md)。
 
-```bash
-cargo build --release
-./target/release/gxt
-```
+## 环境
 
-也可以临时指定主题：
+- Rust 2024 / 1.88 或更新版本（从源码构建时）。
+- GitHub CLI `gh`，用于读取登录凭据。
+- 支持鼠标与真彩色的终端。
+- 推荐 Nerd Font；没有时图标可能显示成方块。
 
-```bash
-./target/release/gxt --theme latte
-```
+## 许可证
 
-命令行入口：
-
-```bash
-gxt                  # GitHub 工作台
-gxt <路径>           # 本地仓库 TUI，比如 gxt . 或 gxt ~/code/demo
-gxt settings         # 只开全局设置 TUI
-gxt --theme latte    # 指定主题
-gxt --help           # 看完整帮助
-```
-
-在仓库根目录跑本地的安装脚本，会 `cargo build --release` 后装到 `~/.local/bin` 喵~
-
-```bash
-./install.sh
-./install.sh --dir /some/bin   # 换安装目录
-./install.sh --debug           # 构建 debug 版，编译快一点
-```
-
-也可以交给 Cargo：
-
-```bash
-cargo install --path .
-```
-
-发布 tag `v*` 时，GitHub Actions 会自动构建 Linux/macOS/Windows 包并创建 Release喵~
-
-## 页面与操作
-
-| 页面 | 内容 |
-| --- | --- |
-| 仓库 | 账号仓库列表、全部语言筛选、排序、详情和发行版 |
-| 收藏 | 完整的 Starred 列表、统计、排序和详情 |
-| 搜索 | 搜索框、排序、历史记录、结果列表和详情 |
-| 账号 | 账号资料、仓库统计、GitHub API 核心/搜索/GraphQL 额度和恢复时间 |
-| 仓库详情 | 统计、文件树、右侧发行版下载和底部 README；自己的仓库可以编辑喵~ |
-| 工作流 | 当前仓库的 Actions 运行记录、任务与步骤状态，可手动触发工作流，按 `Enter` 去浏览器喵~ |
-
-### 键盘
-
-| 按键 | 作用 |
-| --- | --- |
-| `1` `2` `3` `4` | 切换仓库、收藏、搜索、账号 |
-| `Tab` | 在仓库页切换文件树、发行版、README 面板；其他页面切页 |
-| `j` `k` | 上下移动或滚动当前面板 |
-| `[` `]` | 上一页 / 下一页 |
-| `g` `G` | 第一页 / 最后一页（仓库页里是面板顶部 / 底部） |
-| `PgUp` `PgDn` | 列表翻页；仓库页里滚动面板 |
-| `Enter` | 打开仓库页；账号页打开主页；工作流页打开 run；确认语言 |
-| `Esc` | 离开输入、关闭弹窗或返回列表 |
-| `/` | 聚焦搜索 |
-| `a` | 打开当前仓库的 Actions 工作流页 |
-| `R` / `x` | 在工作流页打开「运行工作流」弹窗 |
-| `c` | 打开缓存管理，按分类清理 |
-| `e` | 编辑自己的仓库（简介、主页、主题、可见性、归档） |
-| `f` | 收藏或取消收藏当前仓库 |
-| `l` | 在仓库页打开完整语言筛选 |
-| `o` | 用浏览器打开当前仓库 |
-| `y` | 复制当前仓库的克隆地址 |
-| `r` | 刷新当前页、账号额度或仓库预览 |
-| `h` `l` | 在 `gxt settings` 里调整当前项 |
-| `Ctrl+S` | 保存设置；编辑仓库时保存改动 |
-| `?` | 打开操作说明 |
-| `q` | 退出 |
-
-在搜索框里输入时，字母会正常进入输入框喵~搜索框里按 `Enter` 开始搜索，按 `Esc` 离开输入框喵~
-
-### 本地仓库界面
-
-`gxt <路径>` 会打开本地仓库 TUI，界面分成「分支」「改动」「提交」三栏：
-
-| 按键 | 作用 |
-| --- | --- |
-| `Tab` / `Left` / `Right` | 切换分支、改动、提交面板 |
-| `j` `k` / `PgUp` `PgDn` | 移动选择 |
-| `g` `G` | 跳到第一项 / 最后一项 |
-| `s` | 暂存选中的改动 |
-| `u` | 取消暂存选中的改动 |
-| `c` | 写提交信息，`Enter` 提交、`Esc` 取消 |
-| `r` | 重新读取仓库 |
-| `q` / `Esc` | 退出 |
-
-这是部分 lazygit 风格功能：查看状态、分支、最近 50 条提交，以及暂存/取消暂存/提交；不做 diff 浏览、冲突处理和推送喵~
-
-### 鼠标
-
-- 点击顶部标签切换页面喵~
-- 点击仓库卡片选中，双击打开仓库页喵~
-- 点击排序标签、语言筛选、主题卡片和按钮喵~
-- 点击列表底部的上一页 / 下一页按钮翻页喵~
-- 点击自己的仓库页里的「编辑仓库」可以打开编辑弹窗喵~
-- 点击仓库页的「工作流」进入 Actions 页，点击运行记录切换 jobs，点击任务行去浏览器喵~
-- 点击 Actions 页的「运行工作流」或弹窗里的「运行喵~」手动触发工作流喵~
-- 点击缓存管理里的分类可以选中，再点「清掉选中」清理喵~
-- 点击文件树里的文件或目录会去 GitHub 打开喵~
-- 点击发行版资产会开始本地下载喵~
-- 滚轮滚动列表、文件树、发行版和 README 区域喵~
-
-## 配置文件
-
-项目根目录的 `config.toml` 是随程序发布的默认配置喵~第一次运行时，程序会把它写到：
-
-```text
-~/.config/gitx-tui/config.toml
-```
-
-`gxt settings` 里的改动会写入这个文件喵~也可以直接编辑，重启后生效喵~
-
-```toml
-theme = "mocha"
-proxy = "https://v4.gh-proxy.org"
-repos_ttl_secs = 300
-detail_ttl_secs = 900
-search_ttl_secs = 600
-search_history = []
-show_file_tree = false
-show_readme = false
-download_dir = "~/Downloads/gitx-tui"
-```
-
-| 字段 | 说明 |
-| --- | --- |
-| `theme` | `latte`、`frappe`、`macchiato`、`mocha` |
-| `proxy` | 公开 API 与发行版下载的加速地址 |
-| `repos_ttl_secs` | 仓库和收藏列表的缓存时间，单位秒 |
-| `detail_ttl_secs` | 仓库详情、文件树、README、发行版和 Actions 的缓存时间，单位秒 |
-| `search_ttl_secs` | 搜索结果的缓存时间，单位秒 |
-| `search_history` | 最近搜索，最多保留 8 条 |
-| `show_file_tree` | 是否在仓库页加载文件树，默认关闭 |
-| `show_readme` | 是否在仓库页底部加载 README，默认关闭 |
-| `download_dir` | 本地下载目录，支持 `~/` 开头 |
-
-`show_file_tree` 和 `show_readme` 打开之后，程序才会去请求对应的 GitHub API喵~关着的时候不会偷偷拉取喵~
-
-## 主题
-
-主题文件放在 `themes/` 下：
-
-```text
-themes/latte.toml
-themes/frappe.toml
-themes/macchiato.toml
-themes/mocha.toml
-```
-
-四套都是 Catppuccin 官方色板，包含 base、mantle、crust、surface、overlay、text 以及强调色喵~程序优先读取当前目录的 `themes/`，其次读取 `~/.config/gitx-tui/themes/`，找不到时使用编译进二进制的同一套主题喵~
-
-## 网络与缓存
-
-公开 API（仓库详情、文件树、README、发行版、搜索）会先请求：
-
-```text
-https://v4.gh-proxy.org/https://api.github.com/...
-```
-
-发行版资产和源码包的下载也会先走：
-
-```text
-https://v4.gh-proxy.org/https://github.com/...
-```
-
-认证数据（`/user`、`/user/repos`、`/user/starred`、`/rate_limit`）、私有仓库详情、私有仓库的 Actions 接口、手动触发工作流（`POST .../actions/workflows/{id}/dispatches`）、Star 操作和仓库编辑（`PATCH /repos/{owner}/{repo}`）直接访问 GitHub API喵~这样处理有两个原因：
-
-1. `gh` 的登录凭据不会发送给第三方代理喵~
-2. 公共代理不会转发 `Authorization`，也不适合承载私有仓库数据喵~
-
-如果公开代理暂时不可用或额度用尽，程序会回退到直连公开 API喵~发行版下载也会在代理失败后尝试直连喵~
-
-缓存目录：
-
-```text
-~/.cache/gitx-tui
-```
-
-数据按更新时间保存为 JSON喵~`gxt settings` 或主界面的缓存管理可以清理缓存，也可以在配置里调整各缓存的有效期喵~
-
-## 目录结构
-
-```text
-src/api.rs       GitHub API、gh 凭据、代理、直连回退和本地下载
-src/app.rs       页面状态、分页、账号额度、仓库编辑、工作流、缓存管理和异步消息
-src/cache.rs     JSON 缓存
-src/cli.rs       gxt 参数解析、帮助与子命令
-src/config.rs    配置加载与保存
-src/icons.rs     Nerd Font 图标
-src/local.rs     本地 git 状态/提交/分支读取与暂存、提交操作
-src/local_app.rs 本地仓库 TUI 状态与按键
-src/local_ui.rs  本地仓库 TUI 渲染
-src/model.rs     GitHub 数据结构
-src/theme.rs     Catppuccin 主题加载
-src/ui.rs        全部页面渲染、账号页、编辑弹窗、文件树、README 和命中区域
-themes/          四套主题 TOML
-config.toml      随项目发布的默认配置
-```
-
-## 测试
-
-```bash
-cargo test
-cargo clippy --all-targets -- -D warnings
-```
-
-## 已知限制
-
-- 仓库列表和收藏会把接口分页全部取完后再按窗口分页展示，仓库特别多时第一次同步会慢一点点喵~
-- 搜索一次最多取 100 个结果，界面再按窗口分页；GitHub 搜索 API 本身最多只能翻到 1000 个结果喵~
-- 账号页的额度来自 `/rate_limit`，只读查询；仓库编辑会真的改动 GitHub 上的仓库设置喵~
-- 仓库编辑只覆盖简介、主页、主题、可见性和归档，不改仓库名、默认分支和文件内容喵~
-- 文件树会把仓库当前分支的树递归取下来，界面最多展示 1200 项喵~
-- README 采用轻量 Markdown 处理，不是完整渲染器喵~
-- 同一时间只下载一个发行版资产，下载完再点下一份喵~
-- 工作流页每个仓库只取最近 30 条运行记录，不是账号级全部记录喵~
-- 私有仓库的 Actions 记录需要 `gh` 登录凭据，没登录时会提示失败喵~
-- 手动运行工作流要求 token 有 Actions 写权限，且工作流本身声明了 `workflow_dispatch`；需要 inputs 时在弹窗的「inputs JSON」框里按 `{"名字":"值"}` 填，没有参数就留 `{}`，不用去网页喵~
-- 手动运行会真的消耗 GitHub Actions 额度和运行 CI，点「运行喵~」之前要想一下哦喵~
-- 本地仓库 TUI 只做部分 lazygit：不做 diff 浏览、冲突处理、push/pull，也没有鼠标操作喵~
-- Star 操作会真实修改 GitHub 账号状态，点之前要想一下哦喵~
+MIT

@@ -137,6 +137,30 @@ pub fn text_width(text: &str) -> usize {
     UnicodeWidthStr::width(text)
 }
 
+pub fn visible_text(value: &str, cursor: usize, max_width: usize) -> (String, u16) {
+    let max_width = max_width.max(1);
+    let prefix_width = text_width(&value[..cursor]);
+    let start_column = prefix_width.saturating_sub(max_width.saturating_sub(1));
+    let mut visible = String::new();
+    let mut total = 0;
+    let mut cursor_column = 0;
+    for (index, ch) in value.char_indices() {
+        let width = UnicodeWidthChar::width(ch).unwrap_or(0);
+        if total + width <= start_column {
+            total += width;
+            continue;
+        }
+        if index < cursor {
+            cursor_column += width as u16;
+        }
+        if text_width(&visible) + width > max_width {
+            break;
+        }
+        visible.push(ch);
+    }
+    (visible, cursor_column.min(max_width as u16))
+}
+
 pub fn truncate(text: &str, width: usize) -> String {
     let text = text.replace(['\n', '\r'], " ");
     if width == 0 {
@@ -373,6 +397,16 @@ mod tests {
         assert_eq!(countdown_epoch(now + 7200, now), "2 小时后");
         assert_eq!(reset_label(now + 125, now), "2 分钟后恢复");
         assert_eq!(reset_label(now - 1, now), "已经恢复");
+    }
+
+    #[test]
+    fn visible_text_tracks_chinese_cursor() {
+        let (text, cursor) = visible_text("中文abc", 6, 10);
+        assert_eq!(text, "中文abc");
+        assert_eq!(cursor, 4);
+        let (text, cursor) = visible_text("啊啊啊", 9, 4);
+        assert_eq!(text, "啊啊");
+        assert_eq!(cursor, 4);
     }
 
     #[test]
