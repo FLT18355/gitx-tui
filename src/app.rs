@@ -5,12 +5,11 @@ use crate::format::{self, base64};
 use crate::icons;
 use crate::model::{
     Issue, IssueState, Notification, RateLimit, ReadmeContent, Release, Repo, RepoSort,
-    SearchResponse, SearchSort, TreeResponse, User, Workflow, key_part,
+    SearchResponse, SearchSort, StarSort, TreeResponse, User, Workflow, key_part,
 };
 use crate::theme::{FLAVORS, Theme};
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers, MouseButton, MouseEvent, MouseEventKind};
 use ratatui::layout::Rect;
-use std::collections::HashSet;
 use std::io::Write;
 use std::sync::mpsc::{self, Receiver, Sender};
 use std::time::{Duration, Instant};
@@ -26,6 +25,7 @@ pub enum Page {
     Repo,
     Actions,
     Issues,
+    ReleaseDetail,
 }
 
 impl Page {
@@ -36,7 +36,9 @@ impl Page {
             Self::Search => Some(2),
             Self::Account => Some(3),
             Self::Notifications => Some(4),
-            Self::Repo | Self::Actions | Self::Issues | Self::Settings => None,
+            Self::Repo | Self::Actions | Self::Issues | Self::ReleaseDetail | Self::Settings => {
+                None
+            }
         }
     }
 
@@ -61,11 +63,15 @@ impl Page {
             Self::Repo => "仓库详情喵~",
             Self::Actions => "工作流喵~",
             Self::Issues => "议题喵~",
+            Self::ReleaseDetail => "发行版详情喵~",
         }
     }
 
     pub fn is_repo_page(self) -> bool {
-        matches!(self, Self::Repo | Self::Actions | Self::Issues)
+        matches!(
+            self,
+            Self::Repo | Self::Actions | Self::Issues | Self::ReleaseDetail
+        )
     }
 }
 
@@ -144,9 +150,11 @@ pub enum Action {
     SelectVisible(usize),
     Language(Option<String>),
     SetRepoSort(RepoSort),
-    SetStarSort(RepoSort),
+    SetStarSort(StarSort),
     SetSearchSort(SearchSort),
     SearchFocus,
+    ListFilterFocus,
+    ReleaseFilterFocus,
     SearchHistory(String),
     SubmitSearch,
     OpenPage,
@@ -168,7 +176,7 @@ pub enum Action {
     DownloadAsset { release: usize, asset: usize },
     DownloadSource,
     OpenReleasePage(usize),
-    ToggleReleaseAssets(usize),
+    OpenReleaseDetail(usize),
     OpenTreePath { path: String, directory: bool },
     FocusRepoPane(RepoPane),
     OpenExternal(String),
@@ -551,9 +559,14 @@ pub struct App {
     pub search_submitted: Option<String>,
     pub search_input: TextInput,
     pub search_focus: bool,
+    pub repo_filter: TextInput,
+    pub star_filter: TextInput,
+    pub list_filter_focus: bool,
+    pub release_filter: TextInput,
+    pub release_filter_focus: bool,
     pub search_sort: SearchSort,
     pub repo_sort: RepoSort,
-    pub star_sort: RepoSort,
+    pub star_sort: StarSort,
     pub language_filter: Option<String>,
 
     repo_selected: usize,
@@ -567,7 +580,10 @@ pub struct App {
     pub detail_fetched_at: Option<i64>,
     pub releases: Vec<Release>,
     pub releases_fetched_at: Option<i64>,
-    pub expanded_releases: HashSet<String>,
+    pub release_selected: usize,
+    pub release_asset_selected: usize,
+    pub release_scroll: u16,
+    pub release_scroll_max: u16,
     pub detail_scroll: u16,
     pub detail_scroll_max: u16,
     pub page_repo: Option<Repo>,
@@ -716,9 +732,14 @@ impl App {
             search_submitted: None,
             search_input: TextInput::new(""),
             search_focus: false,
+            repo_filter: TextInput::new(""),
+            star_filter: TextInput::new(""),
+            list_filter_focus: false,
+            release_filter: TextInput::new(""),
+            release_filter_focus: false,
             search_sort: SearchSort::BestMatch,
             repo_sort: RepoSort::Updated,
-            star_sort: RepoSort::Updated,
+            star_sort: StarSort::Starred,
             language_filter: None,
             repo_selected: 0,
             star_selected: 0,
@@ -730,7 +751,10 @@ impl App {
             detail_fetched_at: None,
             releases: Vec::new(),
             releases_fetched_at: None,
-            expanded_releases: HashSet::new(),
+            release_selected: 0,
+            release_asset_selected: 0,
+            release_scroll: 0,
+            release_scroll_max: 0,
             detail_scroll: 0,
             detail_scroll_max: 0,
             page_repo: None,
@@ -840,6 +864,10 @@ impl App {
         if let Some(cached) = self.cache.load::<Vec<Repo>>(&starred_cache_key(&login)) {
             self.starred = cached.data;
             self.fetched_starred_at = Some(cached.fetched_at);
+        }
+        if self.client.token_present() && self.starred.iter().any(|repo| repo.starred_at.is_none())
+        {
+            self.fetched_starred_at = None;
         }
         self.clamp_selection();
         self.schedule_selected_detail();
@@ -1020,6 +1048,7 @@ impl App {
                         if self.matches_current_repo(&name) {
                             self.releases = releases;
                             self.releases_fetched_at = Some(now_epoch());
+                            self.clamp_release_selection();
                         }
                     }
                     Err(error) => {
@@ -1485,7 +1514,9 @@ impl App {
 
     fn context_repo(&self) -> Option<Repo> {
         match self.page {
-            Page::Repo => self.page_repo.clone().or_else(|| self.detail.clone()),
+            Page::Repo | Page::ReleaseDetail => {
+                self.page_repo.clone().or_else(|| self.detail.clone())
+            }
             Page::Actions => self
                 .action_repo
                 .as_deref()
@@ -2544,7 +2575,8 @@ impl App {
         if self.page == Page::Repo && self.readme_loading.is_some() {
             return Some("人家正在读 README 喵~...");
         }
-        if self.page == Page::Repo && self.releases_loading.is_some() {
+        if matches!(self.page, Page::Repo | Page::ReleaseDetail) && self.releases_loading.is_some()
+        {
             return Some("人家正在取发行版喵~...");
         }
         if self.detail_loading.is_some()
@@ -2622,26 +2654,107 @@ impl App {
         self.visible_indices_for(self.current_list_page())
     }
 
+    fn filter_for(&self, page: Page) -> &TextInput {
+        if page == Page::Starred {
+            &self.star_filter
+        } else {
+            &self.repo_filter
+        }
+    }
+
+    fn filter_for_mut(&mut self, page: Page) -> &mut TextInput {
+        if page == Page::Starred {
+            &mut self.star_filter
+        } else {
+            &mut self.repo_filter
+        }
+    }
+
+    pub fn current_filter(&self) -> &TextInput {
+        self.filter_for(self.page)
+    }
+
+    pub fn list_filter_active(&self) -> bool {
+        matches!(self.page, Page::Repositories | Page::Starred)
+            && !self.current_filter().value.trim().is_empty()
+    }
+
+    pub fn focus_list_filter(&mut self) {
+        if !matches!(self.page, Page::Repositories | Page::Starred) {
+            return;
+        }
+        self.search_focus = false;
+        self.list_filter_focus = true;
+    }
+
+    pub fn focus_release_filter(&mut self) {
+        if self.page != Page::Repo || self.repo_pane != RepoPane::Releases {
+            return;
+        }
+        self.search_focus = false;
+        self.list_filter_focus = false;
+        self.release_filter_focus = true;
+    }
+
+    fn release_matches_filter(release: &Release, query: &str) -> bool {
+        if query.is_empty() {
+            return true;
+        }
+        let haystack = format!("{} {}", release.tag_name, release.title()).to_lowercase();
+        haystack.contains(query)
+    }
+
+    pub fn visible_release_indices(&self) -> Vec<usize> {
+        let query = self.release_filter.value.trim().to_lowercase();
+        self.releases
+            .iter()
+            .enumerate()
+            .filter(|(_, release)| Self::release_matches_filter(release, &query))
+            .map(|(index, _)| index)
+            .collect()
+    }
+
+    fn repo_matches_filter(repo: &Repo, query: &str) -> bool {
+        if query.is_empty() {
+            return true;
+        }
+        let haystack = format!(
+            "{} {} {} {}",
+            repo.display_full_name(),
+            repo.description_text(),
+            repo.language_label(),
+            repo.topics.join(" ")
+        )
+        .to_lowercase();
+        haystack.contains(query)
+    }
+
     fn visible_indices_for(&self, page: Page) -> Vec<usize> {
         let raw = self.raw_list(page);
-        let filter = if page == Page::Repositories {
+        let language = if page == Page::Repositories {
             self.language_filter.as_deref()
         } else {
             None
+        };
+        let query = if matches!(page, Page::Repositories | Page::Starred) {
+            self.filter_for(page).value.trim().to_lowercase()
+        } else {
+            String::new()
         };
         let mut indices: Vec<usize> = raw
             .iter()
             .enumerate()
             .filter(|(_, repo)| {
-                filter
+                language
                     .map(|language| repo.language_label().eq_ignore_ascii_case(language))
                     .unwrap_or(true)
+                    && Self::repo_matches_filter(repo, &query)
             })
             .map(|(index, _)| index)
             .collect();
         match page {
             Page::Repositories => sort_indices(raw, &mut indices, self.repo_sort),
-            Page::Starred => sort_indices(raw, &mut indices, self.star_sort),
+            Page::Starred => sort_star_indices(raw, &mut indices, self.star_sort),
             _ => {}
         }
         indices
@@ -3245,6 +3358,11 @@ impl App {
                 self.schedule_action_jobs(true);
             }
             Page::Issues => self.fetch_issues(true),
+            Page::ReleaseDetail => {
+                if let Some(repo) = self.page_repo.clone() {
+                    self.schedule_repo_extras(&repo, true);
+                }
+            }
             Page::Notifications => self.fetch_notifications(true),
             Page::Settings => self.refresh_cache_stats(),
         }
@@ -3274,6 +3392,8 @@ impl App {
         self.page_repo = None;
         self.issue_repo = None;
         self.search_focus = page == Page::Search;
+        self.list_filter_focus = false;
+        self.release_filter_focus = false;
         self.list_offset = 0;
         self.pending_detail = None;
         if page == Page::Settings {
@@ -3309,6 +3429,8 @@ impl App {
         };
         self.return_page = return_page_when_opening(self.page, self.return_page);
         self.issue_repo = None;
+        self.release_filter = TextInput::new("");
+        self.release_filter_focus = false;
         self.page_repo = Some(repo.clone());
         self.page = Page::Repo;
         self.page_scroll = 0;
@@ -3317,7 +3439,10 @@ impl App {
         self.detail_for = None;
         self.detail = None;
         self.releases.clear();
-        self.expanded_releases.clear();
+        self.release_selected = 0;
+        self.release_asset_selected = 0;
+        self.release_scroll = 0;
+        self.release_scroll_max = 0;
         self.detail_fetched_at = None;
         self.releases_fetched_at = None;
         self.load_detail_cache(&repo);
@@ -3401,10 +3526,16 @@ impl App {
     }
 
     pub fn focus_search(&mut self) {
+        self.list_filter_focus = false;
+        self.release_filter_focus = false;
         if self.page != Page::Search {
             self.navigate(Page::Search);
         }
         self.search_focus = true;
+    }
+
+    fn blur_list_filter(&mut self) {
+        self.list_filter_focus = false;
     }
 
     pub fn select_search_history(&mut self, query: String) {
@@ -3413,13 +3544,15 @@ impl App {
     }
 
     pub fn set_repo_sort(&mut self, sort: RepoSort) {
+        self.blur_list_filter();
         self.repo_sort = sort;
         self.repo_selected = 0;
         self.list_offset = 0;
         self.schedule_selected_detail();
     }
 
-    pub fn set_star_sort(&mut self, sort: RepoSort) {
+    pub fn set_star_sort(&mut self, sort: StarSort) {
+        self.blur_list_filter();
         self.star_sort = sort;
         self.star_selected = 0;
         self.list_offset = 0;
@@ -3541,6 +3674,70 @@ impl App {
             return;
         };
         self.open_url(&url);
+    }
+
+    pub fn selected_release(&self) -> Option<Release> {
+        self.releases.get(self.release_selected).cloned()
+    }
+
+    pub fn open_release_detail(&mut self, index: usize) {
+        if index >= self.releases.len() {
+            return;
+        }
+        self.release_selected = index;
+        self.release_asset_selected = 0;
+        self.release_scroll = 0;
+        self.release_scroll_max = 0;
+        self.search_focus = false;
+        self.list_filter_focus = false;
+        self.return_page = return_page_when_opening(self.page, self.return_page);
+        self.page = Page::ReleaseDetail;
+    }
+
+    fn clamp_release_selection(&mut self) {
+        if self.releases.is_empty() {
+            self.release_selected = 0;
+            self.release_asset_selected = 0;
+            return;
+        }
+        self.release_selected = self.release_selected.min(self.releases.len() - 1);
+        let assets = self.releases[self.release_selected].assets.len();
+        if assets == 0 {
+            self.release_asset_selected = 0;
+        } else {
+            self.release_asset_selected = self.release_asset_selected.min(assets - 1);
+        }
+    }
+
+    pub fn move_release_asset_selection(&mut self, delta: i32) {
+        let Some(release) = self.selected_release() else {
+            return;
+        };
+        if release.assets.is_empty() {
+            return;
+        }
+        self.release_asset_selected = (self.release_asset_selected as i32 + delta)
+            .clamp(0, release.assets.len() as i32 - 1)
+            as usize;
+    }
+
+    pub fn select_release_asset(&mut self, index: usize) {
+        let Some(release) = self.selected_release() else {
+            return;
+        };
+        if release.assets.is_empty() {
+            return;
+        }
+        self.release_asset_selected = index.min(release.assets.len() - 1);
+    }
+
+    pub fn download_selected_release_asset(&mut self) {
+        let selected = self.release_asset_selected;
+        self.download_asset(self.release_selected, selected);
+    }
+
+    pub fn open_selected_release_page(&mut self) {
+        self.open_release_page(self.release_selected);
     }
 
     pub fn download_source_zip(&mut self) {
@@ -3735,6 +3932,16 @@ impl App {
             }
             return;
         }
+        if self.page == Page::ReleaseDetail {
+            if layout.contains(layout.detail, x, y) {
+                let step = 3_i32 * delta;
+                let max = self.release_scroll_max as i32;
+                self.release_scroll = (self.release_scroll as i32 + step).clamp(0, max) as u16;
+            } else if layout.contains(layout.page_releases, x, y) && delta != 0 {
+                self.move_release_asset_selection(delta.signum());
+            }
+            return;
+        }
         if self.page == Page::Notifications {
             if layout.contains(layout.list, x, y) && delta != 0 {
                 self.move_notification_selection(delta.signum());
@@ -3888,6 +4095,50 @@ impl App {
             return;
         }
 
+        if self.list_filter_focus {
+            match key.code {
+                KeyCode::Enter | KeyCode::Esc => {
+                    self.list_filter_focus = false;
+                }
+                KeyCode::Tab => {
+                    self.list_filter_focus = false;
+                    self.navigate_next_page();
+                }
+                KeyCode::Backspace => self.filter_for_mut(self.page).backspace(),
+                KeyCode::Delete => self.filter_for_mut(self.page).delete(),
+                KeyCode::Left => self.filter_for_mut(self.page).left(),
+                KeyCode::Right => self.filter_for_mut(self.page).right(),
+                KeyCode::Home => self.filter_for_mut(self.page).home(),
+                KeyCode::End => self.filter_for_mut(self.page).end(),
+                KeyCode::Char(ch) => self.filter_for_mut(self.page).insert(ch),
+                _ => {}
+            }
+            self.clamp_selection();
+            return;
+        }
+
+        if self.release_filter_focus {
+            match key.code {
+                KeyCode::Enter | KeyCode::Esc => {
+                    self.release_filter_focus = false;
+                }
+                KeyCode::Tab => {
+                    self.release_filter_focus = false;
+                    self.cycle_repo_pane();
+                }
+                KeyCode::Backspace => self.release_filter.backspace(),
+                KeyCode::Delete => self.release_filter.delete(),
+                KeyCode::Left => self.release_filter.left(),
+                KeyCode::Right => self.release_filter.right(),
+                KeyCode::Home => self.release_filter.home(),
+                KeyCode::End => self.release_filter.end(),
+                KeyCode::Char(ch) => self.release_filter.insert(ch),
+                _ => {}
+            }
+            self.page_scroll = 0;
+            return;
+        }
+
         if self.settings_only {
             match key.code {
                 KeyCode::Esc => {
@@ -3969,6 +4220,14 @@ impl App {
         match key.code {
             KeyCode::Char('q') => self.quit(),
             KeyCode::Char('?') => self.overlay = Some(Overlay::Help),
+            KeyCode::Char('/') if matches!(self.page, Page::Repositories | Page::Starred) => {
+                self.focus_list_filter()
+            }
+            KeyCode::Char('/')
+                if self.page == Page::Repo && self.repo_pane == RepoPane::Releases =>
+            {
+                self.focus_release_filter()
+            }
             KeyCode::Char('/') | KeyCode::Char('s') => self.focus_search(),
             KeyCode::Char('1') => self.navigate(Page::Repositories),
             KeyCode::Char('2') => self.navigate(Page::Starred),
@@ -3977,7 +4236,7 @@ impl App {
             KeyCode::Char('5') => self.navigate(Page::Notifications),
             KeyCode::Tab => self.navigate_next_page(),
             KeyCode::Esc => match self.page {
-                Page::Repo | Page::Actions | Page::Issues => self.go_back(),
+                Page::Repo | Page::Actions | Page::Issues | Page::ReleaseDetail => self.go_back(),
                 Page::Settings | Page::Account | Page::Notifications => {
                     self.navigate(Page::Repositories)
                 }
@@ -3987,6 +4246,7 @@ impl App {
             KeyCode::Char('o') => match self.page {
                 Page::Actions => self.open_action_run(None),
                 Page::Issues => self.open_selected_issue(),
+                Page::ReleaseDetail => self.open_selected_release_page(),
                 Page::Notifications => self.open_selected_notification(),
                 _ => self.open_current(),
             },
@@ -4013,6 +4273,7 @@ impl App {
                 Page::Account => self.open_profile(),
                 Page::Actions => self.open_action_run(None),
                 Page::Issues => self.open_selected_issue(),
+                Page::ReleaseDetail => self.download_selected_release_asset(),
                 Page::Notifications => self.open_selected_notification(),
                 _ => self.open_repo_page(),
             },
@@ -4042,6 +4303,7 @@ impl App {
             Page::Repo => self.scroll_repo_pane(-1),
             Page::Actions => self.move_action_selection(-1),
             Page::Issues => self.move_issue_selection(-1),
+            Page::ReleaseDetail => self.move_release_asset_selection(-1),
             Page::Notifications => self.move_notification_selection(-1),
             Page::Settings => self.settings_row = self.settings_row.saturating_sub(1),
             _ => self.move_selection(-1),
@@ -4053,6 +4315,7 @@ impl App {
             Page::Repo => self.scroll_repo_pane(1),
             Page::Actions => self.move_action_selection(1),
             Page::Issues => self.move_issue_selection(1),
+            Page::ReleaseDetail => self.move_release_asset_selection(1),
             Page::Notifications => self.move_notification_selection(1),
             Page::Settings => self.settings_row = (self.settings_row + 1).min(9),
             _ => self.move_selection(1),
@@ -4065,6 +4328,7 @@ impl App {
             Page::Settings => self.settings_row = 0,
             Page::Actions => self.select_action_run(0),
             Page::Issues => self.select_issue(0),
+            Page::ReleaseDetail => self.select_release_asset(0),
             Page::Notifications => self.notification_selected = 0,
             Page::Account => {}
             _ => self.first_list_page(),
@@ -4082,6 +4346,13 @@ impl App {
                 let last = self.issue_indices().len().saturating_sub(1);
                 self.select_issue(last);
             }
+            Page::ReleaseDetail => {
+                let last = self
+                    .selected_release()
+                    .map(|release| release.assets.len().saturating_sub(1))
+                    .unwrap_or(0);
+                self.select_release_asset(last);
+            }
             Page::Notifications => {
                 self.notification_selected = self.notifications.len().saturating_sub(1);
             }
@@ -4097,6 +4368,9 @@ impl App {
                 self.action_jobs_scroll = self.action_jobs_scroll.saturating_sub(10);
             }
             Page::Issues => self.move_issue_selection(-5),
+            Page::ReleaseDetail => {
+                self.release_scroll = self.release_scroll.saturating_sub(10);
+            }
             Page::Notifications => self.move_notification_selection(-5),
             Page::Settings => self.settings_row = self.settings_row.saturating_sub(3),
             Page::Account => {}
@@ -4112,6 +4386,9 @@ impl App {
                     (self.action_jobs_scroll + 10).min(self.action_jobs_scroll_max);
             }
             Page::Issues => self.move_issue_selection(5),
+            Page::ReleaseDetail => {
+                self.release_scroll = (self.release_scroll + 10).min(self.release_scroll_max);
+            }
             Page::Notifications => self.move_notification_selection(5),
             Page::Settings => self.settings_row = (self.settings_row + 3).min(9),
             Page::Account => {}
@@ -4120,6 +4397,7 @@ impl App {
     }
 
     pub fn cycle_repo_pane(&mut self) {
+        self.release_filter_focus = false;
         let order = [RepoPane::Tree, RepoPane::Releases, RepoPane::Readme];
         let enabled = |pane: RepoPane| match pane {
             RepoPane::Tree => self.config.show_file_tree,
@@ -4140,6 +4418,7 @@ impl App {
     }
 
     pub fn set_repo_pane(&mut self, pane: RepoPane) {
+        self.release_filter_focus = false;
         let available = match pane {
             RepoPane::Tree => self.config.show_file_tree,
             RepoPane::Readme => self.config.show_readme,
@@ -4471,6 +4750,17 @@ impl App {
             for ch in text.chars().filter(|ch| *ch != '\n' && *ch != '\r') {
                 self.proxy_input.insert(ch);
             }
+        } else if self.release_filter_focus {
+            for ch in text.chars().filter(|ch| *ch != '\n' && *ch != '\r') {
+                self.release_filter.insert(ch);
+            }
+            self.page_scroll = 0;
+        } else if self.list_filter_focus {
+            let page = self.page;
+            for ch in text.chars().filter(|ch| *ch != '\n' && *ch != '\r') {
+                self.filter_for_mut(page).insert(ch);
+            }
+            self.clamp_selection();
         } else if self.search_focus {
             for ch in text.chars().filter(|ch| *ch != '\n' && *ch != '\r') {
                 self.search_input.insert(ch);
@@ -4537,6 +4827,7 @@ impl App {
                     .unwrap_or(false);
                 self.last_click = Some((now, key));
                 self.search_focus = false;
+                self.list_filter_focus = false;
                 self.select_visible(index);
                 if double {
                     self.open_repo_page();
@@ -4547,6 +4838,8 @@ impl App {
             Action::SetStarSort(sort) => self.set_star_sort(sort),
             Action::SetSearchSort(sort) => self.set_search_sort(sort),
             Action::SearchFocus => self.focus_search(),
+            Action::ListFilterFocus => self.focus_list_filter(),
+            Action::ReleaseFilterFocus => self.focus_release_filter(),
             Action::SearchHistory(query) => self.select_search_history(query),
             Action::SubmitSearch => self.submit_search(),
             Action::OpenPage => self.open_repo_page(),
@@ -4568,14 +4861,7 @@ impl App {
             Action::DownloadAsset { release, asset } => self.download_asset(release, asset),
             Action::DownloadSource => self.download_source_zip(),
             Action::OpenReleasePage(index) => self.open_release_page(index),
-            Action::ToggleReleaseAssets(index) => {
-                if let Some(release) = self.releases.get(index) {
-                    let tag = release.tag_name.clone();
-                    if !self.expanded_releases.remove(&tag) {
-                        self.expanded_releases.insert(tag);
-                    }
-                }
-            }
+            Action::OpenReleaseDetail(index) => self.open_release_detail(index),
             Action::OpenTreePath { path, directory } => self.open_tree_path(&path, directory),
             Action::FocusRepoPane(pane) => self.set_repo_pane(pane),
             Action::OpenExternal(url) => self.open_external_url(&url),
@@ -4790,6 +5076,24 @@ fn unique_download_path(directory: &std::path::Path, filename: &str) -> std::pat
     directory.join(format!("{stem}-{}{extension}", std::process::id()))
 }
 
+fn sort_star_indices(raw: &[Repo], indices: &mut [usize], sort: StarSort) {
+    match sort {
+        StarSort::Starred => indices.sort_by(|left, right| {
+            let a = raw[*left].starred_at.as_deref();
+            let b = raw[*right].starred_at.as_deref();
+            match (a, b) {
+                (Some(a), Some(b)) => b.cmp(a),
+                (None, None) => std::cmp::Ordering::Equal,
+                (None, Some(_)) => std::cmp::Ordering::Less,
+                (Some(_), None) => std::cmp::Ordering::Greater,
+            }
+        }),
+        StarSort::Updated => sort_indices(raw, indices, RepoSort::Updated),
+        StarSort::Stars => sort_indices(raw, indices, RepoSort::Stars),
+        StarSort::Name => sort_indices(raw, indices, RepoSort::Name),
+    }
+}
+
 fn sort_indices(raw: &[Repo], indices: &mut [usize], sort: RepoSort) {
     indices.sort_by(|left, right| {
         let a = &raw[*left];
@@ -4932,6 +5236,58 @@ mod tests {
         assert_eq!(parsed["env"], "prod");
         assert!(parse_workflow_inputs("[1,2]").is_err());
         assert!(parse_workflow_inputs("env=prod").is_err());
+    }
+
+    #[test]
+    fn release_filter_matches_tag_and_title() {
+        let release = Release {
+            tag_name: "v0.1.4".to_string(),
+            name: Some("发行版喵".to_string()),
+            body: Some("compare v0.1.3...v0.1.4".to_string()),
+            ..Default::default()
+        };
+        assert!(App::release_matches_filter(&release, "0.1.4"));
+        assert!(App::release_matches_filter(&release, "发行版"));
+        assert!(!App::release_matches_filter(&release, "compare"));
+    }
+
+    #[test]
+    fn star_sort_orders_by_starred_time() {
+        let repos = vec![
+            Repo {
+                full_name: "old/repo".to_string(),
+                starred_at: Some("2024-01-01T00:00:00Z".to_string()),
+                ..Default::default()
+            },
+            Repo {
+                full_name: "new/repo".to_string(),
+                starred_at: Some("2026-01-01T00:00:00Z".to_string()),
+                ..Default::default()
+            },
+            Repo {
+                full_name: "just/starred".to_string(),
+                ..Default::default()
+            },
+        ];
+        let mut indices = vec![0, 1, 2];
+        sort_star_indices(&repos, &mut indices, StarSort::Starred);
+        assert_eq!(indices, vec![2, 1, 0]);
+    }
+
+    #[test]
+    fn list_filter_matches_repo_fields() {
+        let repo = Repo {
+            full_name: "me/gitx-tui".to_string(),
+            description: Some("终端 GitHub 工作台".to_string()),
+            language: Some("Rust".to_string()),
+            topics: vec!["tui".to_string(), "git".to_string()],
+            ..Default::default()
+        };
+        assert!(App::repo_matches_filter(&repo, "gitx"));
+        assert!(App::repo_matches_filter(&repo, "rust"));
+        assert!(App::repo_matches_filter(&repo, "终端"));
+        assert!(App::repo_matches_filter(&repo, "tui"));
+        assert!(!App::repo_matches_filter(&repo, "python"));
     }
 
     #[test]

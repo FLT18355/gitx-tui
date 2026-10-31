@@ -78,6 +78,8 @@ pub struct Repo {
     pub size: u64,
     #[serde(default)]
     pub visibility: Option<String>,
+    #[serde(default)]
+    pub starred_at: Option<String>,
 }
 
 impl Repo {
@@ -325,6 +327,14 @@ impl Release {
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct StarredRepo {
+    #[serde(default)]
+    pub starred_at: String,
+    #[serde(default)]
+    pub repo: Repo,
+}
+
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct SearchResponse {
     #[serde(default)]
     pub total_count: u64,
@@ -369,6 +379,25 @@ impl SearchSort {
             Self::BestMatch => "best",
             Self::Stars => "stars",
             Self::Updated => "updated",
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum StarSort {
+    Starred,
+    Updated,
+    Stars,
+    Name,
+}
+
+impl StarSort {
+    pub fn label(self) -> &'static str {
+        match self {
+            Self::Starred => "收藏时间喵~",
+            Self::Updated => "最近更新喵~",
+            Self::Stars => "星标喵~",
+            Self::Name => "名称喵~",
         }
     }
 }
@@ -1011,6 +1040,17 @@ mod tests {
         assert_eq!(notification.reason_label(), "提到了你");
         assert_eq!(notification.repo_label(), "me/demo");
         assert_eq!(notification.html_url(), "https://github.com/me/demo/pull/7");
+    }
+
+    #[test]
+    fn parses_starred_repo_wrapper() {
+        let raw = r#"[{
+            "starred_at": "2026-10-31T06:46:34Z",
+            "repo": {"full_name": "me/demo", "html_url": "https://github.com/me/demo"}
+        }]"#;
+        let items: Vec<StarredRepo> = serde_json::from_str(raw).unwrap();
+        assert_eq!(items[0].starred_at, "2026-10-31T06:46:34Z");
+        assert_eq!(items[0].repo.full_name, "me/demo");
     }
 
     #[test]

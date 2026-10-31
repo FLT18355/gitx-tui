@@ -1,8 +1,8 @@
 use crate::format::base64_decode;
 use crate::model::{
     Issue, IssueState, Notification, RateLimit, ReadmeContent, Release, Repo, SearchOutcome,
-    SearchResponse, SearchSort, TreeResponse, User, Workflow, WorkflowJob, WorkflowJobsResponse,
-    WorkflowListResponse, WorkflowRun, WorkflowRunsResponse,
+    SearchResponse, SearchSort, StarredRepo, TreeResponse, User, Workflow, WorkflowJob,
+    WorkflowJobsResponse, WorkflowListResponse, WorkflowRun, WorkflowRunsResponse,
 };
 use serde::de::DeserializeOwned;
 use std::fs;
@@ -12,7 +12,7 @@ use std::process::Command;
 use std::time::{Duration, Instant};
 
 const API: &str = "https://api.github.com";
-const USER_AGENT: &str = "gxt/0.1.6";
+const USER_AGENT: &str = "gxt/0.1.7";
 
 #[derive(Clone)]
 pub struct ApiClient {
@@ -70,10 +70,19 @@ impl ApiClient {
     }
 
     pub fn starred(&self) -> Result<Vec<Repo>, String> {
-        self.get_pages(
-            &format!("{API}/user/starred?per_page=100&sort=updated&direction=desc"),
-            true,
-        )
+        let url = format!("{API}/user/starred?per_page=100&sort=created&direction=desc");
+        let items: Vec<StarredRepo> =
+            self.get_pages_accept(&url, true, "application/vnd.github.star+json")?;
+        Ok(items
+            .into_iter()
+            .map(|item| {
+                let mut repo = item.repo;
+                if !item.starred_at.is_empty() {
+                    repo.starred_at = Some(item.starred_at);
+                }
+                repo
+            })
+            .collect())
     }
 
     pub fn repository(&self, full_name: &str, private: bool) -> Result<Repo, String> {
@@ -382,11 +391,20 @@ impl ApiClient {
         base: &str,
         authenticated: bool,
     ) -> Result<Vec<T>, String> {
+        self.get_pages_accept(base, authenticated, "application/vnd.github+json")
+    }
+
+    fn get_pages_accept<T: DeserializeOwned>(
+        &self,
+        base: &str,
+        authenticated: bool,
+        accept: &str,
+    ) -> Result<Vec<T>, String> {
         let mut all = Vec::new();
         for page in 1..=1000 {
             let separator = if base.contains('?') { '&' } else { '?' };
             let url = format!("{base}{separator}page={page}");
-            let chunk: Vec<T> = self.get_json(&url, authenticated)?;
+            let chunk: Vec<T> = self.get_json_accept(&url, authenticated, accept)?;
             let count = chunk.len();
             all.extend(chunk);
             if count < 100 {
@@ -501,18 +519,32 @@ impl ApiClient {
     }
 
     fn get_json<T: DeserializeOwned>(&self, url: &str, authenticated: bool) -> Result<T, String> {
+        self.get_json_accept(url, authenticated, "application/vnd.github+json")
+    }
+
+    fn get_json_accept<T: DeserializeOwned>(
+        &self,
+        url: &str,
+        authenticated: bool,
+        accept: &str,
+    ) -> Result<T, String> {
         if authenticated && self.token.is_none() {
             return Err(
                 "还没有可用的 GitHub 凭据，人家读不到你的仓库喵~先在终端运行 gh auth login 哦喵~"
                     .to_string(),
             );
         }
-        let body = self.fetch_text(url, authenticated)?;
+        let body = self.fetch_text_accept(url, authenticated, accept)?;
         serde_json::from_str(&body)
             .map_err(|err| format!("GitHub 送来的数据人家看不懂：{err}喵~稍后再试试嘛喵~"))
     }
 
-    fn fetch_text(&self, url: &str, authenticated: bool) -> Result<String, String> {
+    fn fetch_text_accept(
+        &self,
+        url: &str,
+        authenticated: bool,
+        accept: &str,
+    ) -> Result<String, String> {
         let mut last_error = String::new();
         for attempt in 0..2 {
             if attempt > 0 {
@@ -521,7 +553,7 @@ impl ApiClient {
             let mut request = self
                 .agent
                 .get(url)
-                .header("Accept", "application/vnd.github+json")
+                .header("Accept", accept)
                 .header("X-GitHub-Api-Version", "2022-11-28");
             if authenticated && let Some(token) = self.token.as_deref() {
                 request = request.header("Authorization", format!("Bearer {token}"));
