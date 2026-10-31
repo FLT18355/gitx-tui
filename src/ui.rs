@@ -1,10 +1,10 @@
 use crate::app::{
-    Action, App, HitBox, LayoutRects, Overlay, Page, RepoPane, StatusKind, TextInput, TtlKind,
-    cache_groups,
+    Action, App, HitBox, IssueKind, LayoutRects, Overlay, Page, RepoPane, StatusKind, TextInput,
+    TtlKind, cache_groups,
 };
 use crate::format;
 use crate::icons;
-use crate::model::{Repo, RepoSort, SearchSort};
+use crate::model::{Issue, IssueState, Repo, RepoSort, SearchSort};
 use crate::theme::{FLAVORS, Theme};
 use ratatui::Frame;
 use ratatui::layout::{Alignment, Constraint, Layout, Position, Rect};
@@ -42,9 +42,11 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
         Page::Starred => draw_starred_page(frame, app, &theme, chunks[1], &mut hits),
         Page::Search => draw_search_page(frame, app, &theme, chunks[1], &mut hits),
         Page::Account => draw_account_page(frame, app, &theme, chunks[1], &mut hits),
+        Page::Notifications => draw_notifications_page(frame, app, &theme, chunks[1], &mut hits),
         Page::Settings => draw_settings_page(frame, app, &theme, chunks[1], &mut hits),
         Page::Repo => draw_repo_page(frame, app, &theme, chunks[1], &mut hits),
         Page::Actions => draw_actions_page(frame, app, &theme, chunks[1], &mut hits),
+        Page::Issues => draw_issues_page(frame, app, &theme, chunks[1], &mut hits),
     }
     draw_footer(frame, app, &theme, chunks[2], &hits);
 
@@ -130,12 +132,14 @@ fn draw_header(frame: &mut Frame, app: &App, theme: &Theme, area: Rect, hits: &m
         icons::label(icons::STAR, "收藏喵~"),
         icons::label(icons::SEARCH, "搜索喵~"),
         icons::label(icons::USER, "账号喵~"),
+        icons::label(icons::BELL, "通知喵~"),
     ];
     let pages = [
         Page::Repositories,
         Page::Starred,
         Page::Search,
         Page::Account,
+        Page::Notifications,
     ];
     let mut x = area.x + 2;
     for (index, label) in labels.iter().enumerate() {
@@ -260,11 +264,17 @@ fn hints_for(page: Page) -> &'static str {
         }
         Page::Search => "输入后回车    Esc 离开输入    j/k 挑    [ ] 翻页    Enter 打开喵~",
         Page::Account => "r 刷新账号和额度    Enter 打开主页    Esc 回仓库喵~",
+        Page::Notifications => {
+            "j/k 挑通知  Enter 打开  m 已读  M 全部已读  u 未读/全部  r 刷新  Esc 返回喵~"
+        }
         Page::Settings => "j/k 选    h/l 调    Enter 操作    Ctrl+S 保存    Esc 离开喵~",
-        Page::Repo => "Esc 返回    Tab 换面板    j/k 滚动    a 工作流    e 编辑自己    o 主页喵~",
+        Page::Repo => {
+            "Esc 返回    Tab 换面板    j/k 滚动    a 工作流    i 议题    e 编辑自己    o 主页喵~"
+        }
         Page::Actions => {
             "j/k 挑运行  Enter 去浏览器  R/x 运行工作流  PgUp/PgDn 滚任务  r 刷新  Esc 返回喵~"
         }
+        Page::Issues => "j/k 挑  Enter 打开  v 换类型  s 换状态  r 刷新  Esc 返回喵~",
     }
 }
 
@@ -2197,12 +2207,12 @@ fn draw_repo_page(
         ),
         (
             icons::label(icons::ISSUE, "议题喵~"),
-            Action::OpenExternal(format!("{}/issues", repo.html_url.trim_end_matches('/'))),
+            Action::OpenIssues,
             false,
         ),
         (
             icons::label(icons::PULL, "合并请求喵~"),
-            Action::OpenExternal(format!("{}/pulls", repo.html_url.trim_end_matches('/'))),
+            Action::OpenPullRequests,
             false,
         ),
         (
@@ -2286,6 +2296,753 @@ fn workflow_status_icon(status: &str, conclusion: Option<&str>) -> (&'static str
             _ => (icons::INFO, "blue"),
         },
     }
+}
+
+fn draw_notifications_page(
+    frame: &mut Frame,
+    app: &mut App,
+    theme: &Theme,
+    area: Rect,
+    hits: &mut Vec<HitBox>,
+) {
+    fill(frame, area, theme.color("base"));
+    let inner = Rect::new(
+        area.x + 2,
+        area.y + 1,
+        area.width.saturating_sub(4),
+        area.height.saturating_sub(2),
+    );
+    if inner.height < 8 {
+        draw_center_message(
+            frame,
+            theme,
+            inner,
+            "这里有点挤喵~",
+            "把终端拉大一点，人家才摆得下通知页喵~",
+        );
+        return;
+    }
+
+    draw_page_title(
+        frame,
+        app,
+        theme,
+        inner,
+        &icons::label(icons::BELL, "通知喵~"),
+        "GitHub 的通知都收在这里喵~",
+        "刷新喵~",
+        Action::Refresh,
+        hits,
+    );
+
+    let unread = app.notifications.iter().filter(|item| item.unread).count();
+    let summary = format!(
+        "当前 {} 条 · 未读 {} 条 · {}喵~",
+        app.notifications.len(),
+        unread,
+        if app.notifications_all {
+            "看全部"
+        } else {
+            "只看未读"
+        }
+    );
+    let clear_label = icons::label(icons::CHECK_CIRCLE, "全部已读喵~");
+    let clear_width = format::text_width(&clear_label) as u16 + 4;
+    let summary_width = inner.width.saturating_sub(clear_width + 2);
+    frame.render_widget(
+        Paragraph::new(format::truncate(&summary, summary_width as usize))
+            .style(Style::default().fg(theme.color("subtext0"))),
+        Rect::new(inner.x, inner.y + 2, summary_width, 1),
+    );
+    if inner.width > clear_width + 8 {
+        draw_button(
+            frame,
+            app,
+            theme,
+            hits,
+            Rect::new(
+                inner.x + inner.width.saturating_sub(clear_width),
+                inner.y + 2,
+                clear_width,
+                1,
+            ),
+            &clear_label,
+            Action::MarkAllNotificationsRead,
+            false,
+        );
+    }
+
+    draw_sort_chips(
+        frame,
+        app,
+        theme,
+        hits,
+        Rect::new(inner.x, inner.y + 3, inner.width, 1),
+        &icons::label(icons::BELL, "筛选喵~"),
+        &[
+            (
+                "只看未读喵~",
+                Action::SetNotificationFilter(false),
+                !app.notifications_all,
+            ),
+            (
+                "全部通知喵~",
+                Action::SetNotificationFilter(true),
+                app.notifications_all,
+            ),
+        ],
+    );
+
+    let content = Rect::new(
+        inner.x,
+        inner.y + 5,
+        inner.width,
+        inner.height.saturating_sub(5),
+    );
+    if content.height < 4 {
+        return;
+    }
+    let detail_width = if content.width >= 96 {
+        (content.width * 2 / 5).max(32)
+    } else {
+        0
+    };
+    let columns =
+        Layout::horizontal([Constraint::Min(32), Constraint::Length(detail_width)]).split(content);
+    app.layout.list = columns[0];
+    draw_notification_list(frame, app, theme, columns[0], hits);
+    if detail_width > 0 {
+        app.layout.detail = columns[1];
+        draw_notification_detail(frame, app, theme, columns[1], hits);
+    }
+}
+
+fn draw_notification_list(
+    frame: &mut Frame,
+    app: &mut App,
+    theme: &Theme,
+    area: Rect,
+    hits: &mut Vec<HitBox>,
+) {
+    if area.width < 8 || area.height < 3 {
+        return;
+    }
+    fill(frame, area, theme.color("mantle"));
+    frame.render_widget(
+        Paragraph::new(icons::label(icons::BELL, "通知列表喵~")).style(
+            Style::default()
+                .fg(theme.color("text"))
+                .add_modifier(Modifier::BOLD),
+        ),
+        Rect::new(area.x + 1, area.y, area.width.saturating_sub(2), 1),
+    );
+    frame.render_widget(
+        Paragraph::new(format!("{} 条喵~", app.notifications.len()))
+            .alignment(Alignment::Right)
+            .style(Style::default().fg(theme.color("overlay0"))),
+        Rect::new(area.x + 1, area.y, area.width.saturating_sub(2), 1),
+    );
+    fill(
+        frame,
+        Rect::new(area.x, area.y + 1, area.width, 1),
+        theme.color("surface0"),
+    );
+    let body = Rect::new(
+        area.x + 1,
+        area.y + 2,
+        area.width.saturating_sub(2),
+        area.height.saturating_sub(2),
+    );
+    if app.notifications.is_empty() {
+        let (title, detail) = if app.notifications_loading.is_some() {
+            ("人家正在收通知喵~...", "第一次同步要等一小会儿哦喵~")
+        } else if !app.client.token_present() {
+            (
+                "还没有登录 GitHub喵~",
+                "通知要登录才看得到，先跑 gh auth login 嘛喵~",
+            )
+        } else if app.notifications_all {
+            ("这里还没有通知喵~", "GitHub 那边很安静喵~")
+        } else {
+            (
+                "没有未读通知啦喵~",
+                "按 u 看全部通知，或者去 GitHub 逛逛喵~",
+            )
+        };
+        draw_center_message(frame, theme, body, title, detail);
+        return;
+    }
+
+    let rows = (body.height / 2).max(1) as usize;
+    let selected = app.notification_selected.min(app.notifications.len() - 1);
+    let start = selected.saturating_sub(rows - 1);
+    let end = (start + rows).min(app.notifications.len());
+    for (offset, index) in (start..end).enumerate() {
+        let y = body.y + offset as u16 * 2;
+        if y + 1 >= body.y + body.height {
+            break;
+        }
+        let rect = Rect::new(body.x, y, body.width, 2);
+        if index == selected {
+            fill(frame, rect, theme.color("surface0"));
+        }
+        let item = &app.notifications[index];
+        let (icon, color) = if item.unread {
+            (icons::BELL, "blue")
+        } else {
+            (icons::CHECK, "overlay0")
+        };
+        let title_width = body.width.saturating_sub(4) as usize;
+        let title = format!(
+            "{} {}",
+            item.subject_type_label(),
+            format::clean_text(&item.subject.title)
+        );
+        frame.render_widget(
+            Paragraph::new(Line::from(vec![
+                Span::styled(format!("{icon} "), Style::default().fg(theme.color(color))),
+                Span::styled(
+                    format::truncate(&title, title_width),
+                    Style::default().fg(theme.color("text")),
+                ),
+            ])),
+            Rect::new(body.x + 1, y, body.width.saturating_sub(1), 1),
+        );
+        let meta = format!(
+            "   {} · {} · {}",
+            item.repo_label(),
+            item.reason_label(),
+            format::relative_time(&item.updated_at)
+        );
+        frame.render_widget(
+            Paragraph::new(format::truncate(&meta, body.width as usize))
+                .style(Style::default().fg(theme.color("overlay0"))),
+            Rect::new(body.x + 1, y + 1, body.width.saturating_sub(1), 1),
+        );
+        register(hits, rect, Action::SelectNotification(index));
+    }
+}
+
+fn draw_notification_detail(
+    frame: &mut Frame,
+    app: &mut App,
+    theme: &Theme,
+    area: Rect,
+    hits: &mut Vec<HitBox>,
+) {
+    fill(frame, area, theme.color("mantle"));
+    frame.render_widget(
+        Block::new()
+            .borders(Borders::LEFT)
+            .border_style(Style::default().fg(theme.color("surface0"))),
+        area,
+    );
+    let inner = Rect::new(
+        area.x + 2,
+        area.y + 1,
+        area.width.saturating_sub(4),
+        area.height.saturating_sub(2),
+    );
+    if inner.width < 10 || inner.height < 5 {
+        return;
+    }
+    let Some(item) = app.selected_notification() else {
+        draw_center_message(
+            frame,
+            theme,
+            area,
+            "挑一条通知看看喵~",
+            "点左边列表，人家就把通知摊开给你看喵~",
+        );
+        return;
+    };
+    frame.render_widget(
+        Paragraph::new(icons::label(icons::BELL, "通知小档案喵~")).style(
+            Style::default()
+                .fg(theme.color("overlay0"))
+                .add_modifier(Modifier::BOLD),
+        ),
+        Rect::new(inner.x, inner.y, inner.width, 1),
+    );
+    let title = format::clean_text(&item.subject.title);
+    let mut y = inner.y + 2;
+    for line in format::wrap_text(&title, inner.width as usize, 3) {
+        frame.render_widget(
+            Paragraph::new(line).style(
+                Style::default()
+                    .fg(theme.color("text"))
+                    .add_modifier(Modifier::BOLD),
+            ),
+            Rect::new(inner.x, y, inner.width, 1),
+        );
+        y += 1;
+    }
+    y += 1;
+    let facts = [
+        ("类型喵~", item.subject_type_label().to_string()),
+        ("原因喵~", item.reason_label().to_string()),
+        ("仓库喵~", item.repo_label()),
+        ("更新喵~", format::relative_time(&item.updated_at)),
+        (
+            "状态喵~",
+            if item.unread {
+                "未读喵~".to_string()
+            } else {
+                "已读喵~".to_string()
+            },
+        ),
+    ];
+    for (label, value) in facts {
+        if y + 2 >= inner.y + inner.height {
+            break;
+        }
+        frame.render_widget(
+            Paragraph::new(Line::from(vec![
+                Span::styled(
+                    format!("{label}  "),
+                    Style::default().fg(theme.color("overlay0")),
+                ),
+                Span::styled(
+                    format::truncate(&value, inner.width.saturating_sub(8) as usize),
+                    Style::default().fg(theme.color("subtext0")),
+                ),
+            ])),
+            Rect::new(inner.x, y, inner.width, 1),
+        );
+        y += 1;
+    }
+    let mark = icons::label(icons::CHECK, "标成已读喵~");
+    let mark_width = format::text_width(&mark) as u16 + 4;
+    if y + 3 < inner.y + inner.height && item.unread {
+        draw_button(
+            frame,
+            app,
+            theme,
+            hits,
+            Rect::new(inner.x, y + 1, mark_width, 1),
+            &mark,
+            Action::MarkNotificationRead,
+            true,
+        );
+    }
+    frame.render_widget(
+        Paragraph::new("Enter / o 去 GitHub 看完整内容喵~")
+            .style(Style::default().fg(theme.color("overlay0"))),
+        Rect::new(
+            inner.x,
+            inner.y + inner.height.saturating_sub(2),
+            inner.width,
+            1,
+        ),
+    );
+}
+
+fn draw_issues_page(
+    frame: &mut Frame,
+    app: &mut App,
+    theme: &Theme,
+    area: Rect,
+    hits: &mut Vec<HitBox>,
+) {
+    fill(frame, area, theme.color("base"));
+    let inner = Rect::new(
+        area.x + 2,
+        area.y + 1,
+        area.width.saturating_sub(4),
+        area.height.saturating_sub(2),
+    );
+    if inner.height < 10 {
+        draw_center_message(
+            frame,
+            theme,
+            inner,
+            "这里有点挤喵~",
+            "把终端拉大一点，人家才摆得下议题页喵~",
+        );
+        return;
+    }
+
+    let back_label = icons::label(icons::BACK, "返回喵~");
+    let back_width = format::text_width(&back_label) as u16 + 2;
+    let back_rect = Rect::new(inner.x, inner.y, back_width, 1);
+    let back_hover = app.hover.as_ref() == Some(&Action::Back);
+    frame.render_widget(
+        Paragraph::new(back_label).style(if back_hover {
+            Style::default().fg(theme.color("blue"))
+        } else {
+            Style::default().fg(theme.color("subtext0"))
+        }),
+        back_rect,
+    );
+    register(hits, back_rect, Action::Back);
+
+    let refresh_label = icons::label(icons::REFRESH, "刷新喵~");
+    let refresh_width = format::text_width(&refresh_label) as u16 + 4;
+    let refresh_x = inner.x + inner.width.saturating_sub(refresh_width);
+    draw_button(
+        frame,
+        app,
+        theme,
+        hits,
+        Rect::new(refresh_x, inner.y, refresh_width, 1),
+        &refresh_label,
+        Action::Refresh,
+        false,
+    );
+    let title = format!(
+        "{} 议题与合并请求喵~  {}",
+        icons::ISSUE,
+        app.issue_repo_label()
+    );
+    let title_width = refresh_x.saturating_sub(inner.x + back_width + 2);
+    frame.render_widget(
+        Paragraph::new(format::truncate(&title, title_width as usize)).style(
+            Style::default()
+                .fg(theme.color("text"))
+                .add_modifier(Modifier::BOLD),
+        ),
+        Rect::new(inner.x + back_width + 2, inner.y, title_width, 1),
+    );
+    frame.render_widget(
+        Paragraph::new("这里把议题和合并请求放在一起，v 换类型，s 换状态喵~")
+            .style(Style::default().fg(theme.color("subtext0"))),
+        Rect::new(inner.x, inner.y + 1, inner.width, 1),
+    );
+
+    draw_sort_chips(
+        frame,
+        app,
+        theme,
+        hits,
+        Rect::new(inner.x, inner.y + 2, inner.width, 1),
+        &icons::label(icons::ISSUE, "类型喵~"),
+        &[
+            (
+                IssueKind::All.label(),
+                Action::SetIssueKind(IssueKind::All),
+                app.issue_kind == IssueKind::All,
+            ),
+            (
+                IssueKind::Issues.label(),
+                Action::SetIssueKind(IssueKind::Issues),
+                app.issue_kind == IssueKind::Issues,
+            ),
+            (
+                IssueKind::PullRequests.label(),
+                Action::SetIssueKind(IssueKind::PullRequests),
+                app.issue_kind == IssueKind::PullRequests,
+            ),
+        ],
+    );
+    draw_sort_chips(
+        frame,
+        app,
+        theme,
+        hits,
+        Rect::new(inner.x, inner.y + 3, inner.width, 1),
+        &icons::label(icons::CHECK_CIRCLE, "状态喵~"),
+        &[
+            (
+                IssueState::Open.label(),
+                Action::SetIssueState(IssueState::Open),
+                app.issue_state == IssueState::Open,
+            ),
+            (
+                IssueState::Closed.label(),
+                Action::SetIssueState(IssueState::Closed),
+                app.issue_state == IssueState::Closed,
+            ),
+            (
+                IssueState::All.label(),
+                Action::SetIssueState(IssueState::All),
+                app.issue_state == IssueState::All,
+            ),
+        ],
+    );
+
+    let content = Rect::new(
+        inner.x,
+        inner.y + 5,
+        inner.width,
+        inner.height.saturating_sub(5),
+    );
+    if content.height < 4 {
+        return;
+    }
+    let detail_width = if content.width >= 94 {
+        (content.width * 2 / 5).max(32)
+    } else {
+        0
+    };
+    let columns =
+        Layout::horizontal([Constraint::Min(30), Constraint::Length(detail_width)]).split(content);
+    app.layout.list = columns[0];
+    draw_issue_list(frame, app, theme, columns[0], hits);
+    if detail_width > 0 {
+        app.layout.detail = columns[1];
+        draw_issue_detail(frame, app, theme, columns[1], hits);
+    }
+}
+
+fn draw_issue_list(
+    frame: &mut Frame,
+    app: &mut App,
+    theme: &Theme,
+    area: Rect,
+    hits: &mut Vec<HitBox>,
+) {
+    if area.width < 8 || area.height < 3 {
+        return;
+    }
+    fill(frame, area, theme.color("mantle"));
+    let indices = app.issue_indices();
+    frame.render_widget(
+        Paragraph::new(icons::label(icons::ISSUE, "列表喵~")).style(
+            Style::default()
+                .fg(theme.color("text"))
+                .add_modifier(Modifier::BOLD),
+        ),
+        Rect::new(area.x + 1, area.y, area.width.saturating_sub(2), 1),
+    );
+    frame.render_widget(
+        Paragraph::new(format!("{} 条喵~", indices.len()))
+            .alignment(Alignment::Right)
+            .style(Style::default().fg(theme.color("overlay0"))),
+        Rect::new(area.x + 1, area.y, area.width.saturating_sub(2), 1),
+    );
+    fill(
+        frame,
+        Rect::new(area.x, area.y + 1, area.width, 1),
+        theme.color("surface0"),
+    );
+    let body = Rect::new(
+        area.x + 1,
+        area.y + 2,
+        area.width.saturating_sub(2),
+        area.height.saturating_sub(2),
+    );
+    if indices.is_empty() {
+        let (title, detail) = if app.issues_loading.is_some() {
+            ("人家正在翻议题喵~...", "第一次同步要等一小会儿哦喵~")
+        } else if app.issues.is_empty() {
+            ("这个筛选下没有记录喵~", "按 s 换状态，或按 v 换类型看看喵~")
+        } else {
+            ("这个筛选下没有记录喵~", "换个筛选再找找嘛喵~")
+        };
+        draw_center_message(frame, theme, body, title, detail);
+        return;
+    }
+
+    let rows = (body.height / 2).max(1) as usize;
+    let selected = app.issue_selected.min(indices.len() - 1);
+    let start = selected.saturating_sub(rows - 1);
+    let end = (start + rows).min(indices.len());
+    for (offset, position) in (start..end).enumerate() {
+        let y = body.y + offset as u16 * 2;
+        if y + 1 >= body.y + body.height {
+            break;
+        }
+        let issue = &app.issues[indices[position]];
+        let rect = Rect::new(body.x, y, body.width, 2);
+        if position == selected {
+            fill(frame, rect, theme.color("surface0"));
+        }
+        let (icon, color) = issue_status_icon(issue);
+        let title_width = body.width.saturating_sub(7) as usize;
+        let title = Line::from(vec![
+            Span::styled(format!("{icon} "), Style::default().fg(theme.color(color))),
+            Span::styled(
+                format!("#{} ", issue.number),
+                Style::default()
+                    .fg(theme.color("blue"))
+                    .add_modifier(Modifier::BOLD),
+            ),
+            Span::styled(
+                format::truncate(&format::clean_text(&issue.title), title_width),
+                Style::default().fg(theme.color("text")),
+            ),
+        ]);
+        frame.render_widget(
+            Paragraph::new(title),
+            Rect::new(body.x + 1, y, body.width.saturating_sub(1), 1),
+        );
+        let author = issue.author();
+        let labels = issue.labels_label();
+        let meta = format!(
+            "   {} · {} · {}{} · {}{}",
+            issue.kind_label(),
+            issue.state_label(),
+            if author.is_empty() { "" } else { "by " },
+            if author.is_empty() { "未知" } else { author },
+            format::relative_time(&issue.updated_at),
+            if labels.is_empty() {
+                String::new()
+            } else {
+                format!(" · {labels}")
+            }
+        );
+        frame.render_widget(
+            Paragraph::new(format::truncate(&meta, body.width as usize))
+                .style(Style::default().fg(theme.color("overlay0"))),
+            Rect::new(body.x + 1, y + 1, body.width.saturating_sub(1), 1),
+        );
+        register(hits, rect, Action::SelectIssue(position));
+    }
+}
+
+fn draw_issue_detail(
+    frame: &mut Frame,
+    app: &mut App,
+    theme: &Theme,
+    area: Rect,
+    hits: &mut Vec<HitBox>,
+) {
+    fill(frame, area, theme.color("mantle"));
+    frame.render_widget(
+        Block::new()
+            .borders(Borders::LEFT)
+            .border_style(Style::default().fg(theme.color("surface0"))),
+        area,
+    );
+    let inner = Rect::new(
+        area.x + 2,
+        area.y + 1,
+        area.width.saturating_sub(4),
+        area.height.saturating_sub(2),
+    );
+    if inner.width < 10 || inner.height < 6 {
+        return;
+    }
+    let Some(issue) = app.selected_issue() else {
+        draw_center_message(
+            frame,
+            theme,
+            area,
+            "挑一条记录看看喵~",
+            "点左边列表，人家就把正文摆在这里喵~",
+        );
+        return;
+    };
+    let (icon, color) = issue_status_icon(&issue);
+    frame.render_widget(
+        Paragraph::new(Line::from(vec![
+            Span::styled(format!("{icon} "), Style::default().fg(theme.color(color))),
+            Span::styled(
+                format!("#{} ", issue.number),
+                Style::default()
+                    .fg(theme.color("blue"))
+                    .add_modifier(Modifier::BOLD),
+            ),
+            Span::styled(
+                issue.kind_label().to_string(),
+                Style::default().fg(theme.color("text")),
+            ),
+        ])),
+        Rect::new(inner.x, inner.y, inner.width, 1),
+    );
+    let mut y = inner.y + 1;
+    for line in format::wrap_text(&format::clean_text(&issue.title), inner.width as usize, 3) {
+        frame.render_widget(
+            Paragraph::new(line).style(
+                Style::default()
+                    .fg(theme.color("text"))
+                    .add_modifier(Modifier::BOLD),
+            ),
+            Rect::new(inner.x, y, inner.width, 1),
+        );
+        y += 1;
+    }
+    if y < inner.y + inner.height {
+        let author = issue.author();
+        let meta = format!(
+            "{} · {} · {}{} · {} {} 条评论",
+            issue.state_label(),
+            issue.kind_label(),
+            if author.is_empty() { "" } else { "by " },
+            if author.is_empty() { "未知" } else { author },
+            icons::COMMENT,
+            issue.comments
+        );
+        frame.render_widget(
+            Paragraph::new(format::truncate(&meta, inner.width as usize))
+                .style(Style::default().fg(theme.color("subtext0"))),
+            Rect::new(inner.x, y, inner.width, 1),
+        );
+        y += 1;
+    }
+    if !issue.labels.is_empty() && y < inner.y + inner.height {
+        let mut spans = vec![Span::styled(
+            "标签喵~  ",
+            Style::default().fg(theme.color("overlay0")),
+        )];
+        for label in issue.labels.iter().take(4) {
+            spans.push(Span::styled(
+                format!(" {} ", format::clean_text(&label.name)),
+                Style::default()
+                    .fg(issue_label_color(&label.color))
+                    .add_modifier(Modifier::BOLD),
+            ));
+            spans.push(Span::raw(" "));
+        }
+        frame.render_widget(
+            Paragraph::new(Line::from(spans)),
+            Rect::new(inner.x, y, inner.width, 1),
+        );
+        y += 1;
+    }
+    y += 1;
+    let body_lines = (inner.y + inner.height).saturating_sub(y + 3) as usize;
+    if body_lines >= 2 {
+        let body = format::clean_text(issue.body_text());
+        for line in format::wrap_text(&body, inner.width as usize, body_lines) {
+            frame.render_widget(
+                Paragraph::new(line).style(Style::default().fg(theme.color("subtext0"))),
+                Rect::new(inner.x, y, inner.width, 1),
+            );
+            y += 1;
+        }
+    }
+    let open = icons::label(icons::EXTERNAL, "去浏览器喵~");
+    let open_width = format::text_width(&open) as u16 + 4;
+    let button_y = inner.y + inner.height.saturating_sub(1);
+    if y < button_y {
+        draw_button(
+            frame,
+            app,
+            theme,
+            hits,
+            Rect::new(inner.x, button_y, open_width, 1),
+            &open,
+            Action::OpenExternal(issue.html_url.clone()),
+            true,
+        );
+    }
+}
+
+fn issue_status_icon(issue: &Issue) -> (&'static str, &'static str) {
+    if issue.is_merged() {
+        (icons::CHECK_CIRCLE, "blue")
+    } else if issue.state == "open" {
+        (icons::CHECK_CIRCLE, "green")
+    } else if issue.is_pull_request() {
+        (icons::X_CIRCLE, "red")
+    } else {
+        (icons::INFO, "overlay0")
+    }
+}
+
+fn issue_label_color(hex: &str) -> Color {
+    let hex = hex.trim_start_matches('#');
+    if hex.len() == 6
+        && let Ok(value) = u32::from_str_radix(hex, 16)
+    {
+        return Color::Rgb(
+            ((value >> 16) & 0xff) as u8,
+            ((value >> 8) & 0xff) as u8,
+            (value & 0xff) as u8,
+        );
+    }
+    Color::Gray
 }
 
 fn draw_actions_page(
@@ -4695,7 +5452,10 @@ fn draw_help(frame: &mut Frame, app: &mut App, theme: &Theme, area: Rect, hits: 
         rect.height.saturating_sub(2),
     );
     let lines = [
-        ("换页喵~", "1 仓库  2 收藏  3 搜索  4 账号  Tab 切页喵~"),
+        (
+            "换页喵~",
+            "1 仓库  2 收藏  3 搜索  4 账号  5 通知  Tab 切页喵~",
+        ),
         (
             "挑挑喵~",
             "j / k 上下挑  [ ] 翻页  g / G 首尾页  PgUp/PgDn 翻页喵~",
@@ -4711,6 +5471,11 @@ fn draw_help(frame: &mut Frame, app: &mut App, theme: &Theme, area: Rect, hits: 
             "工作流喵~",
             "仓库页按 a 看 Actions，R/x 跑工作流，Tab 填分支和 inputs 喵~",
         ),
+        (
+            "议题喵~",
+            "仓库页按 i 看议题和合并请求，v 换类型，s 换状态喵~",
+        ),
+        ("通知喵~", "5 看通知，m 已读，M 全部已读，u 切未读/全部喵~"),
         ("缓存喵~", "按 c 分类清理缓存，o 打开缓存目录喵~"),
         ("设置喵~", "退出后敲 gxt settings，用专门的设置 TUI 调喵~"),
         ("鼠标喵~", "点一下挑，点两下进仓库页，滚轮随便滚喵~"),

@@ -27,7 +27,7 @@ download_dir = "~/Downloads/gitx-tui"
 | `theme` | `latte`、`frappe`、`macchiato`、`mocha` |
 | `proxy` | 公开 API 与发行版下载的加速地址 |
 | `repos_ttl_secs` | 仓库和收藏列表缓存时间 |
-| `detail_ttl_secs` | 仓库详情、文件树、README、发行版和 Actions 缓存时间 |
+| `detail_ttl_secs` | 仓库详情、文件树、README、发行版、Actions、议题和通知缓存时间 |
 | `search_ttl_secs` | 搜索结果缓存时间 |
 | `search_history` | 最近搜索，最多 8 条 |
 | `show_file_tree` | 是否加载仓库文件树 |
@@ -63,9 +63,10 @@ https://v4.gh-proxy.org/https://github.com/...
 
 以下请求直接访问 GitHub：
 
-- `/user`、`/user/repos`、`/user/starred`、`/rate_limit`
-- 私有仓库详情与私有仓库 Actions
+- `/user`、`/user/repos`、`/user/starred`、`/rate_limit`、`/notifications`
+- 私有仓库详情、私有仓库 Actions 与私有仓库议题
 - 手动触发工作流
+- 通知已读操作
 - Star 操作
 - 仓库编辑
 
@@ -85,4 +86,5 @@ https://v4.gh-proxy.org/https://github.com/...
 - `search_*`
 - `repo_*`、`releases_*`、`tree_*`、`readme_*`
 - `actions_*`、`actions_jobs_*`、`actions_workflows_*`
+- `issues_*`、`notifications_*`
 - `user`、`rate_limit`

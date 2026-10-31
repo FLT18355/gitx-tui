@@ -628,6 +628,256 @@ pub struct WorkflowJobsResponse {
     pub jobs: Vec<WorkflowJob>,
 }
 
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct NotificationSubject {
+    #[serde(default)]
+    pub title: String,
+    #[serde(default)]
+    pub url: Option<String>,
+    #[serde(default)]
+    pub latest_comment_url: Option<String>,
+    #[serde(rename = "type", default)]
+    pub subject_type: String,
+}
+
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct Notification {
+    #[serde(default)]
+    pub id: String,
+    #[serde(default)]
+    pub unread: bool,
+    #[serde(default)]
+    pub reason: String,
+    #[serde(default)]
+    pub updated_at: String,
+    #[serde(default)]
+    pub subject: NotificationSubject,
+    #[serde(default)]
+    pub repository: Repo,
+}
+
+impl Notification {
+    pub fn subject_type_label(&self) -> &str {
+        match self.subject.subject_type.as_str() {
+            "Issue" => "议题",
+            "PullRequest" => "合并请求",
+            "Discussion" => "讨论",
+            "Release" => "发行版",
+            "Commit" => "提交",
+            "CheckSuite" => "检查",
+            "RepositoryVulnerabilityAlert" => "安全提醒",
+            "" => "通知",
+            other => other,
+        }
+    }
+
+    pub fn reason_label(&self) -> &str {
+        match self.reason.as_str() {
+            "assign" => "指派给你",
+            "author" => "你发起的",
+            "comment" => "有评论",
+            "ci_activity" => "CI 动静",
+            "invitation" => "邀请",
+            "manual" => "手动订阅",
+            "mention" => "提到了你",
+            "review_requested" => "请求你审查",
+            "security_alert" => "安全提醒",
+            "state_change" => "状态变化",
+            "subscribed" => "你订阅了",
+            "team_mention" => "提到你的团队",
+            "" => "通知",
+            other => other,
+        }
+    }
+
+    pub fn repo_label(&self) -> String {
+        let name = self.repository.display_full_name();
+        if name.trim().is_empty() {
+            "不明仓库".to_string()
+        } else {
+            name
+        }
+    }
+
+    pub fn html_url(&self) -> String {
+        let repo = if self.repository.html_url.trim().is_empty() {
+            format!("https://github.com/{}", self.repo_label())
+        } else {
+            self.repository.html_url.trim_end_matches('/').to_string()
+        };
+        match self.subject.subject_type.as_str() {
+            "Issue" | "PullRequest" | "Discussion" | "Commit" => {
+                api_subject_to_web(self.subject.url.as_deref().unwrap_or("")).unwrap_or(repo)
+            }
+            "Release" => format!("{repo}/releases"),
+            "RepositoryVulnerabilityAlert" => format!("{repo}/security/dependabot"),
+            "CheckSuite" => format!("{repo}/actions"),
+            _ => repo,
+        }
+    }
+}
+
+fn api_subject_to_web(url: &str) -> Option<String> {
+    let path = url
+        .trim()
+        .strip_prefix("https://api.github.com/repos/")?
+        .trim_start_matches('/');
+    let mut parts = path.splitn(3, '/');
+    let owner = parts.next()?.trim();
+    let repo = parts.next()?.trim();
+    let rest = parts.next()?.trim().trim_end_matches('/');
+    if owner.is_empty() || repo.is_empty() || rest.is_empty() {
+        return None;
+    }
+    let mapped = if let Some(number) = rest.strip_prefix("pulls/") {
+        format!("pull/{number}")
+    } else if let Some(sha) = rest.strip_prefix("commits/") {
+        format!("commit/{sha}")
+    } else {
+        rest.to_string()
+    };
+    Some(format!("https://github.com/{owner}/{repo}/{mapped}"))
+}
+
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct IssueLabel {
+    #[serde(default)]
+    pub name: String,
+    #[serde(default)]
+    pub color: String,
+    #[serde(default)]
+    pub description: Option<String>,
+}
+
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct PullRequestLink {
+    #[serde(default)]
+    pub html_url: String,
+    #[serde(default)]
+    pub merged_at: Option<String>,
+}
+
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct Issue {
+    #[serde(default)]
+    pub id: u64,
+    #[serde(default)]
+    pub number: u64,
+    #[serde(default)]
+    pub title: String,
+    #[serde(default)]
+    pub state: String,
+    #[serde(default)]
+    pub state_reason: Option<String>,
+    #[serde(default)]
+    pub html_url: String,
+    #[serde(default)]
+    pub body: Option<String>,
+    #[serde(default)]
+    pub user: Option<Owner>,
+    #[serde(default)]
+    pub labels: Vec<IssueLabel>,
+    #[serde(default)]
+    pub comments: u64,
+    #[serde(default)]
+    pub created_at: String,
+    #[serde(default)]
+    pub updated_at: String,
+    #[serde(default)]
+    pub closed_at: Option<String>,
+    #[serde(default)]
+    pub pull_request: Option<PullRequestLink>,
+}
+
+impl Issue {
+    pub fn is_pull_request(&self) -> bool {
+        self.pull_request.is_some()
+    }
+
+    pub fn is_merged(&self) -> bool {
+        self.pull_request
+            .as_ref()
+            .and_then(|pull| pull.merged_at.as_deref())
+            .is_some_and(|merged| !merged.trim().is_empty())
+    }
+
+    pub fn kind_label(&self) -> &str {
+        if self.is_pull_request() {
+            "合并请求"
+        } else {
+            "议题"
+        }
+    }
+
+    pub fn state_label(&self) -> &str {
+        if self.is_merged() {
+            return "已合并";
+        }
+        match self.state.as_str() {
+            "open" => "打开",
+            "closed" => "已关闭",
+            other => other,
+        }
+    }
+
+    pub fn author(&self) -> &str {
+        self.user
+            .as_ref()
+            .map(|user| user.login.as_str())
+            .unwrap_or("")
+    }
+
+    pub fn labels_label(&self) -> String {
+        self.labels
+            .iter()
+            .map(|label| label.name.trim())
+            .filter(|name| !name.is_empty())
+            .collect::<Vec<_>>()
+            .join(" · ")
+    }
+
+    pub fn body_text(&self) -> &str {
+        self.body
+            .as_deref()
+            .map(str::trim)
+            .filter(|body| !body.is_empty())
+            .unwrap_or("没有写正文喵~")
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum IssueState {
+    Open,
+    Closed,
+    All,
+}
+
+impl IssueState {
+    pub fn api_value(self) -> &'static str {
+        match self {
+            Self::Open => "open",
+            Self::Closed => "closed",
+            Self::All => "all",
+        }
+    }
+
+    pub fn label(self) -> &'static str {
+        match self {
+            Self::Open => "打开喵~",
+            Self::Closed => "已关闭喵~",
+            Self::All => "全部喵~",
+        }
+    }
+
+    pub fn next(self) -> Self {
+        match self {
+            Self::Open => Self::Closed,
+            Self::Closed => Self::All,
+            Self::All => Self::Open,
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -734,5 +984,55 @@ mod tests {
         let job = &response.jobs[0];
         assert_eq!(job.status_label(), "失败");
         assert_eq!(job.steps[0].status_label(), "成功");
+    }
+
+    #[test]
+    fn notification_links_to_github_web_urls() {
+        let raw = r#"{
+            "id": "11",
+            "unread": true,
+            "reason": "mention",
+            "updated_at": "2026-10-30T10:00:00Z",
+            "subject": {
+                "title": "修一下导航喵~",
+                "url": "https://api.github.com/repos/me/demo/pulls/7",
+                "type": "PullRequest"
+            },
+            "repository": {
+                "name": "demo",
+                "full_name": "me/demo",
+                "html_url": "https://github.com/me/demo",
+                "private": false
+            }
+        }"#;
+        let notification: Notification = serde_json::from_str(raw).unwrap();
+        assert!(notification.unread);
+        assert_eq!(notification.subject_type_label(), "合并请求");
+        assert_eq!(notification.reason_label(), "提到了你");
+        assert_eq!(notification.repo_label(), "me/demo");
+        assert_eq!(notification.html_url(), "https://github.com/me/demo/pull/7");
+    }
+
+    #[test]
+    fn issue_kind_and_state_labels() {
+        let raw = r#"{
+            "number": 3,
+            "title": "喵",
+            "state": "closed",
+            "body": "正文",
+            "user": {"login": "me"},
+            "labels": [{"name": "bug", "color": "ff0000"}],
+            "pull_request": {"html_url": "https://github.com/me/demo/pull/3", "merged_at": "2026-10-30T00:00:00Z"}
+        }"#;
+        let issue: Issue = serde_json::from_str(raw).unwrap();
+        assert!(issue.is_pull_request());
+        assert!(issue.is_merged());
+        assert_eq!(issue.kind_label(), "合并请求");
+        assert_eq!(issue.state_label(), "已合并");
+        assert_eq!(issue.author(), "me");
+        assert_eq!(issue.labels_label(), "bug");
+        assert_eq!(issue.body_text(), "正文");
+        assert_eq!(IssueState::Closed.next(), IssueState::All);
+        assert_eq!(IssueState::All.next(), IssueState::Open);
     }
 }

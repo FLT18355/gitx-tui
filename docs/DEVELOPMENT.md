@@ -44,8 +44,8 @@ cargo clippy --all-targets -- -D warnings
 | `src/main.rs` | 入口、TUI 事件循环、CLI 命令分派 |
 | `src/cli.rs` | 参数解析与 CLI 帮助 |
 | `src/commands.rs` | status/log/tags/push/config/cache/doctor 一次性命令 |
-| `src/app.rs` | GitHub 页面状态、设置模式、Actions、缓存和键鼠事件 |
-| `src/ui.rs` | GitHub 工作台与设置 TUI 渲染 |
+| `src/app.rs` | GitHub 页面状态、设置模式、Actions、议题、通知、缓存和键鼠事件 |
+| `src/ui.rs` | GitHub 工作台、议题/通知页与设置 TUI 渲染 |
 | `src/api.rs` | GitHub API、gh 凭据、代理、下载与工作流触发 |
 | `src/model.rs` | GitHub serde 数据结构 |
 | `src/config.rs` | 配置字段、TTL 与路径 |

@@ -1,8 +1,8 @@
 use crate::format::base64_decode;
 use crate::model::{
-    RateLimit, ReadmeContent, Release, Repo, SearchOutcome, SearchResponse, SearchSort,
-    TreeResponse, User, Workflow, WorkflowJob, WorkflowJobsResponse, WorkflowListResponse,
-    WorkflowRun, WorkflowRunsResponse,
+    Issue, IssueState, Notification, RateLimit, ReadmeContent, Release, Repo, SearchOutcome,
+    SearchResponse, SearchSort, TreeResponse, User, Workflow, WorkflowJob, WorkflowJobsResponse,
+    WorkflowListResponse, WorkflowRun, WorkflowRunsResponse,
 };
 use serde::de::DeserializeOwned;
 use std::fs;
@@ -12,7 +12,7 @@ use std::process::Command;
 use std::time::{Duration, Instant};
 
 const API: &str = "https://api.github.com";
-const USER_AGENT: &str = "gxt/0.1.3";
+const USER_AGENT: &str = "gxt/0.1.4";
 
 #[derive(Clone)]
 pub struct ApiClient {
@@ -159,6 +159,56 @@ impl ApiClient {
             self.get_public_with_fallback(&url)?
         };
         Ok(response.workflows)
+    }
+
+    pub fn issues(
+        &self,
+        full_name: &str,
+        state: IssueState,
+        private: bool,
+    ) -> Result<Vec<Issue>, String> {
+        let url = format!(
+            "{API}/repos/{full_name}/issues?state={}&sort=updated&direction=desc&per_page=100",
+            state.api_value()
+        );
+        if private {
+            self.get_json(&url, true)
+        } else {
+            self.get_public_with_fallback(&url)
+        }
+    }
+
+    pub fn notifications(&self, all: bool) -> Result<Vec<Notification>, String> {
+        self.get_json(&format!("{API}/notifications?all={all}&per_page=100"), true)
+    }
+
+    pub fn mark_notification_read(&self, id: &str) -> Result<(), String> {
+        let Some(token) = self.token.as_deref() else {
+            return Err("还没有登录 GitHub，修不了通知哦喵~先运行 gh auth login 吧喵~".to_string());
+        };
+        let url = format!("{API}/notifications/threads/{id}");
+        let response = self
+            .agent
+            .patch(&url)
+            .header("Accept", "application/vnd.github+json")
+            .header("X-GitHub-Api-Version", "2022-11-28")
+            .header("Authorization", format!("Bearer {token}"))
+            .send_empty();
+        self.finish_mutation(response)
+    }
+
+    pub fn mark_all_notifications_read(&self) -> Result<(), String> {
+        let Some(token) = self.token.as_deref() else {
+            return Err("还没有登录 GitHub，修不了通知哦喵~先运行 gh auth login 吧喵~".to_string());
+        };
+        let response = self
+            .agent
+            .put(&format!("{API}/notifications"))
+            .header("Accept", "application/vnd.github+json")
+            .header("X-GitHub-Api-Version", "2022-11-28")
+            .header("Authorization", format!("Bearer {token}"))
+            .send_empty();
+        self.finish_mutation(response)
     }
 
     pub fn dispatch_workflow(
@@ -435,6 +485,19 @@ impl ApiClient {
                 }
             }
         }
+    }
+
+    fn finish_mutation(
+        &self,
+        response: Result<ureq::http::Response<ureq::Body>, ureq::Error>,
+    ) -> Result<(), String> {
+        let mut response = response.map_err(|err| format_transport_error(&err))?;
+        let status = response.status().as_u16();
+        if (200..300).contains(&status) {
+            return Ok(());
+        }
+        let body = response.body_mut().read_to_string().unwrap_or_default();
+        Err(status_message(status, &body))
     }
 
     fn get_json<T: DeserializeOwned>(&self, url: &str, authenticated: bool) -> Result<T, String> {

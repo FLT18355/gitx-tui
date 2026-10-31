@@ -4,8 +4,8 @@ use crate::config::{Config, Paths};
 use crate::format::{self, base64};
 use crate::icons;
 use crate::model::{
-    RateLimit, ReadmeContent, Release, Repo, RepoSort, SearchResponse, SearchSort, TreeResponse,
-    User, Workflow, key_part,
+    Issue, IssueState, Notification, RateLimit, ReadmeContent, Release, Repo, RepoSort,
+    SearchResponse, SearchSort, TreeResponse, User, Workflow, key_part,
 };
 use crate::theme::{FLAVORS, Theme};
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers, MouseButton, MouseEvent, MouseEventKind};
@@ -21,9 +21,11 @@ pub enum Page {
     Starred,
     Search,
     Account,
+    Notifications,
     Settings,
     Repo,
     Actions,
+    Issues,
 }
 
 impl Page {
@@ -33,7 +35,8 @@ impl Page {
             Self::Starred => Some(1),
             Self::Search => Some(2),
             Self::Account => Some(3),
-            Self::Repo | Self::Actions | Self::Settings => None,
+            Self::Notifications => Some(4),
+            Self::Repo | Self::Actions | Self::Issues | Self::Settings => None,
         }
     }
 
@@ -42,6 +45,7 @@ impl Page {
             1 => Self::Starred,
             2 => Self::Search,
             3 => Self::Account,
+            4 => Self::Notifications,
             _ => Self::Repositories,
         }
     }
@@ -52,10 +56,16 @@ impl Page {
             Self::Starred => "星星收藏喵~",
             Self::Search => "找仓库喵~",
             Self::Account => "账号喵~",
+            Self::Notifications => "通知喵~",
             Self::Settings => "设置喵~",
             Self::Repo => "仓库详情喵~",
             Self::Actions => "工作流喵~",
+            Self::Issues => "议题喵~",
         }
+    }
+
+    pub fn is_repo_page(self) -> bool {
+        matches!(self, Self::Repo | Self::Actions | Self::Issues)
     }
 }
 
@@ -73,6 +83,39 @@ pub enum RepoPane {
     Tree,
     Releases,
     Readme,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum IssueKind {
+    All,
+    Issues,
+    PullRequests,
+}
+
+impl IssueKind {
+    pub fn label(self) -> &'static str {
+        match self {
+            Self::All => "全部喵~",
+            Self::Issues => "议题喵~",
+            Self::PullRequests => "合并请求喵~",
+        }
+    }
+
+    pub fn next(self) -> Self {
+        match self {
+            Self::All => Self::Issues,
+            Self::Issues => Self::PullRequests,
+            Self::PullRequests => Self::All,
+        }
+    }
+
+    pub fn matches(self, issue: &crate::model::Issue) -> bool {
+        match self {
+            Self::All => true,
+            Self::Issues => !issue.is_pull_request(),
+            Self::PullRequests => issue.is_pull_request(),
+        }
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -149,6 +192,15 @@ pub enum Action {
     EditWorkflowInputs,
     RunWorkflow,
     RefreshWorkflows,
+    OpenIssues,
+    OpenPullRequests,
+    SelectIssue(usize),
+    SetIssueKind(IssueKind),
+    SetIssueState(IssueState),
+    SelectNotification(usize),
+    SetNotificationFilter(bool),
+    MarkNotificationRead,
+    MarkAllNotificationsRead,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -285,6 +337,14 @@ pub fn cache_groups() -> Vec<CacheGroup> {
             prefixes: &["actions_"],
         },
         CacheGroup {
+            label: "议题与合并请求",
+            prefixes: &["issues_"],
+        },
+        CacheGroup {
+            label: "通知",
+            prefixes: &["notifications_"],
+        },
+        CacheGroup {
             label: "账号与额度",
             prefixes: &["user", "rate_limit"],
         },
@@ -413,6 +473,22 @@ enum Msg {
         git_ref: String,
         result: Result<(), String>,
     },
+    Issues {
+        name: String,
+        state: IssueState,
+        result: Result<Vec<Issue>, String>,
+    },
+    Notifications {
+        all: bool,
+        result: Result<Vec<Notification>, String>,
+    },
+    NotificationRead {
+        id: String,
+        result: Result<(), String>,
+    },
+    NotificationsRead {
+        result: Result<(), String>,
+    },
 }
 
 pub struct App {
@@ -447,6 +523,20 @@ pub struct App {
     pub workflow_inputs_editing: bool,
     pub workflow_running: bool,
     pub workflow_error: Option<String>,
+    pub notifications: Vec<Notification>,
+    pub notifications_loading: Option<bool>,
+    pub notifications_fetched_at: Option<i64>,
+    pub notifications_all: bool,
+    pub notification_selected: usize,
+    pub notification_marking: Option<String>,
+    pub notifications_clearing: bool,
+    pub issues: Vec<Issue>,
+    pub issues_loading: Option<(String, IssueState)>,
+    pub issues_fetched_at: Option<i64>,
+    pub issue_repo: Option<Repo>,
+    pub issue_selected: usize,
+    pub issue_kind: IssueKind,
+    pub issue_state: IssueState,
     pub cache_row: usize,
     pub page: Page,
     pub return_page: Page,
@@ -591,6 +681,20 @@ impl App {
             workflow_inputs_editing: false,
             workflow_running: false,
             workflow_error: None,
+            notifications: Vec::new(),
+            notifications_loading: None,
+            notifications_fetched_at: None,
+            notifications_all: false,
+            notification_selected: 0,
+            notification_marking: None,
+            notifications_clearing: false,
+            issues: Vec::new(),
+            issues_loading: None,
+            issues_fetched_at: None,
+            issue_repo: None,
+            issue_selected: 0,
+            issue_kind: IssueKind::All,
+            issue_state: IssueState::Open,
             cache_row: 0,
             page: if settings_only {
                 Page::Settings
@@ -1156,6 +1260,111 @@ impl App {
                     }
                 }
             }
+            Msg::Issues {
+                name,
+                state,
+                result,
+            } => {
+                let key = (name.clone(), state);
+                if self.issues_loading.as_ref() == Some(&key) {
+                    self.issues_loading = None;
+                }
+                let current = self
+                    .issue_repo
+                    .as_ref()
+                    .map(|repo| repo.display_full_name());
+                if current.as_deref() != Some(name.as_str()) || self.issue_state != state {
+                    return;
+                }
+                match result {
+                    Ok(issues) => {
+                        let _ = self.cache.save(&issues_cache_key(&name, state), &issues);
+                        self.issues = issues;
+                        self.issues_fetched_at = Some(now_epoch());
+                        self.clamp_issue_selection();
+                        self.refresh_cache_stats();
+                        if self.page == Page::Issues {
+                            self.set_status(
+                                StatusKind::Ok,
+                                &format!(
+                                    "议题与合并请求更新好啦，当前筛选下有 {} 条喵~",
+                                    self.issue_indices().len()
+                                ),
+                            );
+                        }
+                    }
+                    Err(error) => {
+                        if self.page == Page::Issues {
+                            self.set_status(StatusKind::Error, &error);
+                        }
+                    }
+                }
+            }
+            Msg::Notifications { all, result } => {
+                if self.notifications_loading == Some(all) {
+                    self.notifications_loading = None;
+                }
+                if self.notifications_all != all {
+                    return;
+                }
+                match result {
+                    Ok(items) => {
+                        let _ = self.cache.save(&notifications_cache_key(all), &items);
+                        self.notifications = items;
+                        self.notifications_fetched_at = Some(now_epoch());
+                        self.clamp_notification_selection();
+                        self.refresh_cache_stats();
+                        if self.page == Page::Notifications {
+                            self.set_status(
+                                StatusKind::Ok,
+                                &format!("通知都拿来啦，一共 {} 条喵~", self.notifications.len()),
+                            );
+                        }
+                    }
+                    Err(error) => {
+                        if self.page == Page::Notifications {
+                            self.set_status(StatusKind::Error, &error);
+                        }
+                    }
+                }
+            }
+            Msg::NotificationRead { id, result } => {
+                if self.notification_marking.as_deref() == Some(id.as_str()) {
+                    self.notification_marking = None;
+                }
+                match result {
+                    Ok(()) => {
+                        if let Some(item) = self.notifications.iter_mut().find(|item| item.id == id)
+                        {
+                            item.unread = false;
+                        }
+                        if !self.notifications_all {
+                            self.notifications.retain(|item| item.id != id);
+                        }
+                        self.clamp_notification_selection();
+                        self.save_notifications_cache();
+                        self.set_status(StatusKind::Ok, "这条通知已经读过啦喵~");
+                    }
+                    Err(error) => self.set_status(StatusKind::Error, &error),
+                }
+            }
+            Msg::NotificationsRead { result } => {
+                self.notifications_clearing = false;
+                match result {
+                    Ok(()) => {
+                        for item in &mut self.notifications {
+                            item.unread = false;
+                        }
+                        if !self.notifications_all {
+                            self.notifications.clear();
+                        }
+                        self.clamp_notification_selection();
+                        self.save_notifications_cache();
+                        self.set_status(StatusKind::Ok, "所有通知都标成已读啦喵~");
+                    }
+                    Err(error) => self.set_status(StatusKind::Error, &error),
+                }
+            }
             Msg::DownloadProgress {
                 id,
                 received,
@@ -1252,8 +1461,52 @@ impl App {
         });
     }
 
+    fn repo_by_name(&self, name: &str) -> Option<Repo> {
+        let matches = |repo: &&Repo| repo.display_full_name() == name;
+        self.page_repo
+            .as_ref()
+            .filter(|repo| repo.display_full_name() == name)
+            .cloned()
+            .or_else(|| {
+                self.detail
+                    .as_ref()
+                    .filter(|repo| repo.display_full_name() == name)
+                    .cloned()
+            })
+            .or_else(|| {
+                self.repos
+                    .iter()
+                    .chain(self.starred.iter())
+                    .chain(self.search_results.iter())
+                    .find(matches)
+                    .cloned()
+            })
+    }
+
+    fn context_repo(&self) -> Option<Repo> {
+        match self.page {
+            Page::Repo => self.page_repo.clone().or_else(|| self.detail.clone()),
+            Page::Actions => self
+                .action_repo
+                .as_deref()
+                .and_then(|name| self.repo_by_name(name))
+                .or_else(|| self.page_repo.clone()),
+            Page::Issues => self.issue_repo.clone(),
+            Page::Notifications | Page::Settings => None,
+            _ => self
+                .detail
+                .clone()
+                .filter(|detail| {
+                    self.selected_repo()
+                        .map(|repo| repo.display_full_name() == detail.display_full_name())
+                        .unwrap_or(false)
+                })
+                .or_else(|| self.selected_repo()),
+        }
+    }
+
     pub fn open_actions(&mut self) {
-        let Some(repo) = self.page_repo.clone().or_else(|| self.selected_repo()) else {
+        let Some(repo) = self.context_repo() else {
             self.set_status(
                 StatusKind::Info,
                 "先挑一个仓库嘛，人家才知道看哪个工作流喵~",
@@ -1276,13 +1529,7 @@ impl App {
             self.workflow_error = None;
         }
         self.action_repo = Some(name.clone());
-        if self.page != Page::Actions {
-            self.return_page = if self.page == Page::Repo {
-                Page::Repo
-            } else {
-                self.current_list_page()
-            };
-        }
+        self.return_page = return_page_when_opening(self.page, self.return_page);
         self.page = Page::Actions;
         self.load_actions_cache();
         self.fetch_action_runs(false);
@@ -1320,9 +1567,7 @@ impl App {
             return;
         }
         let private = self
-            .page_repo
-            .clone()
-            .or_else(|| self.selected_repo())
+            .repo_by_name(&name)
             .map(|repo| repo.private)
             .unwrap_or(false);
         self.action_runs_loading = true;
@@ -1376,9 +1621,7 @@ impl App {
             return;
         }
         let private = self
-            .page_repo
-            .clone()
-            .or_else(|| self.selected_repo())
+            .repo_by_name(&name)
             .map(|repo| repo.private)
             .unwrap_or(false);
         self.action_jobs_loading = Some(run_id);
@@ -1494,9 +1737,7 @@ impl App {
             return;
         }
         let private = self
-            .page_repo
-            .clone()
-            .or_else(|| self.selected_repo())
+            .repo_by_name(&name)
             .map(|repo| repo.private)
             .unwrap_or(false);
         self.action_workflows_loading = true;
@@ -1704,6 +1945,343 @@ impl App {
             Ok(()) => self.set_status(StatusKind::Ok, "缓存目录已经打开啦喵~"),
             Err(error) => self.set_status(StatusKind::Error, &error),
         }
+    }
+
+    fn load_notifications_cache(&mut self) {
+        let all = self.notifications_all;
+        match self
+            .cache
+            .load::<Vec<Notification>>(&notifications_cache_key(all))
+        {
+            Some(cached) => {
+                self.notifications = cached.data;
+                self.notifications_fetched_at = Some(cached.fetched_at);
+            }
+            None => {
+                self.notifications.clear();
+                self.notifications_fetched_at = None;
+            }
+        }
+        self.clamp_notification_selection();
+    }
+
+    fn save_notifications_cache(&mut self) {
+        let all = self.notifications_all;
+        let _ = self
+            .cache
+            .save(&notifications_cache_key(all), &self.notifications);
+        self.refresh_cache_stats();
+    }
+
+    fn fetch_notifications(&mut self, force: bool) {
+        let all = self.notifications_all;
+        if self.notifications_loading == Some(all) {
+            return;
+        }
+        if !self.client.token_present() {
+            if self.page == Page::Notifications {
+                self.set_status(
+                    StatusKind::Error,
+                    "还没登录 GitHub，看不到通知喵~先运行 gh auth login 吧喵~",
+                );
+            }
+            return;
+        }
+        let fresh = self
+            .notifications_fetched_at
+            .map(|at| now_epoch() - at <= self.config.detail_ttl_secs as i64)
+            .unwrap_or(false);
+        if !force && fresh {
+            return;
+        }
+        self.notifications_loading = Some(all);
+        let tx = self.tx.clone();
+        let client = self.client.clone();
+        std::thread::spawn(move || {
+            let result = client.notifications(all);
+            let _ = tx.send(Msg::Notifications { all, result });
+        });
+    }
+
+    pub fn set_notification_filter(&mut self, all: bool) {
+        if self.notifications_all == all {
+            return;
+        }
+        self.notifications_all = all;
+        self.notifications.clear();
+        self.notifications_fetched_at = None;
+        self.notification_selected = 0;
+        self.load_notifications_cache();
+        self.fetch_notifications(false);
+        self.set_status(
+            StatusKind::Info,
+            if all {
+                "现在看全部通知喵~"
+            } else {
+                "现在只看未读通知喵~"
+            },
+        );
+    }
+
+    pub fn toggle_notification_filter(&mut self) {
+        self.set_notification_filter(!self.notifications_all);
+    }
+
+    pub fn move_notification_selection(&mut self, delta: i32) {
+        if self.notifications.is_empty() {
+            return;
+        }
+        self.notification_selected = (self.notification_selected as i32 + delta)
+            .clamp(0, self.notifications.len() as i32 - 1)
+            as usize;
+    }
+
+    pub fn select_notification(&mut self, index: usize) {
+        if index < self.notifications.len() {
+            self.notification_selected = index;
+        }
+    }
+
+    fn clamp_notification_selection(&mut self) {
+        if self.notifications.is_empty() {
+            self.notification_selected = 0;
+        } else {
+            self.notification_selected =
+                self.notification_selected.min(self.notifications.len() - 1);
+        }
+    }
+
+    pub fn selected_notification(&self) -> Option<Notification> {
+        self.notifications.get(self.notification_selected).cloned()
+    }
+
+    pub fn open_selected_notification(&mut self) {
+        let Some(item) = self.selected_notification() else {
+            self.set_status(StatusKind::Info, "先挑一条通知嘛喵~");
+            return;
+        };
+        let url = item.html_url();
+        self.open_url(&url);
+    }
+
+    pub fn mark_selected_notification_read(&mut self) {
+        let Some(item) = self.selected_notification() else {
+            self.set_status(StatusKind::Info, "先挑一条通知嘛喵~");
+            return;
+        };
+        if self.notification_marking.is_some() {
+            self.set_status(StatusKind::Info, "人家还在改上一条通知喵~等一下下嘛喵~");
+            return;
+        }
+        if !self.client.token_present() {
+            self.set_status(StatusKind::Error, "还没登录 GitHub，改不了通知喵~");
+            return;
+        }
+        if !item.unread {
+            self.set_status(StatusKind::Info, "这条通知已经读过啦喵~");
+            return;
+        }
+        let id = item.id;
+        self.notification_marking = Some(id.clone());
+        self.set_status(StatusKind::Info, "人家正在把通知标成已读喵~...");
+        let tx = self.tx.clone();
+        let client = self.client.clone();
+        std::thread::spawn(move || {
+            let result = client.mark_notification_read(&id);
+            let _ = tx.send(Msg::NotificationRead { id, result });
+        });
+    }
+
+    pub fn mark_all_notifications_read(&mut self) {
+        if self.notifications_clearing {
+            return;
+        }
+        if !self.client.token_present() {
+            self.set_status(StatusKind::Error, "还没登录 GitHub，改不了通知喵~");
+            return;
+        }
+        if self.notifications.is_empty() {
+            self.set_status(StatusKind::Info, "这里没有要处理的通知喵~");
+            return;
+        }
+        self.notifications_clearing = true;
+        self.set_status(StatusKind::Info, "人家正在把通知全都标成已读喵~...");
+        let tx = self.tx.clone();
+        let client = self.client.clone();
+        std::thread::spawn(move || {
+            let result = client.mark_all_notifications_read();
+            let _ = tx.send(Msg::NotificationsRead { result });
+        });
+    }
+
+    pub fn open_issues(&mut self, kind: IssueKind) {
+        let Some(repo) = self.context_repo() else {
+            self.set_status(StatusKind::Info, "先挑一个仓库嘛，人家才知道看哪个议题喵~");
+            return;
+        };
+        let name = repo.display_full_name();
+        let changed = self
+            .issue_repo
+            .as_ref()
+            .map(|current| current.display_full_name() != name)
+            .unwrap_or(true);
+        if changed {
+            self.issues.clear();
+            self.issues_fetched_at = None;
+            self.issue_selected = 0;
+        }
+        self.issue_repo = Some(repo);
+        self.issue_kind = kind;
+        self.return_page = return_page_when_opening(self.page, self.return_page);
+        self.page = Page::Issues;
+        self.load_issues_cache();
+        self.fetch_issues(false);
+    }
+
+    fn load_issues_cache(&mut self) {
+        let Some(repo) = self.issue_repo.clone() else {
+            return;
+        };
+        let name = repo.display_full_name();
+        let state = self.issue_state;
+        match self
+            .cache
+            .load::<Vec<Issue>>(&issues_cache_key(&name, state))
+        {
+            Some(cached) => {
+                self.issues = cached.data;
+                self.issues_fetched_at = Some(cached.fetched_at);
+            }
+            None => {
+                self.issues.clear();
+                self.issues_fetched_at = None;
+            }
+        }
+        self.clamp_issue_selection();
+    }
+
+    fn fetch_issues(&mut self, force: bool) {
+        let Some(repo) = self.issue_repo.clone() else {
+            return;
+        };
+        let name = repo.display_full_name();
+        let state = self.issue_state;
+        let key = (name.clone(), state);
+        if self.issues_loading.as_ref() == Some(&key) {
+            return;
+        }
+        let fresh = self
+            .issues_fetched_at
+            .map(|at| now_epoch() - at <= self.config.detail_ttl_secs as i64)
+            .unwrap_or(false);
+        if !force && fresh {
+            return;
+        }
+        self.issues_loading = Some(key);
+        let tx = self.tx.clone();
+        let client = self.client.clone();
+        std::thread::spawn(move || {
+            let result = client.issues(&name, state, repo.private);
+            let _ = tx.send(Msg::Issues {
+                name,
+                state,
+                result,
+            });
+        });
+    }
+
+    pub fn issue_indices(&self) -> Vec<usize> {
+        self.issues
+            .iter()
+            .enumerate()
+            .filter(|(_, issue)| self.issue_kind.matches(issue))
+            .map(|(index, _)| index)
+            .collect()
+    }
+
+    pub fn selected_issue(&self) -> Option<Issue> {
+        self.issue_indices()
+            .get(self.issue_selected)
+            .and_then(|index| self.issues.get(*index))
+            .cloned()
+    }
+
+    pub fn issue_repo_label(&self) -> String {
+        self.issue_repo
+            .as_ref()
+            .map(|repo| repo.display_full_name())
+            .unwrap_or_else(|| "还没有选仓库".to_string())
+    }
+
+    fn clamp_issue_selection(&mut self) {
+        let len = self.issue_indices().len();
+        if len == 0 {
+            self.issue_selected = 0;
+        } else {
+            self.issue_selected = self.issue_selected.min(len - 1);
+        }
+    }
+
+    pub fn move_issue_selection(&mut self, delta: i32) {
+        let len = self.issue_indices().len();
+        if len == 0 {
+            return;
+        }
+        self.issue_selected =
+            (self.issue_selected as i32 + delta).clamp(0, len as i32 - 1) as usize;
+    }
+
+    pub fn select_issue(&mut self, index: usize) {
+        let len = self.issue_indices().len();
+        if len == 0 {
+            return;
+        }
+        self.issue_selected = index.min(len - 1);
+    }
+
+    pub fn open_selected_issue(&mut self) {
+        let Some(issue) = self.selected_issue() else {
+            self.set_status(StatusKind::Info, "先挑一个议题嘛喵~");
+            return;
+        };
+        self.open_url(&issue.html_url);
+    }
+
+    pub fn set_issue_kind(&mut self, kind: IssueKind) {
+        if self.issue_kind == kind {
+            return;
+        }
+        self.issue_kind = kind;
+        self.issue_selected = 0;
+        self.clamp_issue_selection();
+    }
+
+    pub fn cycle_issue_kind(&mut self) {
+        self.set_issue_kind(self.issue_kind.next());
+        self.set_status(
+            StatusKind::Info,
+            &format!("现在只看{}", self.issue_kind.label()),
+        );
+    }
+
+    pub fn set_issue_state(&mut self, state: IssueState) {
+        if self.issue_state == state {
+            return;
+        }
+        self.issue_state = state;
+        self.issue_selected = 0;
+        self.issues.clear();
+        self.issues_fetched_at = None;
+        self.load_issues_cache();
+        self.fetch_issues(false);
+    }
+
+    pub fn cycle_issue_state(&mut self) {
+        self.set_issue_state(self.issue_state.next());
+        self.set_status(
+            StatusKind::Info,
+            &format!("状态筛成{}", self.issue_state.label()),
+        );
     }
 
     pub fn open_account(&mut self) {
@@ -1921,6 +2499,18 @@ impl App {
         if self.page == Page::Account && self.rate_loading {
             return Some("人家正在数 API 额度喵~...");
         }
+        if self.page == Page::Notifications && self.notifications_loading.is_some() {
+            return Some("人家正在收通知喵~...");
+        }
+        if self.notifications_clearing {
+            return Some("人家正在把通知全都标成已读喵~...");
+        }
+        if self.notification_marking.is_some() {
+            return Some("人家正在把通知标成已读喵~...");
+        }
+        if self.page == Page::Issues && self.issues_loading.is_some() {
+            return Some("人家正在翻议题和合并请求喵~...");
+        }
         if self.page == Page::Actions && self.action_runs_loading {
             return Some("人家正在翻工作流记录喵~...");
         }
@@ -2013,7 +2603,7 @@ impl App {
     }
 
     pub fn current_list_page(&self) -> Page {
-        if self.page == Page::Repo {
+        if self.page.is_repo_page() {
             self.return_page
         } else {
             self.page
@@ -2654,6 +3244,8 @@ impl App {
                 self.fetch_action_runs(true);
                 self.schedule_action_jobs(true);
             }
+            Page::Issues => self.fetch_issues(true),
+            Page::Notifications => self.fetch_notifications(true),
             Page::Settings => self.refresh_cache_stats(),
         }
     }
@@ -2679,6 +3271,8 @@ impl App {
         }
         self.page = page;
         self.return_page = page;
+        self.page_repo = None;
+        self.issue_repo = None;
         self.search_focus = page == Page::Search;
         self.list_offset = 0;
         self.pending_detail = None;
@@ -2697,6 +3291,10 @@ impl App {
         if page == Page::Account {
             self.fetch_rate_limit(false);
         }
+        if page == Page::Notifications {
+            self.load_notifications_cache();
+            self.fetch_notifications(false);
+        }
     }
 
     pub fn open_repo_page(&mut self) {
@@ -2709,9 +3307,8 @@ impl App {
             self.set_status(StatusKind::Info, "先挑一个仓库嘛，人家才知道你想看哪个喵~");
             return;
         };
-        if self.page != Page::Repo {
-            self.return_page = self.current_list_page();
-        }
+        self.return_page = return_page_when_opening(self.page, self.return_page);
+        self.issue_repo = None;
         self.page_repo = Some(repo.clone());
         self.page = Page::Repo;
         self.page_scroll = 0;
@@ -2739,23 +3336,18 @@ impl App {
     }
 
     pub fn go_back(&mut self) {
-        if self.page == Page::Actions {
-            self.search_focus = false;
-            if self.return_page == Page::Repo {
-                self.page = Page::Repo;
-            } else {
-                self.page = self.return_page;
-                self.page_repo = None;
-                self.schedule_selected_detail();
-            }
+        let Some(target) = back_target(self.page, self.return_page, self.page_repo.is_some())
+        else {
             return;
-        }
-        if self.page != Page::Repo {
-            return;
-        }
-        self.page = self.return_page;
-        self.page_repo = None;
+        };
         self.search_focus = false;
+        if target == Page::Repo {
+            self.page = Page::Repo;
+            return;
+        }
+        self.page = target;
+        self.page_repo = None;
+        self.issue_repo = None;
         self.schedule_selected_detail();
     }
 
@@ -2885,18 +3477,7 @@ impl App {
     }
 
     fn effective_repo(&self) -> Option<Repo> {
-        if self.page == Page::Repo {
-            self.page_repo.clone().or_else(|| self.detail.clone())
-        } else {
-            self.detail
-                .clone()
-                .filter(|detail| {
-                    self.selected_repo()
-                        .map(|repo| repo.display_full_name() == detail.display_full_name())
-                        .unwrap_or(false)
-                })
-                .or_else(|| self.selected_repo())
-        }
+        self.context_repo()
     }
 
     fn open_url(&mut self, url: &str) {
@@ -3154,6 +3735,18 @@ impl App {
             }
             return;
         }
+        if self.page == Page::Notifications {
+            if layout.contains(layout.list, x, y) && delta != 0 {
+                self.move_notification_selection(delta.signum());
+            }
+            return;
+        }
+        if self.page == Page::Issues {
+            if layout.contains(layout.list, x, y) && delta != 0 {
+                self.move_issue_selection(delta.signum());
+            }
+            return;
+        }
         if layout.contains(layout.list, x, y) {
             if delta != 0 {
                 self.move_selection(delta.signum());
@@ -3343,6 +3936,36 @@ impl App {
             self.cycle_repo_pane();
             return;
         }
+        if self.page == Page::Issues {
+            match key.code {
+                KeyCode::Char('v') => {
+                    self.cycle_issue_kind();
+                    return;
+                }
+                KeyCode::Char('s') => {
+                    self.cycle_issue_state();
+                    return;
+                }
+                _ => {}
+            }
+        }
+        if self.page == Page::Notifications {
+            match key.code {
+                KeyCode::Char('u') => {
+                    self.toggle_notification_filter();
+                    return;
+                }
+                KeyCode::Char('m') => {
+                    self.mark_selected_notification_read();
+                    return;
+                }
+                KeyCode::Char('M') => {
+                    self.mark_all_notifications_read();
+                    return;
+                }
+                _ => {}
+            }
+        }
         match key.code {
             KeyCode::Char('q') => self.quit(),
             KeyCode::Char('?') => self.overlay = Some(Overlay::Help),
@@ -3351,21 +3974,24 @@ impl App {
             KeyCode::Char('2') => self.navigate(Page::Starred),
             KeyCode::Char('3') => self.navigate(Page::Search),
             KeyCode::Char('4') => self.open_account(),
+            KeyCode::Char('5') => self.navigate(Page::Notifications),
             KeyCode::Tab => self.navigate_next_page(),
             KeyCode::Esc => match self.page {
-                Page::Repo | Page::Actions => self.go_back(),
-                Page::Settings | Page::Account => self.navigate(Page::Repositories),
+                Page::Repo | Page::Actions | Page::Issues => self.go_back(),
+                Page::Settings | Page::Account | Page::Notifications => {
+                    self.navigate(Page::Repositories)
+                }
                 _ => {}
             },
             KeyCode::Char('r') => self.refresh_current(),
-            KeyCode::Char('o') => {
-                if self.page == Page::Actions {
-                    self.open_action_run(None);
-                } else {
-                    self.open_current();
-                }
-            }
+            KeyCode::Char('o') => match self.page {
+                Page::Actions => self.open_action_run(None),
+                Page::Issues => self.open_selected_issue(),
+                Page::Notifications => self.open_selected_notification(),
+                _ => self.open_current(),
+            },
             KeyCode::Char('a') => self.open_actions(),
+            KeyCode::Char('i') => self.open_issues(IssueKind::All),
             KeyCode::Char('R') | KeyCode::Char('x') if self.page == Page::Actions => {
                 self.open_workflow_runner()
             }
@@ -3386,6 +4012,8 @@ impl App {
                 Page::Repo => self.open_current(),
                 Page::Account => self.open_profile(),
                 Page::Actions => self.open_action_run(None),
+                Page::Issues => self.open_selected_issue(),
+                Page::Notifications => self.open_selected_notification(),
                 _ => self.open_repo_page(),
             },
             KeyCode::Up | KeyCode::Char('k') => self.key_up(),
@@ -3405,7 +4033,7 @@ impl App {
             .page
             .nav_index()
             .unwrap_or_else(|| self.return_page.nav_index().unwrap_or(0));
-        let next = (current + 1) % 4;
+        let next = (current + 1) % 5;
         self.navigate(Page::from_nav(next));
     }
 
@@ -3413,6 +4041,8 @@ impl App {
         match self.page {
             Page::Repo => self.scroll_repo_pane(-1),
             Page::Actions => self.move_action_selection(-1),
+            Page::Issues => self.move_issue_selection(-1),
+            Page::Notifications => self.move_notification_selection(-1),
             Page::Settings => self.settings_row = self.settings_row.saturating_sub(1),
             _ => self.move_selection(-1),
         }
@@ -3422,6 +4052,8 @@ impl App {
         match self.page {
             Page::Repo => self.scroll_repo_pane(1),
             Page::Actions => self.move_action_selection(1),
+            Page::Issues => self.move_issue_selection(1),
+            Page::Notifications => self.move_notification_selection(1),
             Page::Settings => self.settings_row = (self.settings_row + 1).min(9),
             _ => self.move_selection(1),
         }
@@ -3432,6 +4064,8 @@ impl App {
             Page::Repo => self.set_repo_pane_scroll(0),
             Page::Settings => self.settings_row = 0,
             Page::Actions => self.select_action_run(0),
+            Page::Issues => self.select_issue(0),
+            Page::Notifications => self.notification_selected = 0,
             Page::Account => {}
             _ => self.first_list_page(),
         }
@@ -3444,6 +4078,13 @@ impl App {
             Page::Actions => {
                 self.select_action_run(self.action_runs.len().saturating_sub(1));
             }
+            Page::Issues => {
+                let last = self.issue_indices().len().saturating_sub(1);
+                self.select_issue(last);
+            }
+            Page::Notifications => {
+                self.notification_selected = self.notifications.len().saturating_sub(1);
+            }
             Page::Account => {}
             _ => self.last_list_page(),
         }
@@ -3455,6 +4096,8 @@ impl App {
             Page::Actions => {
                 self.action_jobs_scroll = self.action_jobs_scroll.saturating_sub(10);
             }
+            Page::Issues => self.move_issue_selection(-5),
+            Page::Notifications => self.move_notification_selection(-5),
             Page::Settings => self.settings_row = self.settings_row.saturating_sub(3),
             Page::Account => {}
             _ => self.prev_list_page(),
@@ -3468,6 +4111,8 @@ impl App {
                 self.action_jobs_scroll =
                     (self.action_jobs_scroll + 10).min(self.action_jobs_scroll_max);
             }
+            Page::Issues => self.move_issue_selection(5),
+            Page::Notifications => self.move_notification_selection(5),
             Page::Settings => self.settings_row = (self.settings_row + 3).min(9),
             Page::Account => {}
             _ => self.next_list_page(),
@@ -3957,6 +4602,41 @@ impl App {
             Action::RefreshRateLimit => self.fetch_rate_limit(true),
             Action::OpenActions => self.open_actions(),
             Action::SelectActionRun(index) => self.select_action_run(index),
+            Action::OpenIssues => self.open_issues(IssueKind::Issues),
+            Action::OpenPullRequests => self.open_issues(IssueKind::PullRequests),
+            Action::SelectIssue(index) => {
+                let key = format!("{}:{}", self.page.title(), index);
+                let now = Instant::now();
+                let double = self
+                    .last_click
+                    .as_ref()
+                    .map(|(at, last)| at.elapsed() < Duration::from_millis(420) && last == &key)
+                    .unwrap_or(false);
+                self.last_click = Some((now, key));
+                self.select_issue(index);
+                if double {
+                    self.open_selected_issue();
+                }
+            }
+            Action::SetIssueKind(kind) => self.set_issue_kind(kind),
+            Action::SetIssueState(state) => self.set_issue_state(state),
+            Action::SelectNotification(index) => {
+                let key = format!("{}:{}", self.page.title(), index);
+                let now = Instant::now();
+                let double = self
+                    .last_click
+                    .as_ref()
+                    .map(|(at, last)| at.elapsed() < Duration::from_millis(420) && last == &key)
+                    .unwrap_or(false);
+                self.last_click = Some((now, key));
+                self.select_notification(index);
+                if double {
+                    self.open_selected_notification();
+                }
+            }
+            Action::SetNotificationFilter(all) => self.set_notification_filter(all),
+            Action::MarkNotificationRead => self.mark_selected_notification_read(),
+            Action::MarkAllNotificationsRead => self.mark_all_notifications_read(),
             Action::OpenCacheManager => self.open_cache_manager(),
             Action::ClearCacheGroup(index) => self.clear_cache_group(index),
             Action::SelectCacheRow(index) => {
@@ -4000,6 +4680,28 @@ impl App {
     }
 }
 
+fn return_page_when_opening(current: Page, return_page: Page) -> Page {
+    if current.is_repo_page() {
+        return_page
+    } else {
+        current
+    }
+}
+
+fn back_target(page: Page, return_page: Page, has_repo: bool) -> Option<Page> {
+    if !page.is_repo_page() {
+        return None;
+    }
+    if page != Page::Repo && has_repo {
+        return Some(Page::Repo);
+    }
+    if return_page.is_repo_page() {
+        Some(Page::Repositories)
+    } else {
+        Some(return_page)
+    }
+}
+
 fn tree_cache_key(name: &str, branch: &str) -> String {
     format!("tree_{}_{}", key_part(name), key_part(branch))
 }
@@ -4018,6 +4720,14 @@ fn action_jobs_cache_key(run_id: u64) -> String {
 
 fn workflows_cache_key(name: &str) -> String {
     format!("actions_workflows_{}", key_part(name))
+}
+
+fn issues_cache_key(name: &str, state: IssueState) -> String {
+    format!("issues_{}_{}", key_part(name), state.api_value())
+}
+
+fn notifications_cache_key(all: bool) -> String {
+    format!("notifications_{}", if all { "all" } else { "unread" })
 }
 
 fn parse_workflow_inputs(raw: &str) -> Result<Option<serde_json::Value>, String> {
@@ -4222,6 +4932,40 @@ mod tests {
         assert_eq!(parsed["env"], "prod");
         assert!(parse_workflow_inputs("[1,2]").is_err());
         assert!(parse_workflow_inputs("env=prod").is_err());
+    }
+
+    #[test]
+    fn repo_back_navigation_keeps_list_page() {
+        let mut return_page = return_page_when_opening(Page::Repositories, Page::Repositories);
+        assert_eq!(return_page, Page::Repositories);
+
+        return_page = return_page_when_opening(Page::Repo, return_page);
+        assert_eq!(return_page, Page::Repositories);
+
+        return_page = return_page_when_opening(Page::Repo, return_page);
+        assert_eq!(return_page, Page::Repositories);
+
+        assert_eq!(
+            back_target(Page::Actions, return_page, true),
+            Some(Page::Repo)
+        );
+        assert_eq!(
+            back_target(Page::Repo, return_page, true),
+            Some(Page::Repositories)
+        );
+    }
+
+    #[test]
+    fn subpage_without_repo_returns_to_origin() {
+        assert_eq!(
+            return_page_when_opening(Page::Starred, Page::Repositories),
+            Page::Starred
+        );
+        assert_eq!(
+            back_target(Page::Issues, Page::Starred, false),
+            Some(Page::Starred)
+        );
+        assert_eq!(back_target(Page::Search, Page::Repositories, false), None);
     }
 
     #[test]

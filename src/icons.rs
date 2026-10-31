@@ -29,6 +29,10 @@ pub const TERMINAL: &str = "\u{f120}";
 pub const LICENSE: &str = "\u{f24e}";
 pub const BRANCH: &str = "\u{f126}";
 pub const EYE: &str = "\u{f06e}";
+pub const BELL: &str = "\u{f0f3}";
+pub const COMMENT: &str = "\u{f075}";
+pub const CHECK_CIRCLE: &str = "\u{f058}";
+pub const X_CIRCLE: &str = "\u{f057}";
 
 pub fn label(icon: &str, text: &str) -> String {
     format!("{icon} {text}")
