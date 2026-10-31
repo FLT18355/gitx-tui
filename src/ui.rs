@@ -4471,7 +4471,7 @@ fn draw_releases_panel(
         if hovered {
             fill(frame, rect, theme.color("surface0"));
         } else {
-            fill(frame, rect, theme.color("base"));
+            fill(frame, rect, theme.color("mantle"));
         }
         let mut title = vec![
             Span::styled(
