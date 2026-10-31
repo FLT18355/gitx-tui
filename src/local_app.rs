@@ -36,6 +36,20 @@ pub enum PromptKind {
     StashDrop,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum LocalAction {
+    Stage,
+    Unstage,
+    Commit,
+    StashSave,
+    Push,
+    Fetch,
+    Pull,
+    Refresh,
+    Help,
+    Quit,
+}
+
 pub struct Prompt {
     pub kind: PromptKind,
     pub input: TextInput,
@@ -78,6 +92,8 @@ pub struct LocalApp {
     pub tag_rows: usize,
     pub stash_rows: usize,
     pub help: bool,
+    pub hover: Option<LocalAction>,
+    pub hits: Vec<(Rect, LocalAction)>,
     pub message: String,
     pub message_error: bool,
     pub prompt: Option<Prompt>,
@@ -129,6 +145,8 @@ impl LocalApp {
             tag_rows: 6,
             stash_rows: 4,
             help: false,
+            hover: None,
+            hits: Vec::new(),
             message,
             message_error: false,
             prompt: None,
@@ -653,6 +671,32 @@ impl LocalApp {
         }
     }
 
+    fn show_file_history(&mut self) {
+        let Some(file) = self.selected_file().cloned() else {
+            self.message = "先在改动面板选中一个文件喵~".to_string();
+            self.message_error = true;
+            return;
+        };
+        match local_ops::file_history(&self.repo.root, &file.path) {
+            Ok(text) => {
+                self.diff_title = format!("文件历史喵~  {}", format::truncate(&file.path, 40));
+                self.diff_text = if text.trim().is_empty() {
+                    "这个文件还没有提交历史喵~".to_string()
+                } else {
+                    text
+                };
+                self.diff_scroll = 0;
+                self.diff_scroll_max = 0;
+                self.message = format!("{} 的历史摆出来啦喵~", file.path);
+                self.message_error = false;
+            }
+            Err(error) => {
+                self.message = error;
+                self.message_error = true;
+            }
+        }
+    }
+
     fn apply_selected_stash(&mut self) {
         let Some(stash) = self.selected_stash().cloned() else {
             self.message = "没有选中的 stash 喵~".to_string();
@@ -890,12 +934,50 @@ impl LocalApp {
         true
     }
 
+    fn key_at(&self, x: u16, y: u16) -> Option<LocalAction> {
+        self.hits.iter().rev().find_map(|(rect, action)| {
+            (rect.width > 0
+                && rect.height > 0
+                && x >= rect.x
+                && x < rect.x.saturating_add(rect.width)
+                && y >= rect.y
+                && y < rect.y.saturating_add(rect.height))
+            .then_some(*action)
+        })
+    }
+
+    fn run_action(&mut self, action: LocalAction) {
+        if self.busy.is_some() && !matches!(action, LocalAction::Help | LocalAction::Quit) {
+            return;
+        }
+        match action {
+            LocalAction::Stage => self.stage_selected(),
+            LocalAction::Unstage => self.unstage_selected(),
+            LocalAction::Commit => self.begin_commit(),
+            LocalAction::StashSave => self.stash_save(),
+            LocalAction::Push => self.push(),
+            LocalAction::Fetch => self.fetch(),
+            LocalAction::Pull => self.pull(),
+            LocalAction::Refresh => self.refresh(),
+            LocalAction::Help => self.help = true,
+            LocalAction::Quit => self.should_quit = true,
+        }
+    }
+
     pub fn handle_mouse(&mut self, mouse: MouseEvent) {
         if self.prompt.is_some() || self.help {
             return;
         }
         match mouse.kind {
+            MouseEventKind::Moved => {
+                self.hover = self.key_at(mouse.column, mouse.row);
+            }
             MouseEventKind::Down(MouseButton::Left) => {
+                if let Some(action) = self.key_at(mouse.column, mouse.row) {
+                    self.hover = Some(action);
+                    self.run_action(action);
+                    return;
+                }
                 if let Some(pane) = self.pane_at(mouse.column, mouse.row) {
                     let previous = self.pane;
                     self.focus_pane(pane);
@@ -958,6 +1040,7 @@ impl LocalApp {
         match key.code {
             KeyCode::Char('q') | KeyCode::Esc => self.should_quit = true,
             KeyCode::Char('h') | KeyCode::Char('?') => self.help = true,
+            KeyCode::Char('H') => self.show_file_history(),
             KeyCode::Tab | KeyCode::Right => self.cycle_pane(1),
             KeyCode::BackTab | KeyCode::Left => self.cycle_pane(-1),
             KeyCode::Up | KeyCode::Char('k') => self.move_selection(-1),

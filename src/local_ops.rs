@@ -145,6 +145,23 @@ pub fn commit_diff(root: &Path, hash: &str) -> Result<String, String> {
     Ok(limit_lines(diff, 2_000))
 }
 
+pub fn file_history(root: &Path, path: &str) -> Result<String, String> {
+    let log = git(
+        root,
+        &[
+            "log",
+            "--no-color",
+            "--oneline",
+            "--follow",
+            "-n",
+            "80",
+            "--",
+            path,
+        ],
+    )?;
+    Ok(limit_lines(log, 400))
+}
+
 pub fn ref_log(root: &Path, reference: &str) -> Result<String, String> {
     let log = git(
         root,

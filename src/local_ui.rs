@@ -1,7 +1,7 @@
 use crate::format;
 use crate::icons;
 use crate::local::StatusFile;
-use crate::local_app::{LocalApp, LocalLayout, LocalPane, PromptKind};
+use crate::local_app::{LocalAction, LocalApp, LocalLayout, LocalPane, PromptKind};
 use crate::theme::Theme;
 use ratatui::Frame;
 use ratatui::layout::{Alignment, Constraint, Layout, Position, Rect};
@@ -16,6 +16,7 @@ pub fn draw(frame: &mut Frame, app: &mut LocalApp) {
     let area = frame.area();
     let theme = app.theme.clone();
     app.layout = LocalLayout::default();
+    app.hits.clear();
     fill(frame, area, theme.color("base"));
     if area.width < MIN_WIDTH || area.height < MIN_HEIGHT {
         draw_center(
@@ -27,10 +28,11 @@ pub fn draw(frame: &mut Frame, app: &mut LocalApp) {
         );
         return;
     }
+    let footer_height = if area.width < 100 { 3 } else { 2 };
     let chunks = Layout::vertical([
         Constraint::Length(3),
         Constraint::Min(0),
-        Constraint::Length(2),
+        Constraint::Length(footer_height),
     ])
     .split(area);
     draw_header(frame, app, &theme, chunks[0]);
@@ -593,8 +595,8 @@ fn draw_help(frame: &mut Frame, theme: &Theme, area: Rect) {
         ("x", "丢弃选中文件的全部改动（需确认）"),
         ("p / P", "推送当前分支 / 推送标签"),
         ("f / L", "fetch / pull（仅 fast-forward）"),
-        ("r", "重新读取仓库"),
-        ("h / ?", "打开或关闭这份帮助"),
+        ("H", "查看选中文件的提交历史"),
+        ("r / h / ?", "刷新仓库 / 打开或关闭帮助"),
         ("q / Esc", "退出人家；帮助打开时先关帮助"),
     ];
     let limit = inner.height as usize;
@@ -615,7 +617,7 @@ fn draw_help(frame: &mut Frame, theme: &Theme, area: Rect) {
     }
 }
 
-fn draw_footer(frame: &mut Frame, app: &LocalApp, theme: &Theme, area: Rect) {
+fn draw_footer(frame: &mut Frame, app: &mut LocalApp, theme: &Theme, area: Rect) {
     fill(frame, area, theme.color("crust"));
     let (icon, color) = if app.busy.is_some() {
         (icons::REFRESH, theme.color("peach"))
@@ -633,14 +635,51 @@ fn draw_footer(frame: &mut Frame, app: &LocalApp, theme: &Theme, area: Rect) {
         .style(Style::default().fg(color)),
         Rect::new(area.x + 2, area.y, area.width.saturating_sub(4), 1),
     );
-    frame.render_widget(
-        Paragraph::new(format::truncate(
-            "Tab 面板  j/k 选  [ ] 翻页  s/u 暂存 S/U 全部  d 差异  c 提交 A 改提交  t 标签  b 分支  z/Z stash  a/D stash 应用/删  x 丢弃  p/P 推送  f 取回  L 拉取  r 刷新  h/? 帮助  q 退出喵~",
-            area.width.saturating_sub(4) as usize,
-        ))
-        .style(Style::default().fg(theme.color("overlay0"))),
-        Rect::new(area.x + 2, area.y + 1, area.width.saturating_sub(4), 1),
-    );
+    let keys = [
+        (LocalAction::Stage, "s", "暂存"),
+        (LocalAction::Unstage, "u", "取消"),
+        (LocalAction::Commit, "c", "提交"),
+        (LocalAction::StashSave, "z", "stash"),
+        (LocalAction::Push, "p", "推送"),
+        (LocalAction::Fetch, "f", "取回"),
+        (LocalAction::Pull, "L", "拉取"),
+        (LocalAction::Refresh, "r", "刷新"),
+        (LocalAction::Help, "h", "帮助"),
+        (LocalAction::Quit, "q", "退出"),
+    ];
+    let mut x = area.x + 2;
+    let mut y = area.y + 1;
+    let end = area.x + area.width.saturating_sub(2);
+    for (action, key, label) in keys {
+        let hovered = app.hover == Some(action);
+        let text = if hovered {
+            format!(">{key} {label} ")
+        } else {
+            format!(" {key} {label} ")
+        };
+        let width = format::text_width(&text) as u16;
+        if x + width > end {
+            y += 1;
+            x = area.x + 2;
+            if y >= area.y + area.height {
+                break;
+            }
+        }
+        let rect = Rect::new(x, y, width, 1);
+        if hovered {
+            fill(frame, rect, theme.color("surface0"));
+        }
+        let style = if hovered {
+            Style::default()
+                .fg(theme.color("blue"))
+                .add_modifier(Modifier::BOLD)
+        } else {
+            Style::default().fg(theme.color("subtext0"))
+        };
+        frame.render_widget(Paragraph::new(text).style(style), rect);
+        app.hits.push((rect, action));
+        x += width;
+    }
 }
 
 fn draw_prompt(frame: &mut Frame, app: &mut LocalApp, theme: &Theme, area: Rect) {
