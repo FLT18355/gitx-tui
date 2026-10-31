@@ -62,6 +62,13 @@ pub struct Tag {
     pub subject: String,
 }
 
+#[derive(Debug, Clone)]
+pub struct Stash {
+    pub name: String,
+    pub when: String,
+    pub subject: String,
+}
+
 #[derive(Debug, Clone, Default)]
 pub struct LocalRepo {
     pub root: PathBuf,
@@ -73,6 +80,7 @@ pub struct LocalRepo {
     pub commits: Vec<Commit>,
     pub branches: Vec<Branch>,
     pub tags: Vec<Tag>,
+    pub stashes: Vec<Stash>,
 }
 
 impl LocalRepo {
@@ -126,6 +134,9 @@ impl LocalRepo {
         )
         .map(|raw| parse_tags(&raw))
         .unwrap_or_default();
+        let stashes = git(&root, &["stash", "list", "--format=%gd%x1f%cr%x1f%s"])
+            .map(|raw| parse_stashes(&raw))
+            .unwrap_or_default();
         Ok(Self {
             root,
             branch,
@@ -136,6 +147,7 @@ impl LocalRepo {
             commits,
             branches,
             tags,
+            stashes,
         })
     }
 
@@ -259,6 +271,23 @@ fn parse_tags(raw: &str) -> Vec<Tag> {
         .collect()
 }
 
+fn parse_stashes(raw: &str) -> Vec<Stash> {
+    raw.lines()
+        .filter_map(|line| {
+            let mut fields = line.split('\x1f');
+            let name = fields.next()?.trim().to_string();
+            if name.is_empty() {
+                return None;
+            }
+            Some(Stash {
+                name,
+                when: fields.next().unwrap_or("").to_string(),
+                subject: fields.next().unwrap_or("").to_string(),
+            })
+        })
+        .collect()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -314,5 +343,16 @@ mod tests {
         let tags = parse_tags("v0.1.2\t2 days ago\tRelease 0.1.2\n");
         assert_eq!(tags[0].name, "v0.1.2");
         assert_eq!(tags[0].subject, "Release 0.1.2");
+    }
+
+    #[test]
+    fn parses_stashes() {
+        let stashes = parse_stashes(
+            "stash@{0}\x1f2 hours ago\x1fWIP on main: abc fix nav\nstash@{1}\x1f1 day ago\x1fgxt stash\n",
+        );
+        assert_eq!(stashes.len(), 2);
+        assert_eq!(stashes[0].name, "stash@{0}");
+        assert_eq!(stashes[0].when, "2 hours ago");
+        assert_eq!(stashes[1].subject, "gxt stash");
     }
 }

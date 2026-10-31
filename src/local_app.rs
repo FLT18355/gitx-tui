@@ -23,6 +23,7 @@ pub enum LocalPane {
     Commits,
     Branches,
     Tags,
+    Stashes,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -32,6 +33,7 @@ pub enum PromptKind {
     Tag,
     Branch,
     Discard,
+    StashDrop,
 }
 
 pub struct Prompt {
@@ -47,6 +49,7 @@ pub struct LocalLayout {
     pub status: Rect,
     pub diff: Rect,
     pub commits: Rect,
+    pub stashes: Rect,
 }
 
 struct LocalMsg {
@@ -63,6 +66,7 @@ pub struct LocalApp {
     pub commit_selected: usize,
     pub branch_selected: usize,
     pub tag_selected: usize,
+    pub stash_selected: usize,
     pub diff_text: String,
     pub diff_title: String,
     pub diff_staged: bool,
@@ -72,6 +76,8 @@ pub struct LocalApp {
     pub commit_rows: usize,
     pub branch_rows: usize,
     pub tag_rows: usize,
+    pub stash_rows: usize,
+    pub help: bool,
     pub message: String,
     pub message_error: bool,
     pub prompt: Option<Prompt>,
@@ -111,6 +117,7 @@ impl LocalApp {
             commit_selected: 0,
             branch_selected: 0,
             tag_selected: 0,
+            stash_selected: 0,
             diff_text: String::new(),
             diff_title: "差异喵~".to_string(),
             diff_staged: false,
@@ -120,6 +127,8 @@ impl LocalApp {
             commit_rows: 4,
             branch_rows: 6,
             tag_rows: 6,
+            stash_rows: 4,
+            help: false,
             message,
             message_error: false,
             prompt: None,
@@ -162,6 +171,9 @@ impl LocalApp {
         self.tag_selected = self
             .tag_selected
             .min(self.repo.tags.len().saturating_sub(1));
+        self.stash_selected = self
+            .stash_selected
+            .min(self.repo.stashes.len().saturating_sub(1));
     }
 
     fn selected_file(&self) -> Option<&local::StatusFile> {
@@ -178,6 +190,10 @@ impl LocalApp {
 
     fn selected_tag(&self) -> Option<&local::Tag> {
         self.repo.tags.get(self.tag_selected)
+    }
+
+    fn selected_stash(&self) -> Option<&local::Stash> {
+        self.repo.stashes.get(self.stash_selected)
     }
 
     fn refresh_diff(&mut self) {
@@ -233,6 +249,16 @@ impl LocalApp {
                     Ok(String::new())
                 }
             },
+            LocalPane::Stashes => match self.selected_stash().cloned() {
+                Some(stash) => {
+                    self.diff_title = format!("stash 内容喵~  {}", stash.name);
+                    local_ops::stash_diff(&root, &stash.name)
+                }
+                None => {
+                    self.diff_title = "stash 内容喵~".to_string();
+                    Ok(String::new())
+                }
+            },
             LocalPane::Diff => Ok(String::new()),
         };
         self.diff_text = match result {
@@ -278,6 +304,14 @@ impl LocalApp {
                     .clamp(0, self.repo.tags.len() as i32 - 1)
                     as usize;
             }
+            LocalPane::Stashes => {
+                if self.repo.stashes.is_empty() {
+                    return;
+                }
+                self.stash_selected = (self.stash_selected as i32 + delta)
+                    .clamp(0, self.repo.stashes.len() as i32 - 1)
+                    as usize;
+            }
             LocalPane::Diff => {
                 self.scroll_diff(delta * 3);
                 return;
@@ -297,6 +331,7 @@ impl LocalApp {
             LocalPane::Commits => self.commit_rows,
             LocalPane::Branches => self.branch_rows,
             LocalPane::Tags => self.tag_rows,
+            LocalPane::Stashes => self.stash_rows,
             LocalPane::Diff => {
                 self.scroll_diff(direction * self.diff_scroll_max.max(1) as i32);
                 return;
@@ -335,6 +370,13 @@ impl LocalApp {
                     0
                 };
             }
+            LocalPane::Stashes => {
+                self.stash_selected = if end {
+                    self.repo.stashes.len().saturating_sub(1)
+                } else {
+                    0
+                };
+            }
             LocalPane::Diff => {
                 self.diff_scroll = if end { self.diff_scroll_max } else { 0 };
                 return;
@@ -350,6 +392,7 @@ impl LocalApp {
             LocalPane::Commits,
             LocalPane::Branches,
             LocalPane::Tags,
+            LocalPane::Stashes,
         ];
         let current = order
             .iter()
@@ -533,12 +576,12 @@ impl LocalApp {
         let kind = prompt.kind;
         let target = prompt.target.clone();
         let value = prompt.input.value.trim().to_string();
-        if !matches!(kind, PromptKind::Discard) && value.is_empty() {
+        if !matches!(kind, PromptKind::Discard | PromptKind::StashDrop) && value.is_empty() {
             self.message = match kind {
                 PromptKind::Commit | PromptKind::Amend => "提交信息不能空着喵~".to_string(),
                 PromptKind::Tag => "标签名不能空着喵~".to_string(),
                 PromptKind::Branch => "分支名不能空着喵~".to_string(),
-                PromptKind::Discard => String::new(),
+                PromptKind::Discard | PromptKind::StashDrop => String::new(),
             };
             self.message_error = true;
             return;
@@ -552,6 +595,10 @@ impl LocalApp {
                 Some(path) => local_ops::discard(&self.repo.root, path),
                 None => Err("没有选中要丢弃的文件喵~".to_string()),
             },
+            PromptKind::StashDrop => match target.as_deref() {
+                Some(name) => local_ops::stash_drop(&self.repo.root, name).map(|_| ()),
+                None => Err("没有选中要删除的 stash 喵~".to_string()),
+            },
         };
         match result {
             Ok(()) => {
@@ -564,6 +611,9 @@ impl LocalApp {
                     PromptKind::Branch => format!("分支 {value} 建好并切过去啦喵~"),
                     PromptKind::Discard => {
                         format!("{} 的改动丢弃啦喵~", target.unwrap_or_default())
+                    }
+                    PromptKind::StashDrop => {
+                        format!("{} 删掉啦喵~", target.unwrap_or_default())
                     }
                 };
                 self.message_error = false;
@@ -601,6 +651,40 @@ impl LocalApp {
                 self.message_error = true;
             }
         }
+    }
+
+    fn apply_selected_stash(&mut self) {
+        let Some(stash) = self.selected_stash().cloned() else {
+            self.message = "没有选中的 stash 喵~".to_string();
+            self.message_error = true;
+            return;
+        };
+        match local_ops::stash_apply(&self.repo.root, &stash.name) {
+            Ok(message) => {
+                self.refresh();
+                self.message = message;
+                self.message_error = false;
+            }
+            Err(error) => {
+                self.message = error;
+                self.message_error = true;
+            }
+        }
+    }
+
+    fn begin_stash_drop(&mut self) {
+        let Some(stash) = self.selected_stash().cloned() else {
+            self.message = "没有选中的 stash 喵~".to_string();
+            self.message_error = true;
+            return;
+        };
+        self.prompt = Some(Prompt {
+            kind: PromptKind::StashDrop,
+            input: TextInput::new(""),
+            target: Some(stash.name),
+        });
+        self.message = "这条 stash 会真实删除，Enter 确认，Esc 取消喵~".to_string();
+        self.message_error = false;
     }
 
     fn toggle_diff_staged(&mut self) {
@@ -690,6 +774,7 @@ impl LocalApp {
                     Some(PromptKind::Tag) => "取消创建标签啦喵~".to_string(),
                     Some(PromptKind::Branch) => "取消创建分支啦喵~".to_string(),
                     Some(PromptKind::Discard) => "取消丢弃啦喵~".to_string(),
+                    Some(PromptKind::StashDrop) => "取消删除 stash 啦喵~".to_string(),
                     None => String::new(),
                 };
                 self.message_error = false;
@@ -700,7 +785,7 @@ impl LocalApp {
         let Some(prompt) = self.prompt.as_mut() else {
             return;
         };
-        if prompt.kind == PromptKind::Discard {
+        if matches!(prompt.kind, PromptKind::Discard | PromptKind::StashDrop) {
             return;
         }
         match key.code {
@@ -722,6 +807,7 @@ impl LocalApp {
             (LocalPane::Status, self.layout.status),
             (LocalPane::Diff, self.layout.diff),
             (LocalPane::Commits, self.layout.commits),
+            (LocalPane::Stashes, self.layout.stashes),
         ];
         rects.into_iter().find_map(|(pane, rect)| {
             (rect.width > 0
@@ -767,6 +853,12 @@ impl LocalApp {
                 1,
                 self.repo.tags.len(),
             ),
+            LocalPane::Stashes => (
+                self.layout.stashes,
+                self.stash_rows.max(1),
+                1,
+                self.repo.stashes.len(),
+            ),
             LocalPane::Diff => return false,
         };
         if len == 0 || y < rect.y {
@@ -778,6 +870,7 @@ impl LocalApp {
             LocalPane::Commits => self.commit_selected,
             LocalPane::Branches => self.branch_selected,
             LocalPane::Tags => self.tag_selected,
+            LocalPane::Stashes => self.stash_selected,
             LocalPane::Diff => return false,
         };
         let start = (selected / rows) * rows;
@@ -790,6 +883,7 @@ impl LocalApp {
             LocalPane::Commits => self.commit_selected = index,
             LocalPane::Branches => self.branch_selected = index,
             LocalPane::Tags => self.tag_selected = index,
+            LocalPane::Stashes => self.stash_selected = index,
             LocalPane::Diff => {}
         }
         self.refresh_diff();
@@ -797,7 +891,7 @@ impl LocalApp {
     }
 
     pub fn handle_mouse(&mut self, mouse: MouseEvent) {
-        if self.prompt.is_some() {
+        if self.prompt.is_some() || self.help {
             return;
         }
         match mouse.kind {
@@ -849,11 +943,21 @@ impl LocalApp {
             }
             return;
         }
+        if self.help {
+            if matches!(
+                key.code,
+                KeyCode::Esc | KeyCode::Char('h') | KeyCode::Char('?') | KeyCode::Char('q')
+            ) {
+                self.help = false;
+            }
+            return;
+        }
         if self.busy.is_some() && !matches!(key.code, KeyCode::Char('q') | KeyCode::Esc) {
             return;
         }
         match key.code {
             KeyCode::Char('q') | KeyCode::Esc => self.should_quit = true,
+            KeyCode::Char('h') | KeyCode::Char('?') => self.help = true,
             KeyCode::Tab | KeyCode::Right => self.cycle_pane(1),
             KeyCode::BackTab | KeyCode::Left => self.cycle_pane(-1),
             KeyCode::Up | KeyCode::Char('k') => self.move_selection(-1),
@@ -874,23 +978,26 @@ impl LocalApp {
             KeyCode::Char('x') => self.begin_discard(),
             KeyCode::Char('z') => self.stash_save(),
             KeyCode::Char('Z') => self.stash_pop(),
+            KeyCode::Char('a') if self.pane == LocalPane::Stashes => self.apply_selected_stash(),
+            KeyCode::Char('D') if self.pane == LocalPane::Stashes => self.begin_stash_drop(),
             KeyCode::Char('p') => self.push(),
             KeyCode::Char('P') => self.push_tags(),
             KeyCode::Char('f') => self.fetch(),
             KeyCode::Char('L') => self.pull(),
             KeyCode::Char('r') => self.refresh(),
-            KeyCode::Enter => {
-                if self.pane == LocalPane::Branches {
-                    self.checkout_selected_branch();
-                } else {
-                    self.refresh_diff();
-                }
-            }
+            KeyCode::Enter => match self.pane {
+                LocalPane::Branches => self.checkout_selected_branch(),
+                LocalPane::Stashes => self.apply_selected_stash(),
+                _ => self.refresh_diff(),
+            },
             _ => {}
         }
     }
 
     pub fn handle_paste(&mut self, text: &str) {
+        if self.help {
+            return;
+        }
         if let Some(prompt) = self.prompt.as_mut() {
             for ch in text.chars().filter(|ch| *ch != '\n' && *ch != '\r') {
                 prompt.input.insert(ch);

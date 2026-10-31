@@ -39,6 +39,9 @@ pub fn draw(frame: &mut Frame, app: &mut LocalApp) {
     if app.prompt.is_some() {
         draw_prompt(frame, app, &theme, area);
     }
+    if app.help {
+        draw_help(frame, &theme, area);
+    }
 }
 
 fn draw_header(frame: &mut Frame, app: &LocalApp, theme: &Theme, area: Rect) {
@@ -99,11 +102,12 @@ fn draw_header(frame: &mut Frame, app: &LocalApp, theme: &Theme, area: Rect) {
     }
     branch.push(Span::styled(
         format!(
-            "   {} 暂存 · {} 未暂存 · {} 提交 · {} 标签",
+            "   {} 暂存 · {} 未暂存 · {} 提交 · {} 标签 · {} stash",
             app.repo.staged_count(),
             app.repo.unstaged_count(),
             app.repo.commits.len(),
-            app.repo.tags.len()
+            app.repo.tags.len(),
+            app.repo.stashes.len()
         ),
         Style::default().fg(theme.color("overlay0")),
     ));
@@ -152,7 +156,14 @@ fn draw_body(frame: &mut Frame, app: &mut LocalApp, theme: &Theme, area: Rect) {
     draw_tags(frame, app, theme, sidebar[2]);
     draw_status(frame, app, theme, columns[2]);
     draw_diff(frame, app, theme, columns[4]);
-    draw_commits(frame, app, theme, chunks[2]);
+    let bottom = Layout::horizontal([
+        Constraint::Percentage(72),
+        Constraint::Length(1),
+        Constraint::Min(20),
+    ])
+    .split(chunks[2]);
+    draw_commits(frame, app, theme, bottom[0]);
+    draw_stashes(frame, app, theme, bottom[2]);
 }
 
 fn panel(frame: &mut Frame, theme: &Theme, area: Rect, title: &str, focused: bool) -> Rect {
@@ -481,6 +492,129 @@ fn draw_commits(frame: &mut Frame, app: &mut LocalApp, theme: &Theme, area: Rect
     }
 }
 
+fn draw_stashes(frame: &mut Frame, app: &mut LocalApp, theme: &Theme, area: Rect) {
+    let title = format!(
+        "{} stash喵~{}",
+        icons::ARCHIVE,
+        page_label(app.repo.stashes.len(), app.stash_selected, app.stash_rows)
+    );
+    let body = panel(frame, theme, area, &title, app.pane == LocalPane::Stashes);
+    app.layout.stashes = body;
+    app.stash_rows = body.height.max(1) as usize;
+    if body.height == 0 {
+        return;
+    }
+    if app.repo.stashes.is_empty() {
+        draw_center(
+            frame,
+            theme,
+            body,
+            "还没有 stash 喵~",
+            "按 z 把当前改动存起来试试嘛喵~",
+        );
+        return;
+    }
+    let rows = app.stash_rows;
+    let selected = app
+        .stash_selected
+        .min(app.repo.stashes.len().saturating_sub(1));
+    let start = (selected / rows) * rows;
+    let end = (start + rows).min(app.repo.stashes.len());
+    for (offset, index) in (start..end).enumerate() {
+        let stash = &app.repo.stashes[index];
+        let row = Rect::new(body.x, body.y + offset as u16, body.width, 1);
+        if app.pane == LocalPane::Stashes && index == selected {
+            fill(frame, row, theme.color("surface0"));
+        }
+        let subject_width = body.width.saturating_sub(18) as usize;
+        let mut spans = vec![
+            Span::styled(
+                format!("{} ", icons::ARCHIVE),
+                Style::default().fg(theme.color("peach")),
+            ),
+            Span::styled(
+                format!("{} ", stash.name),
+                Style::default()
+                    .fg(theme.color("blue"))
+                    .add_modifier(Modifier::BOLD),
+            ),
+        ];
+        if subject_width >= 4 {
+            spans.push(Span::styled(
+                format::truncate(&format::clean_text(&stash.subject), subject_width),
+                Style::default().fg(theme.color("text")),
+            ));
+        }
+        spans.push(Span::styled(
+            format!("  {}", stash.when),
+            Style::default().fg(theme.color("overlay0")),
+        ));
+        frame.render_widget(Paragraph::new(Line::from(spans)), row);
+    }
+}
+
+fn draw_help(frame: &mut Frame, theme: &Theme, area: Rect) {
+    let width = area.width.saturating_sub(8).min(78);
+    let height = area.height.saturating_sub(4).min(22);
+    if width < 50 || height < 12 {
+        return;
+    }
+    let rect = Rect::new(
+        area.x + (area.width.saturating_sub(width)) / 2,
+        area.y + (area.height.saturating_sub(height)) / 2,
+        width,
+        height,
+    );
+    frame.render_widget(Clear, rect);
+    let block = Block::new()
+        .borders(Borders::ALL)
+        .border_type(BorderType::Rounded)
+        .border_style(Style::default().fg(theme.color("green")))
+        .title(Line::from(Span::styled(
+            " 本地仓库帮助喵~ ",
+            Style::default()
+                .fg(theme.color("green"))
+                .add_modifier(Modifier::BOLD),
+        )));
+    let inner = block.inner(rect);
+    frame.render_widget(block, rect);
+    fill(frame, inner, theme.color("mantle"));
+    let lines = [
+        ("Tab / ← →", "切换面板"),
+        ("j k / ↑ ↓", "选择；[ ] 或 PgUp/PgDn 翻页"),
+        ("g / G", "第一项 / 最后一项"),
+        ("Enter", "切换分支；Stash 面板应用 stash；其他刷新差异"),
+        ("s / u", "暂存 / 取消暂存；S / U 全部暂存 / 取消"),
+        ("d", "在暂存和未暂存差异之间切换"),
+        ("c / A", "提交 / 修改最后一条提交"),
+        ("t / b", "创建标签 / 创建并切换分支"),
+        ("z / Z", "保存 stash / 恢复最近一条 stash"),
+        ("a / D", "Stash 面板：应用 / 删除选中 stash"),
+        ("x", "丢弃选中文件的全部改动（需确认）"),
+        ("p / P", "推送当前分支 / 推送标签"),
+        ("f / L", "fetch / pull（仅 fast-forward）"),
+        ("r", "重新读取仓库"),
+        ("h / ?", "打开或关闭这份帮助"),
+        ("q / Esc", "退出人家；帮助打开时先关帮助"),
+    ];
+    let limit = inner.height as usize;
+    for (index, (keys, text)) in lines.iter().take(limit).enumerate() {
+        let y = inner.y + index as u16;
+        frame.render_widget(
+            Paragraph::new(Line::from(vec![
+                Span::styled(
+                    format!("{keys:<12}"),
+                    Style::default()
+                        .fg(theme.color("blue"))
+                        .add_modifier(Modifier::BOLD),
+                ),
+                Span::styled(*text, Style::default().fg(theme.color("subtext0"))),
+            ])),
+            Rect::new(inner.x, y, inner.width, 1),
+        );
+    }
+}
+
 fn draw_footer(frame: &mut Frame, app: &LocalApp, theme: &Theme, area: Rect) {
     fill(frame, area, theme.color("crust"));
     let (icon, color) = if app.busy.is_some() {
@@ -501,7 +635,7 @@ fn draw_footer(frame: &mut Frame, app: &LocalApp, theme: &Theme, area: Rect) {
     );
     frame.render_widget(
         Paragraph::new(format::truncate(
-            "Tab 面板  j/k 选  [ ] 翻页  s/u 暂存 S/U 全部  d 差异  c 提交 A 改提交  t 标签  b 分支  x 丢弃  z/Z stash  p/P 推送  f 取回  L 拉取  r 刷新  q 退出喵~",
+            "Tab 面板  j/k 选  [ ] 翻页  s/u 暂存 S/U 全部  d 差异  c 提交 A 改提交  t 标签  b 分支  z/Z stash  a/D stash 应用/删  x 丢弃  p/P 推送  f 取回  L 拉取  r 刷新  h/? 帮助  q 退出喵~",
             area.width.saturating_sub(4) as usize,
         ))
         .style(Style::default().fg(theme.color("overlay0"))),
@@ -519,6 +653,7 @@ fn draw_prompt(frame: &mut Frame, app: &mut LocalApp, theme: &Theme, area: Rect)
         PromptKind::Tag => ("标签名喵~", "比如 v0.1.2 喵~"),
         PromptKind::Branch => ("新分支名喵~", "比如 feature/xxx 喵~"),
         PromptKind::Discard => ("确认丢弃喵~", ""),
+        PromptKind::StashDrop => ("确认删除 stash喵~", ""),
     };
     let width = area.width.saturating_sub(12).min(70);
     let height = 8.min(area.height.saturating_sub(4));
@@ -545,21 +680,27 @@ fn draw_prompt(frame: &mut Frame, app: &mut LocalApp, theme: &Theme, area: Rect)
     let inner = block.inner(rect);
     frame.render_widget(block, rect);
     fill(frame, inner, theme.color("mantle"));
-    if prompt.kind == PromptKind::Discard {
-        let path = prompt.target.as_deref().unwrap_or("");
+    if matches!(prompt.kind, PromptKind::Discard | PromptKind::StashDrop) {
+        let target = prompt.target.as_deref().unwrap_or("");
+        let (warning, confirm) = if prompt.kind == PromptKind::StashDrop {
+            ("这条 stash 会被真实删除喵~", "Enter 确认删除   Esc 取消喵~")
+        } else {
+            (
+                "这个文件的全部改动都会被丢弃喵~",
+                "Enter 确认丢弃   Esc 取消喵~",
+            )
+        };
         frame.render_widget(
-            Paragraph::new(format::truncate(path, inner.width as usize))
+            Paragraph::new(format::truncate(target, inner.width as usize))
                 .style(Style::default().fg(theme.color("peach"))),
             Rect::new(inner.x, inner.y + 1, inner.width, 1),
         );
         frame.render_widget(
-            Paragraph::new("这个文件的全部改动都会被丢弃喵~")
-                .style(Style::default().fg(theme.color("red"))),
+            Paragraph::new(warning).style(Style::default().fg(theme.color("red"))),
             Rect::new(inner.x, inner.y + 2, inner.width, 1),
         );
         frame.render_widget(
-            Paragraph::new("Enter 确认丢弃   Esc 取消喵~")
-                .style(Style::default().fg(theme.color("overlay0"))),
+            Paragraph::new(confirm).style(Style::default().fg(theme.color("overlay0"))),
             Rect::new(inner.x, inner.y + 4, inner.width, 1),
         );
         return;

@@ -70,6 +70,31 @@ pub fn stash_pop(root: &Path) -> Result<String, String> {
     Ok("stash 恢复好啦喵~".to_string())
 }
 
+pub fn stash_apply(root: &Path, name: &str) -> Result<String, String> {
+    git(root, &["stash", "apply", name])?;
+    Ok(format!("{name} 应用好啦喵~"))
+}
+
+pub fn stash_drop(root: &Path, name: &str) -> Result<String, String> {
+    git(root, &["stash", "drop", name])?;
+    Ok(format!("{name} 删掉啦喵~"))
+}
+
+pub fn stash_diff(root: &Path, name: &str) -> Result<String, String> {
+    let diff = git(
+        root,
+        &[
+            "stash",
+            "show",
+            "--no-color",
+            "--patch",
+            "--include-untracked",
+            name,
+        ],
+    )?;
+    Ok(limit_lines(diff, 1_500))
+}
+
 pub fn checkout(root: &Path, branch: &str) -> Result<(), String> {
     git(root, &["switch", branch]).map(|_| ())
 }
