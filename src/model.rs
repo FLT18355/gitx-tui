@@ -73,6 +73,8 @@ pub struct Repo {
     #[serde(default)]
     pub has_discussions: bool,
     #[serde(default)]
+    pub has_wiki: bool,
+    #[serde(default)]
     pub license: Option<License>,
     #[serde(default)]
     pub size: u64,
@@ -500,6 +502,66 @@ pub struct ReadmeContent {
     pub html_url: String,
     #[serde(default)]
     pub content: String,
+}
+
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct CommitAuthor {
+    #[serde(default)]
+    pub name: String,
+    #[serde(default)]
+    pub date: String,
+}
+
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct CommitInfo {
+    #[serde(default)]
+    pub message: String,
+    #[serde(default)]
+    pub author: CommitAuthor,
+}
+
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct Commit {
+    #[serde(default)]
+    pub sha: String,
+    #[serde(default)]
+    pub html_url: String,
+    #[serde(default)]
+    pub commit: CommitInfo,
+    #[serde(default)]
+    pub author: Option<Owner>,
+}
+
+impl Commit {
+    pub fn short_sha(&self) -> &str {
+        self.sha.get(..7).unwrap_or(&self.sha)
+    }
+
+    pub fn summary(&self) -> &str {
+        self.commit.message.lines().next().unwrap_or("").trim()
+    }
+
+    pub fn author_name(&self) -> &str {
+        self.author
+            .as_ref()
+            .map(|author| author.login.as_str())
+            .filter(|login| !login.is_empty())
+            .unwrap_or(&self.commit.author.name)
+    }
+}
+
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct BranchCommit {
+    #[serde(default)]
+    pub sha: String,
+}
+
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct Branch {
+    #[serde(default)]
+    pub name: String,
+    #[serde(default)]
+    pub commit: BranchCommit,
 }
 
 pub fn conclusion_label(raw: &str) -> &str {

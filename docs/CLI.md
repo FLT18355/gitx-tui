@@ -13,7 +13,10 @@
 | `gxt log [路径] [-n <条数>]` | 打印最近提交 |
 | `gxt tags [路径]` | 打印标签 |
 | `gxt push [路径]` | 推送当前分支 |
-| `gxt config [show\|path]` | 查看配置 |
+| `gxt config [show\|path\|get <键>\|set <键> <值>]` | 查看或修改配置 |
+| `gxt commits <owner/repo> [-n <条数>]` | 打印远端仓库提交 |
+| `gxt branches <owner/repo>` | 打印远端仓库分支 |
+| `gxt switch <分支> [路径]` | 切换本地分支 |
 | `gxt cache [stats\|path\|clear]` | 查看或清理缓存 |
 | `gxt doctor` | 检查 git、GitHub 登录、配置和缓存 |
 
@@ -39,6 +42,11 @@ gxt log . -n 50
 gxt tags .
 gxt push .
 gxt config show
+gxt config get commit_limit
+gxt config set commit_limit 80
+gxt commits ratatui/ratatui -n 10
+gxt branches ratatui/ratatui
+gxt switch main .
 gxt cache clear
 gxt doctor
 ```

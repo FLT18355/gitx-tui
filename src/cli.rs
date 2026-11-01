@@ -8,6 +8,14 @@ pub enum CacheAction {
     Clear,
 }
 
+pub enum ConfigAction {
+    Summary,
+    Show,
+    Path,
+    Get(String),
+    Set(String, String),
+}
+
 pub enum Command {
     Github {
         theme: Option<String>,
@@ -33,8 +41,18 @@ pub enum Command {
         path: PathBuf,
     },
     Config {
-        show: bool,
-        path_only: bool,
+        action: ConfigAction,
+    },
+    Commits {
+        repo: String,
+        limit: usize,
+    },
+    Branches {
+        repo: String,
+    },
+    Switch {
+        branch: String,
+        path: PathBuf,
     },
     Cache {
         action: CacheAction,
@@ -102,20 +120,44 @@ where
         [one] if one == "push" => Ok(Command::Push { path: path(".") }),
         [one, two] if one == "push" => Ok(Command::Push { path: path(two) }),
         [one] if one == "config" => Ok(Command::Config {
-            show: false,
-            path_only: false,
+            action: ConfigAction::Summary,
         }),
         [one, two] if one == "config" => match two.as_str() {
             "show" => Ok(Command::Config {
-                show: true,
-                path_only: false,
+                action: ConfigAction::Show,
             }),
             "path" => Ok(Command::Config {
-                show: false,
-                path_only: true,
+                action: ConfigAction::Path,
             }),
-            _ => Err(format!("config 只支持 show / path 喵~：{two}")),
+            _ => Err(format!(
+                "config 支持 show / path / get <键> / set <键> <值> 喵~：{two}"
+            )),
         },
+        [one, two, three] if one == "config" && two == "get" => Ok(Command::Config {
+            action: ConfigAction::Get(three.to_string()),
+        }),
+        [one, two, three, four] if one == "config" && two == "set" => Ok(Command::Config {
+            action: ConfigAction::Set(three.to_string(), four.to_string()),
+        }),
+        [one, two] if one == "commits" => Ok(Command::Commits {
+            repo: two.to_string(),
+            limit,
+        }),
+        [one, two, three] if one == "commits" && two == "-n" => Ok(Command::Commits {
+            repo: three.to_string(),
+            limit,
+        }),
+        [one, two] if one == "branches" => Ok(Command::Branches {
+            repo: two.to_string(),
+        }),
+        [one, two] if one == "switch" => Ok(Command::Switch {
+            branch: two.to_string(),
+            path: path("."),
+        }),
+        [one, two, three] if one == "switch" => Ok(Command::Switch {
+            branch: two.to_string(),
+            path: path(three),
+        }),
         [one] if one == "cache" => Ok(Command::Cache {
             action: CacheAction::Stats,
         }),
@@ -132,6 +174,9 @@ where
             _ => Err(format!("cache 只支持 stats / path / clear 喵~：{two}")),
         },
         [one] if one == "doctor" => Ok(Command::Doctor),
+        [one] if matches!(one.as_str(), "commits" | "branches" | "switch") => Err(format!(
+            "{one} 后面还要带仓库或分支参数喵~敲 gxt --help 看看用法吧喵~"
+        )),
         [one] if one != "help" && one != "version" => Ok(Command::Local {
             path: path(one),
             theme,
@@ -164,7 +209,10 @@ pub fn print_help() {
   gxt log [路径] [-n <条数>]       打印最近提交喵~\n\
   gxt tags [路径]                  打印标签喵~\n\
   gxt push [路径]                  推送当前分支喵~\n\
-  gxt config [show|path]           查看配置喵~\n\
+  gxt config [show|path|get <键>|set <键> <值>]  查看或修改配置喵~\n\
+  gxt commits <仓库> [-n <条数>]    打印远端仓库提交喵~\n\
+  gxt branches <仓库>              打印远端仓库分支喵~\n\
+  gxt switch <分支> [路径]         切换本地分支喵~\n\
   gxt cache [stats|path|clear]     查看或清理缓存喵~\n\
   gxt doctor                       环境自检喵~\n\n\
 选项：\n\
@@ -230,16 +278,39 @@ mod tests {
         assert!(matches!(
             parse(args(&["config", "show"])).unwrap(),
             Command::Config {
-                show: true,
-                path_only: false
+                action: ConfigAction::Show
             }
         ));
         assert!(matches!(
             parse(args(&["config", "path"])).unwrap(),
             Command::Config {
-                show: false,
-                path_only: true
+                action: ConfigAction::Path
             }
+        ));
+        assert!(matches!(
+            parse(args(&["config", "get", "theme"])).unwrap(),
+            Command::Config {
+                action: ConfigAction::Get(key)
+            } if key == "theme"
+        ));
+        assert!(matches!(
+            parse(args(&["config", "set", "commit_limit", "80"])).unwrap(),
+            Command::Config {
+                action: ConfigAction::Set(key, value)
+            } if key == "commit_limit" && value == "80"
+        ));
+        assert!(matches!(
+            parse(args(&["commits", "ratatui/ratatui", "-n", "5"])).unwrap(),
+            Command::Commits { repo, limit: 5 } if repo == "ratatui/ratatui"
+        ));
+        assert!(matches!(
+            parse(args(&["branches", "ratatui/ratatui"])).unwrap(),
+            Command::Branches { repo } if repo == "ratatui/ratatui"
+        ));
+        assert!(matches!(
+            parse(args(&["switch", "main", "/tmp/demo"])).unwrap(),
+            Command::Switch { branch, path }
+                if branch == "main" && path == std::path::Path::new("/tmp/demo")
         ));
     }
 

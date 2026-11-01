@@ -28,3 +28,6 @@ show_readme = false
 
 # 发行版与源码下载目录。不会覆盖同名文件。
 download_dir = "~/Downloads/gitx-tui"
+
+# 提交页一次读取的提交条数（10 - 100）
+commit_limit = 50

@@ -36,6 +36,7 @@ pub struct Config {
     pub show_file_tree: bool,
     pub show_readme: bool,
     pub download_dir: String,
+    pub commit_limit: usize,
 }
 
 impl Default for Config {
@@ -50,6 +51,7 @@ impl Default for Config {
             show_file_tree: false,
             show_readme: false,
             download_dir: default_download_dir(),
+            commit_limit: 50,
         }
     }
 }

@@ -50,3 +50,4 @@ pub const DOWNLOAD_DIR: &str = "\u{f07c}";
 pub const CODE_FILE: &str = "\u{f1c9}";
 pub const FLAME: &str = "\u{f06d}";
 pub const EXPAND: &str = "\u{f0b2}";
+pub const COMMIT: &str = "\u{f1d8}";

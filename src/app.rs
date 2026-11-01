@@ -4,8 +4,9 @@ use crate::config::{Config, Paths};
 use crate::format::{self, base64};
 use crate::icons;
 use crate::model::{
-    Issue, IssueState, Notification, RateLimit, ReadmeContent, Release, Repo, RepoSort,
-    SearchResponse, SearchSort, StarSort, TreeResponse, TrendingPeriod, User, Workflow, key_part,
+    Branch, Commit, Issue, IssueState, Notification, RateLimit, ReadmeContent, Release, Repo,
+    RepoSort, SearchResponse, SearchSort, StarSort, TreeResponse, TrendingPeriod, User, Workflow,
+    key_part,
 };
 use crate::theme::{FLAVORS, Theme};
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers, MouseButton, MouseEvent, MouseEventKind};
@@ -26,6 +27,7 @@ pub enum Page {
     Repo,
     Actions,
     Issues,
+    Commits,
     ReleaseDetail,
 }
 
@@ -38,9 +40,12 @@ impl Page {
             Self::Account => Some(3),
             Self::Notifications => Some(4),
             Self::Trending => Some(5),
-            Self::Repo | Self::Actions | Self::Issues | Self::ReleaseDetail | Self::Settings => {
-                None
-            }
+            Self::Repo
+            | Self::Actions
+            | Self::Issues
+            | Self::Commits
+            | Self::ReleaseDetail
+            | Self::Settings => None,
         }
     }
 
@@ -67,6 +72,7 @@ impl Page {
             Self::Repo => "仓库详情喵~",
             Self::Actions => "工作流喵~",
             Self::Issues => "议题喵~",
+            Self::Commits => "提交喵~",
             Self::ReleaseDetail => "发行版详情喵~",
         }
     }
@@ -74,7 +80,7 @@ impl Page {
     pub fn is_repo_page(self) -> bool {
         matches!(
             self,
-            Self::Repo | Self::Actions | Self::Issues | Self::ReleaseDetail
+            Self::Repo | Self::Actions | Self::Issues | Self::Commits | Self::ReleaseDetail
         )
     }
 }
@@ -86,6 +92,7 @@ pub enum Overlay {
     EditRepo,
     Cache,
     RunWorkflow,
+    Branches,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -178,6 +185,7 @@ pub enum Action {
     SaveConfig,
     OpenDownloadDir,
     SetSettingsRow(usize),
+    CommitLimit(i32),
     OpenLanguages,
     DownloadAsset { release: usize, asset: usize },
     DownloadSource,
@@ -195,6 +203,9 @@ pub enum Action {
     SaveRepoEdit,
     RefreshRateLimit,
     OpenActions,
+    OpenBranches,
+    SelectBranch(String),
+    OpenCommits,
     SelectActionRun(usize),
     OpenCacheManager,
     ClearCacheGroup(usize),
@@ -209,6 +220,7 @@ pub enum Action {
     OpenIssues,
     OpenPullRequests,
     SelectIssue(usize),
+    SelectCommit(usize),
     SetIssueKind(IssueKind),
     SetIssueState(IssueState),
     SelectNotification(usize),
@@ -372,11 +384,15 @@ pub fn cache_groups() -> Vec<CacheGroup> {
 #[derive(Clone)]
 pub struct RepoEdit {
     pub full_name: String,
+    pub name: TextInput,
     pub description: TextInput,
     pub homepage: TextInput,
     pub topics: TextInput,
     pub private: bool,
     pub archived: bool,
+    pub has_issues: bool,
+    pub has_discussions: bool,
+    pub has_wiki: bool,
     pub row: usize,
     pub editing: bool,
     pub saving: bool,
@@ -387,11 +403,15 @@ impl RepoEdit {
     pub fn from_repo(repo: &Repo) -> Self {
         Self {
             full_name: repo.display_full_name(),
+            name: TextInput::new(repo.name.clone()),
             description: TextInput::new(repo.description.clone().unwrap_or_default()),
             homepage: TextInput::new(repo.homepage.clone().unwrap_or_default()),
             topics: TextInput::new(repo.topics.join(" ")),
             private: repo.private,
             archived: repo.archived,
+            has_issues: repo.has_issues,
+            has_discussions: repo.has_discussions,
+            has_wiki: repo.has_wiki,
             row: 0,
             editing: false,
             saving: false,
@@ -407,6 +427,16 @@ impl RepoEdit {
             .filter(|topic| !topic.is_empty())
             .map(|topic| topic.trim_start_matches('#').to_ascii_lowercase())
             .collect()
+    }
+}
+
+fn repo_edit_input(edit: &mut RepoEdit, row: usize) -> Option<&mut TextInput> {
+    match row {
+        0 => Some(&mut edit.name),
+        1 => Some(&mut edit.description),
+        2 => Some(&mut edit.homepage),
+        3 => Some(&mut edit.topics),
+        _ => None,
     }
 }
 
@@ -438,6 +468,15 @@ enum Msg {
         period: TrendingPeriod,
         result: Result<crate::model::SearchOutcome, String>,
     },
+    Commits {
+        name: String,
+        branch: String,
+        result: Result<Vec<Commit>, String>,
+    },
+    Branches {
+        name: String,
+        result: Result<Vec<Branch>, String>,
+    },
     Detail {
         name: String,
         result: Result<Repo, String>,
@@ -453,6 +492,7 @@ enum Msg {
     },
     Readme {
         name: String,
+        branch: String,
         result: Result<ReadmeContent, String>,
     },
     StarToggled {
@@ -615,11 +655,27 @@ pub struct App {
     pub tree_scroll_max: u16,
     pub readme: Option<ReadmeContent>,
     pub readme_for: Option<String>,
+    pub readme_branch: String,
     pub readme_fetched_at: Option<i64>,
     pub readme_loading: Option<String>,
     pub readme_scroll: u16,
     pub readme_scroll_max: u16,
     pub readme_fullscreen: bool,
+
+    pub branches: Vec<Branch>,
+    pub branches_loading: Option<String>,
+    pub branches_fetched_at: Option<i64>,
+    pub branch_selected: usize,
+    pub branch_offset: usize,
+    pub branch_viewport: usize,
+
+    pub commits: Vec<Commit>,
+    pub commits_loading: Option<(String, String)>,
+    pub commits_fetched_at: Option<i64>,
+    pub commit_repo: Option<Repo>,
+    pub commit_branch: String,
+    pub commit_selected: usize,
+    pub commit_scroll: u16,
 
     pub repo_edit: Option<RepoEdit>,
     pub settings_row: usize,
@@ -794,11 +850,25 @@ impl App {
             tree_scroll_max: 0,
             readme: None,
             readme_for: None,
+            readme_branch: String::new(),
             readme_fetched_at: None,
             readme_loading: None,
             readme_scroll: 0,
             readme_scroll_max: 0,
             readme_fullscreen: false,
+            branches: Vec::new(),
+            branches_loading: None,
+            branches_fetched_at: None,
+            branch_selected: 0,
+            branch_offset: 0,
+            branch_viewport: 12,
+            commits: Vec::new(),
+            commits_loading: None,
+            commits_fetched_at: None,
+            commit_repo: None,
+            commit_branch: String::new(),
+            commit_selected: 0,
+            commit_scroll: 0,
             repo_edit: None,
             settings_row: 0,
             editing_proxy: false,
@@ -1080,6 +1150,67 @@ impl App {
                     Err(error) => self.set_status(StatusKind::Error, &error),
                 }
             }
+            Msg::Commits {
+                name,
+                branch,
+                result,
+            } => {
+                if self.commits_loading.as_ref() == Some(&(name.clone(), branch.clone())) {
+                    self.commits_loading = None;
+                }
+                let current = self.commit_repo.as_ref().map(Repo::display_full_name);
+                if current.as_deref() != Some(name.as_str()) || self.commit_branch != branch {
+                    return;
+                }
+                match result {
+                    Ok(commits) => {
+                        let _ = self
+                            .cache
+                            .save(&commits_cache_key(&name, &branch), &commits);
+                        self.commits = commits;
+                        self.commits_fetched_at = Some(now_epoch());
+                        self.clamp_commit_selection();
+                        self.commit_scroll = 0;
+                        self.refresh_cache_stats();
+                        if self.page == Page::Commits {
+                            self.set_status(
+                                StatusKind::Ok,
+                                &format!("{} 个提交已经摆好啦喵~", self.commits.len()),
+                            );
+                        }
+                    }
+                    Err(error) => {
+                        if self.page == Page::Commits {
+                            self.set_status(StatusKind::Error, &error);
+                        }
+                    }
+                }
+            }
+            Msg::Branches { name, result } => {
+                if self.branches_loading.as_deref() == Some(name.as_str()) {
+                    self.branches_loading = None;
+                }
+                match result {
+                    Ok(branches) => {
+                        let _ = self.cache.save(&branches_cache_key(&name), &branches);
+                        self.branches = branches;
+                        self.branches_fetched_at = Some(now_epoch());
+                        self.clamp_branch_selection();
+                        self.refresh_cache_stats();
+                    }
+                    Err(error) => {
+                        if self
+                            .page_repo
+                            .as_ref()
+                            .map(Repo::display_full_name)
+                            .as_deref()
+                            == Some(name.as_str())
+                        {
+                            self.set_status(StatusKind::Error, &error);
+                        }
+                    }
+                }
+            }
             Msg::Detail { name, result } => {
                 if self.detail_loading.as_deref() == Some(name.as_str()) {
                     self.detail_loading = None;
@@ -1140,10 +1271,9 @@ impl App {
                     Ok(tree) => {
                         let _ = self.cache.save(&tree_cache_key(&name, &branch), &tree);
                         self.refresh_cache_stats();
-                        if self.matches_current_repo(&name) {
+                        if self.matches_current_repo(&name) && branch == self.tree_branch {
                             self.tree = Some(tree);
                             self.tree_for = Some(name);
-                            self.tree_branch = branch;
                             self.tree_fetched_at = Some(now_epoch());
                         }
                     }
@@ -1154,22 +1284,26 @@ impl App {
                     }
                 }
             }
-            Msg::Readme { name, result } => {
+            Msg::Readme {
+                name,
+                branch,
+                result,
+            } => {
                 if self.readme_loading.as_deref() == Some(name.as_str()) {
                     self.readme_loading = None;
                 }
                 match result {
                     Ok(readme) => {
-                        let _ = self.cache.save(&readme_cache_key(&name), &readme);
+                        let _ = self.cache.save(&readme_cache_key(&name, &branch), &readme);
                         self.refresh_cache_stats();
-                        if self.matches_current_repo(&name) {
+                        if self.matches_current_repo(&name) && branch == self.readme_branch {
                             self.readme = Some(readme);
                             self.readme_for = Some(name);
                             self.readme_fetched_at = Some(now_epoch());
                         }
                     }
                     Err(error) => {
-                        if self.matches_current_repo(&name) {
+                        if self.matches_current_repo(&name) && branch == self.readme_branch {
                             self.set_status(StatusKind::Error, &error);
                         }
                     }
@@ -1507,11 +1641,22 @@ impl App {
 
     fn apply_updated_repo(&mut self, repo: Repo) {
         let name = repo.display_full_name();
+        let old_name = self
+            .page_repo
+            .as_ref()
+            .or(self.detail.as_ref())
+            .map(Repo::display_full_name)
+            .unwrap_or_else(|| name.clone());
         let key = repo.cache_key();
         let _ = self.cache.save(&key, &repo);
-        for list in [&mut self.repos, &mut self.starred, &mut self.search_results] {
+        for list in [
+            &mut self.repos,
+            &mut self.starred,
+            &mut self.search_results,
+            &mut self.trending,
+        ] {
             for item in list.iter_mut() {
-                if item.display_full_name() == name {
+                if item.id == repo.id || item.display_full_name() == old_name {
                     *item = repo.clone();
                 }
             }
@@ -1519,21 +1664,48 @@ impl App {
         if self
             .detail
             .as_ref()
-            .is_some_and(|detail| detail.display_full_name() == name)
+            .is_some_and(|detail| detail.id == repo.id || detail.display_full_name() == old_name)
         {
             self.detail = Some(repo.clone());
             self.detail_fetched_at = Some(now_epoch());
         }
-        if self
-            .page_repo
-            .as_ref()
-            .is_some_and(|page_repo| page_repo.display_full_name() == name)
-        {
-            self.page_repo = Some(repo);
+        if self.page_repo.as_ref().is_some_and(|page_repo| {
+            page_repo.id == repo.id || page_repo.display_full_name() == old_name
+        }) {
+            self.page_repo = Some(repo.clone());
+        }
+        if self.issue_repo.as_ref().is_some_and(|issue_repo| {
+            issue_repo.id == repo.id || issue_repo.display_full_name() == old_name
+        }) {
+            self.issue_repo = Some(repo.clone());
+        }
+        if self.commit_repo.as_ref().is_some_and(|commit_repo| {
+            commit_repo.id == repo.id || commit_repo.display_full_name() == old_name
+        }) {
+            self.commit_repo = Some(repo.clone());
+        }
+        if self.action_repo.as_deref() == Some(old_name.as_str()) {
+            self.action_repo = Some(name.clone());
         }
         if let Some(login) = self.login.clone() {
             let _ = self.cache.save(&repos_cache_key(&login), &self.repos);
             let _ = self.cache.save(&starred_cache_key(&login), &self.starred);
+        }
+        if name != old_name {
+            self.tree = None;
+            self.readme = None;
+            self.commits.clear();
+            self.branches.clear();
+            self.branches_fetched_at = None;
+            self.tree_fetched_at = None;
+            self.readme_fetched_at = None;
+            self.commits_fetched_at = None;
+            if self.page == Page::Repo {
+                self.schedule_repo_extras(&repo, true);
+            }
+            if self.page == Page::Commits {
+                self.fetch_commits(true);
+            }
         }
         self.refresh_cache_stats();
         self.clamp_selection();
@@ -1593,6 +1765,7 @@ impl App {
                 .and_then(|name| self.repo_by_name(name))
                 .or_else(|| self.page_repo.clone()),
             Page::Issues => self.issue_repo.clone(),
+            Page::Commits => self.commit_repo.clone(),
             Page::Notifications | Page::Settings => None,
             _ => self
                 .detail
@@ -2418,7 +2591,7 @@ impl App {
         let Some(edit) = self.repo_edit.as_mut() else {
             return;
         };
-        let next = (edit.row as i32 + delta).clamp(0, 4) as usize;
+        let next = (edit.row as i32 + delta).clamp(0, 8) as usize;
         edit.row = next;
     }
 
@@ -2434,6 +2607,18 @@ impl App {
         }
     }
 
+    pub fn toggle_repo_flag(&mut self, row: usize) {
+        let Some(edit) = self.repo_edit.as_mut() else {
+            return;
+        };
+        match row {
+            6 => edit.has_issues = !edit.has_issues,
+            7 => edit.has_discussions = !edit.has_discussions,
+            8 => edit.has_wiki = !edit.has_wiki,
+            _ => {}
+        }
+    }
+
     pub fn save_repo_edit(&mut self) {
         let Some(edit) = self.repo_edit.as_mut() else {
             return;
@@ -2445,17 +2630,30 @@ impl App {
         edit.error = None;
         edit.saving = true;
         let full_name = edit.full_name.clone();
+        let name = edit.name.value.trim().to_string();
+        if name.is_empty() {
+            edit.saving = false;
+            edit.error = Some("仓库名不能空着呀喵~".to_string());
+            return;
+        }
         let description = edit.description.value.trim().to_string();
         let homepage = edit.homepage.value.trim().to_string();
         let topics = edit.topics_list();
         let private = edit.private;
         let archived = edit.archived;
+        let has_issues = edit.has_issues;
+        let has_discussions = edit.has_discussions;
+        let has_wiki = edit.has_wiki;
         let patch = serde_json::json!({
+            "name": name,
             "description": if description.is_empty() { serde_json::Value::Null } else { serde_json::Value::String(description) },
             "homepage": if homepage.is_empty() { serde_json::Value::Null } else { serde_json::Value::String(homepage) },
             "topics": topics,
             "private": private,
             "archived": archived,
+            "has_issues": has_issues,
+            "has_discussions": has_discussions,
+            "has_wiki": has_wiki,
         });
         let tx = self.tx.clone();
         let client = self.client.clone();
@@ -2474,56 +2672,50 @@ impl App {
             return;
         }
         if edit.editing {
+            let row = edit.row;
             match key.code {
                 KeyCode::Enter | KeyCode::Char('\r') | KeyCode::Char('\n') => {
                     edit.editing = false;
-                    if edit.row < 2 {
+                    if row < 3 {
                         edit.row += 1;
                     }
                 }
                 KeyCode::Esc => edit.editing = false,
-                KeyCode::Backspace => match edit.row {
-                    0 => edit.description.backspace(),
-                    1 => edit.homepage.backspace(),
-                    2 => edit.topics.backspace(),
-                    _ => {}
-                },
-                KeyCode::Delete => match edit.row {
-                    0 => edit.description.delete(),
-                    1 => edit.homepage.delete(),
-                    2 => edit.topics.delete(),
-                    _ => {}
-                },
-                KeyCode::Left => match edit.row {
-                    0 => edit.description.left(),
-                    1 => edit.homepage.left(),
-                    2 => edit.topics.left(),
-                    _ => {}
-                },
-                KeyCode::Right => match edit.row {
-                    0 => edit.description.right(),
-                    1 => edit.homepage.right(),
-                    2 => edit.topics.right(),
-                    _ => {}
-                },
-                KeyCode::Home => match edit.row {
-                    0 => edit.description.home(),
-                    1 => edit.homepage.home(),
-                    2 => edit.topics.home(),
-                    _ => {}
-                },
-                KeyCode::End => match edit.row {
-                    0 => edit.description.end(),
-                    1 => edit.homepage.end(),
-                    2 => edit.topics.end(),
-                    _ => {}
-                },
-                KeyCode::Char(ch) => match edit.row {
-                    0 => edit.description.insert(ch),
-                    1 => edit.homepage.insert(ch),
-                    2 => edit.topics.insert(ch),
-                    _ => {}
-                },
+                KeyCode::Backspace => {
+                    if let Some(input) = repo_edit_input(edit, row) {
+                        input.backspace();
+                    }
+                }
+                KeyCode::Delete => {
+                    if let Some(input) = repo_edit_input(edit, row) {
+                        input.delete();
+                    }
+                }
+                KeyCode::Left => {
+                    if let Some(input) = repo_edit_input(edit, row) {
+                        input.left();
+                    }
+                }
+                KeyCode::Right => {
+                    if let Some(input) = repo_edit_input(edit, row) {
+                        input.right();
+                    }
+                }
+                KeyCode::Home => {
+                    if let Some(input) = repo_edit_input(edit, row) {
+                        input.home();
+                    }
+                }
+                KeyCode::End => {
+                    if let Some(input) = repo_edit_input(edit, row) {
+                        input.end();
+                    }
+                }
+                KeyCode::Char(ch) => {
+                    if let Some(input) = repo_edit_input(edit, row) {
+                        input.insert(ch);
+                    }
+                }
                 _ => {}
             }
             return;
@@ -2543,26 +2735,28 @@ impl App {
             }
             KeyCode::Char('G') | KeyCode::End => {
                 if let Some(edit) = self.repo_edit.as_mut() {
-                    edit.row = 4;
+                    edit.row = 8;
                 }
             }
             KeyCode::Enter | KeyCode::Char('\r') | KeyCode::Char('\n') => match row {
-                0..=2 => {
+                0..=3 => {
                     if let Some(edit) = self.repo_edit.as_mut() {
                         edit.editing = true;
                     }
                 }
-                3 => self.toggle_repo_visibility(),
-                4 => self.toggle_repo_archived(),
+                4 => self.toggle_repo_visibility(),
+                5 => self.toggle_repo_archived(),
+                6 => self.toggle_repo_flag(6),
+                7 => self.toggle_repo_flag(7),
+                8 => self.toggle_repo_flag(8),
                 _ => {}
             },
-            KeyCode::Left | KeyCode::Right => {
-                if row == 3 {
-                    self.toggle_repo_visibility();
-                } else if row == 4 {
-                    self.toggle_repo_archived();
-                }
-            }
+            KeyCode::Left | KeyCode::Right => match row {
+                4 => self.toggle_repo_visibility(),
+                5 => self.toggle_repo_archived(),
+                6..=8 => self.toggle_repo_flag(row),
+                _ => {}
+            },
             KeyCode::Char('s') => self.save_repo_edit(),
             _ => {}
         }
@@ -2635,6 +2829,12 @@ impl App {
         }
         if self.search_loading && self.page == Page::Search {
             return Some("人家正在翻找仓库喵~...");
+        }
+        if self.commits_loading.is_some() && self.page == Page::Commits {
+            return Some("人家正在翻提交记录喵~...");
+        }
+        if self.branches_loading.is_some() && self.overlay == Some(Overlay::Branches) {
+            return Some("人家正在取分支列表喵~...");
         }
         if self.trending_loading && self.page == Page::Trending {
             return Some("人家正在打听最近的热门仓库喵~...");
@@ -3381,7 +3581,7 @@ impl App {
 
     fn schedule_repo_extras(&mut self, repo: &Repo, force: bool) {
         let name = repo.display_full_name();
-        let branch = repo.default_branch.clone();
+        let branch = self.branch_for(repo);
         if self.config.show_file_tree {
             if self.tree_for.as_deref() != Some(name.as_str()) || self.tree_branch != branch {
                 self.load_tree_cache(repo);
@@ -3395,7 +3595,7 @@ impl App {
             }
         }
         if self.config.show_readme {
-            if self.readme_for.as_deref() != Some(name.as_str()) {
+            if self.readme_for.as_deref() != Some(name.as_str()) || self.readme_branch != branch {
                 self.load_readme_cache(repo);
             }
             let fresh = self
@@ -3414,9 +3614,17 @@ impl App {
         }
     }
 
+    pub fn branch_for(&self, repo: &Repo) -> String {
+        if self.tree_branch.trim().is_empty() {
+            repo.default_branch.clone()
+        } else {
+            self.tree_branch.clone()
+        }
+    }
+
     fn load_tree_cache(&mut self, repo: &Repo) {
         let name = repo.display_full_name();
-        let branch = repo.default_branch.clone();
+        let branch = self.branch_for(repo);
         self.tree = None;
         self.tree_fetched_at = None;
         self.tree_for = Some(name.clone());
@@ -3434,12 +3642,17 @@ impl App {
 
     fn load_readme_cache(&mut self, repo: &Repo) {
         let name = repo.display_full_name();
+        let branch = self.branch_for(repo);
         self.readme = None;
         self.readme_fetched_at = None;
         self.readme_for = Some(name.clone());
+        self.readme_branch = branch.clone();
         self.readme_scroll = 0;
         self.readme_scroll_max = 0;
-        if let Some(cached) = self.cache.load::<ReadmeContent>(&readme_cache_key(&name)) {
+        if let Some(cached) = self
+            .cache
+            .load::<ReadmeContent>(&readme_cache_key(&name, &branch))
+        {
             self.readme = Some(cached.data);
             self.readme_fetched_at = Some(cached.fetched_at);
         }
@@ -3453,7 +3666,7 @@ impl App {
         self.tree_loading = Some(name.clone());
         let tx = self.tx.clone();
         let client = self.client.clone();
-        let branch = repo.default_branch.clone();
+        let branch = self.branch_for(repo);
         let private = repo.private;
         std::thread::spawn(move || {
             let result = client.file_tree(&name, &branch, private);
@@ -3473,11 +3686,245 @@ impl App {
         self.readme_loading = Some(name.clone());
         let tx = self.tx.clone();
         let client = self.client.clone();
+        let branch = self.branch_for(repo);
         let private = repo.private;
         std::thread::spawn(move || {
-            let result = client.readme(&name, private);
-            let _ = tx.send(Msg::Readme { name, result });
+            let result = client.readme(&name, &branch, private);
+            let _ = tx.send(Msg::Readme {
+                name,
+                branch,
+                result,
+            });
         });
+    }
+
+    fn load_branches_cache(&mut self, repo: &Repo) {
+        let name = repo.display_full_name();
+        self.branches.clear();
+        self.branches_fetched_at = None;
+        self.branch_selected = 0;
+        self.branch_offset = 0;
+        if let Some(cached) = self.cache.load::<Vec<Branch>>(&branches_cache_key(&name)) {
+            self.branches = cached.data;
+            self.branches_fetched_at = Some(cached.fetched_at);
+        }
+        self.clamp_branch_selection();
+    }
+
+    fn fetch_branches(&mut self, force: bool) {
+        let Some(repo) = self.context_repo() else {
+            return;
+        };
+        let name = repo.display_full_name();
+        if self.branches_loading.as_deref() == Some(name.as_str()) {
+            return;
+        }
+        let fresh = self
+            .branches_fetched_at
+            .map(|at| now_epoch() - at <= self.config.detail_ttl_secs as i64)
+            .unwrap_or(false);
+        if !force && fresh {
+            return;
+        }
+        self.branches_loading = Some(name.clone());
+        let tx = self.tx.clone();
+        let client = self.client.clone();
+        let private = repo.private;
+        std::thread::spawn(move || {
+            let result = client.branches(&name, private);
+            let _ = tx.send(Msg::Branches { name, result });
+        });
+    }
+
+    pub fn open_branches(&mut self) {
+        let Some(repo) = self.context_repo() else {
+            self.set_status(StatusKind::Info, "先挑一个仓库嘛喵~");
+            return;
+        };
+        let current = self.branch_for(&repo);
+        if self.branches_fetched_at.is_none() {
+            self.load_branches_cache(&repo);
+        }
+        self.branch_selected = self
+            .branches
+            .iter()
+            .position(|branch| branch.name == current)
+            .unwrap_or(0);
+        let viewport = self.branch_viewport.max(1);
+        self.branch_offset = self.branch_selected.saturating_sub(viewport - 1);
+        self.overlay = Some(Overlay::Branches);
+        self.fetch_branches(false);
+    }
+
+    pub fn move_branch_selection(&mut self, delta: i32) {
+        let len = self.branches.len();
+        if len == 0 {
+            return;
+        }
+        let next = (self.branch_selected as i32 + delta).clamp(0, len as i32 - 1) as usize;
+        self.branch_selected = next;
+        let viewport = self.branch_viewport.max(1);
+        if next < self.branch_offset {
+            self.branch_offset = next;
+        } else if next >= self.branch_offset + viewport {
+            self.branch_offset = next + 1 - viewport;
+        }
+    }
+
+    pub fn select_branch(&mut self, branch: String) {
+        let Some(repo) = self.context_repo() else {
+            return;
+        };
+        if branch.is_empty() {
+            return;
+        }
+        self.overlay = None;
+        if branch == self.branch_for(&repo) {
+            return;
+        }
+        self.tree_branch = branch.clone();
+        self.readme_branch = branch.clone();
+        self.commit_branch = branch.clone();
+        self.tree = None;
+        self.tree_for = None;
+        self.tree_fetched_at = None;
+        self.tree_loading = None;
+        self.readme = None;
+        self.readme_for = None;
+        self.readme_fetched_at = None;
+        self.readme_loading = None;
+        self.commits.clear();
+        self.commits_fetched_at = None;
+        self.commits_loading = None;
+        self.commit_selected = 0;
+        self.tree_scroll = 0;
+        self.readme_scroll = 0;
+        self.commit_scroll = 0;
+        self.set_status(StatusKind::Ok, &format!("切到 {branch} 分支啦喵~"));
+        self.schedule_repo_extras(&repo, true);
+        if matches!(self.page, Page::Commits) {
+            self.fetch_commits(true);
+        }
+    }
+
+    pub fn open_commits(&mut self) {
+        let Some(repo) = self.context_repo() else {
+            self.set_status(StatusKind::Info, "先挑一个仓库嘛喵~");
+            return;
+        };
+        let name = repo.display_full_name();
+        let branch = self.branch_for(&repo);
+        if self
+            .commit_repo
+            .as_ref()
+            .map(Repo::display_full_name)
+            .as_deref()
+            != Some(name.as_str())
+            || self.commit_branch != branch
+        {
+            self.commits.clear();
+            self.commits_fetched_at = None;
+            self.commit_selected = 0;
+            self.commit_scroll = 0;
+            self.commit_repo = Some(repo);
+            self.commit_branch = branch.clone();
+            if let Some(cached) = self
+                .cache
+                .load::<Vec<Commit>>(&commits_cache_key(&name, &branch))
+            {
+                self.commits = cached.data;
+                self.commits_fetched_at = Some(cached.fetched_at);
+            }
+        }
+        self.return_page = return_page_when_opening(self.page, self.return_page);
+        self.page = Page::Commits;
+        self.clamp_commit_selection();
+        self.fetch_commits(false);
+    }
+
+    fn fetch_commits(&mut self, force: bool) {
+        let Some(repo) = self.commit_repo.clone() else {
+            return;
+        };
+        let name = repo.display_full_name();
+        let branch = self.commit_branch.clone();
+        let key = (name.clone(), branch.clone());
+        if self.commits_loading.as_ref() == Some(&key) {
+            return;
+        }
+        let fresh = self
+            .commits_fetched_at
+            .map(|at| now_epoch() - at <= self.config.detail_ttl_secs as i64)
+            .unwrap_or(false);
+        if !force && fresh {
+            return;
+        }
+        self.commits_loading = Some(key);
+        let tx = self.tx.clone();
+        let client = self.client.clone();
+        let limit = self.config.commit_limit.clamp(10, 100);
+        let private = repo.private;
+        std::thread::spawn(move || {
+            let result = client.commits(&name, &branch, limit, private);
+            let _ = tx.send(Msg::Commits {
+                name,
+                branch,
+                result,
+            });
+        });
+    }
+
+    fn clamp_branch_selection(&mut self) {
+        if self.branches.is_empty() {
+            self.branch_selected = 0;
+            self.branch_offset = 0;
+        } else {
+            self.branch_selected = self.branch_selected.min(self.branches.len() - 1);
+        }
+    }
+
+    fn clamp_commit_selection(&mut self) {
+        if self.commits.is_empty() {
+            self.commit_selected = 0;
+        } else {
+            self.commit_selected = self.commit_selected.min(self.commits.len() - 1);
+        }
+    }
+
+    pub fn selected_commit(&self) -> Option<Commit> {
+        self.commits.get(self.commit_selected).cloned()
+    }
+
+    pub fn move_commit_selection(&mut self, delta: i32) {
+        if self.commits.is_empty() {
+            return;
+        }
+        self.commit_selected =
+            (self.commit_selected as i32 + delta).clamp(0, self.commits.len() as i32 - 1) as usize;
+        self.commit_scroll = 0;
+    }
+
+    pub fn select_commit(&mut self, index: usize) {
+        if self.commits.is_empty() {
+            return;
+        }
+        self.commit_selected = index.min(self.commits.len() - 1);
+        self.commit_scroll = 0;
+    }
+
+    pub fn open_selected_commit(&mut self) {
+        let Some(commit) = self.selected_commit() else {
+            self.set_status(StatusKind::Info, "先挑一个提交嘛喵~");
+            return;
+        };
+        self.open_url(&commit.html_url);
+    }
+
+    pub fn commit_repo_label(&self) -> String {
+        self.commit_repo
+            .as_ref()
+            .map(|repo| format!("{} · {}", repo.display_full_name(), self.commit_branch))
+            .unwrap_or_else(|| "还没有选仓库".to_string())
     }
 
     pub fn refresh_current(&mut self) {
@@ -3505,6 +3952,7 @@ impl App {
                 self.schedule_action_jobs(true);
             }
             Page::Issues => self.fetch_issues(true),
+            Page::Commits => self.fetch_commits(true),
             Page::ReleaseDetail => {
                 if let Some(repo) = self.page_repo.clone() {
                     self.schedule_repo_extras(&repo, true);
@@ -3606,6 +4054,20 @@ impl App {
         self.readme_for = None;
         self.tree_fetched_at = None;
         self.readme_fetched_at = None;
+        self.tree_branch = repo.default_branch.clone();
+        self.readme_branch = repo.default_branch.clone();
+        self.commit_branch = repo.default_branch.clone();
+        self.tree_loading = None;
+        self.readme_loading = None;
+        self.commits.clear();
+        self.commits_fetched_at = None;
+        self.commits_loading = None;
+        self.commit_repo = None;
+        self.commit_selected = 0;
+        self.commit_scroll = 0;
+        self.branches.clear();
+        self.branches_fetched_at = None;
+        self.branches_loading = None;
         self.schedule_repo_extras(&repo, false);
         self.pending_detail = Some(PendingDetail {
             repo,
@@ -4058,10 +4520,15 @@ impl App {
         let Some(repo) = self.page_repo.clone().or_else(|| self.selected_repo()) else {
             return;
         };
-        let branch = if repo.default_branch.is_empty() {
-            "main"
+        let branch = if self.tree_branch.is_empty() {
+            repo.default_branch.clone()
         } else {
-            &repo.default_branch
+            self.tree_branch.clone()
+        };
+        let branch = if branch.is_empty() {
+            "main".to_string()
+        } else {
+            branch
         };
         let kind = if directory { "tree" } else { "blob" };
         let url = format!(
@@ -4079,6 +4546,14 @@ impl App {
             let max = choices.saturating_sub(viewport);
             let next = self.language_offset as i32 + delta;
             self.language_offset = next.clamp(0, max as i32) as usize;
+            return;
+        }
+        if self.overlay == Some(Overlay::Branches) {
+            let len = self.branches.len();
+            let viewport = self.branch_viewport.max(1);
+            let max = len.saturating_sub(viewport);
+            let next = self.branch_offset as i32 + delta;
+            self.branch_offset = next.clamp(0, max as i32) as usize;
             return;
         }
         if self.overlay.is_some() {
@@ -4107,7 +4582,7 @@ impl App {
         }
         if self.page == Page::Settings {
             if delta > 0 {
-                self.settings_row = (self.settings_row + 1).min(9);
+                self.settings_row = (self.settings_row + 1).min(10);
             } else {
                 self.settings_row = self.settings_row.saturating_sub(1);
             }
@@ -4204,6 +4679,33 @@ impl App {
                     }
                 }
                 KeyCode::Enter => self.choose_language_selection(),
+                _ => {}
+            }
+            return;
+        }
+        if self.overlay == Some(Overlay::Branches) {
+            match key.code {
+                KeyCode::Esc | KeyCode::Char('q') => self.overlay = None,
+                KeyCode::Up | KeyCode::Char('k') => self.move_branch_selection(-1),
+                KeyCode::Down | KeyCode::Char('j') => self.move_branch_selection(1),
+                KeyCode::Char('g') | KeyCode::Home => {
+                    self.branch_selected = 0;
+                    self.branch_offset = 0;
+                }
+                KeyCode::Char('G') | KeyCode::End => {
+                    let len = self.branches.len();
+                    if len > 0 {
+                        self.branch_selected = len - 1;
+                        let viewport = self.branch_viewport.max(1);
+                        self.branch_offset = len.saturating_sub(viewport);
+                    }
+                }
+                KeyCode::Enter => {
+                    if let Some(branch) = self.branches.get(self.branch_selected).cloned() {
+                        self.select_branch(branch.name);
+                    }
+                }
+                KeyCode::Char('r') => self.fetch_branches(true),
                 _ => {}
             }
             return;
@@ -4343,7 +4845,7 @@ impl App {
                     return;
                 }
                 KeyCode::Tab => {
-                    self.settings_row = (self.settings_row + 1).min(9);
+                    self.settings_row = (self.settings_row + 1).min(10);
                     return;
                 }
                 KeyCode::BackTab => {
@@ -4451,10 +4953,13 @@ impl App {
             KeyCode::Char('o') => match self.page {
                 Page::Actions => self.open_action_run(None),
                 Page::Issues => self.open_selected_issue(),
+                Page::Commits => self.open_selected_commit(),
                 Page::ReleaseDetail => self.open_selected_release_page(),
                 Page::Notifications => self.open_selected_notification(),
                 _ => self.open_current(),
             },
+            KeyCode::Char('b') if self.page.is_repo_page() => self.open_branches(),
+            KeyCode::Char('C') if self.page.is_repo_page() => self.open_commits(),
             KeyCode::Char('a') => self.open_actions(),
             KeyCode::Char('i') => self.open_issues(IssueKind::All),
             KeyCode::Char('R') | KeyCode::Char('x') if self.page == Page::Actions => {
@@ -4481,6 +4986,7 @@ impl App {
                 Page::Account => self.open_profile(),
                 Page::Actions => self.open_action_run(None),
                 Page::Issues => self.open_selected_issue(),
+                Page::Commits => self.open_selected_commit(),
                 Page::ReleaseDetail => self.download_selected_release_asset(),
                 Page::Notifications => self.open_selected_notification(),
                 _ => self.open_repo_page(),
@@ -4511,6 +5017,7 @@ impl App {
             Page::Repo => self.scroll_repo_pane(-1),
             Page::Actions => self.move_action_selection(-1),
             Page::Issues => self.move_issue_selection(-1),
+            Page::Commits => self.move_commit_selection(-1),
             Page::ReleaseDetail => self.move_release_asset_selection(-1),
             Page::Notifications => self.move_notification_selection(-1),
             Page::Settings => self.settings_row = self.settings_row.saturating_sub(1),
@@ -4523,9 +5030,10 @@ impl App {
             Page::Repo => self.scroll_repo_pane(1),
             Page::Actions => self.move_action_selection(1),
             Page::Issues => self.move_issue_selection(1),
+            Page::Commits => self.move_commit_selection(1),
             Page::ReleaseDetail => self.move_release_asset_selection(1),
             Page::Notifications => self.move_notification_selection(1),
-            Page::Settings => self.settings_row = (self.settings_row + 1).min(9),
+            Page::Settings => self.settings_row = (self.settings_row + 1).min(10),
             _ => self.move_selection(1),
         }
     }
@@ -4536,6 +5044,7 @@ impl App {
             Page::Settings => self.settings_row = 0,
             Page::Actions => self.select_action_run(0),
             Page::Issues => self.select_issue(0),
+            Page::Commits => self.select_commit(0),
             Page::ReleaseDetail => self.select_release_asset(0),
             Page::Notifications => self.notification_selected = 0,
             Page::Account => {}
@@ -4546,13 +5055,17 @@ impl App {
     fn key_end(&mut self) {
         match self.page {
             Page::Repo => self.set_repo_pane_scroll(u16::MAX),
-            Page::Settings => self.settings_row = 9,
+            Page::Settings => self.settings_row = 10,
             Page::Actions => {
                 self.select_action_run(self.action_runs.len().saturating_sub(1));
             }
             Page::Issues => {
                 let last = self.issue_indices().len().saturating_sub(1);
                 self.select_issue(last);
+            }
+            Page::Commits => {
+                let last = self.commits.len().saturating_sub(1);
+                self.select_commit(last);
             }
             Page::ReleaseDetail => {
                 let last = self
@@ -4576,6 +5089,7 @@ impl App {
                 self.action_jobs_scroll = self.action_jobs_scroll.saturating_sub(10);
             }
             Page::Issues => self.move_issue_selection(-5),
+            Page::Commits => self.move_commit_selection(-5),
             Page::ReleaseDetail => {
                 self.release_scroll = self.release_scroll.saturating_sub(10);
             }
@@ -4594,11 +5108,12 @@ impl App {
                     (self.action_jobs_scroll + 10).min(self.action_jobs_scroll_max);
             }
             Page::Issues => self.move_issue_selection(5),
+            Page::Commits => self.move_commit_selection(5),
             Page::ReleaseDetail => {
                 self.release_scroll = (self.release_scroll + 10).min(self.release_scroll_max);
             }
             Page::Notifications => self.move_notification_selection(5),
-            Page::Settings => self.settings_row = (self.settings_row + 3).min(9),
+            Page::Settings => self.settings_row = (self.settings_row + 3).min(10),
             Page::Account => {}
             _ => self.next_list_page(),
         }
@@ -4700,6 +5215,7 @@ impl App {
             5 => self.adjust_ttl(TtlKind::Repositories, direction),
             6 => self.adjust_ttl(TtlKind::Detail, direction),
             7 => self.adjust_ttl(TtlKind::Search, direction),
+            8 => self.adjust_commit_limit(direction),
             _ => {}
         }
     }
@@ -4714,10 +5230,22 @@ impl App {
             5 => self.adjust_ttl(TtlKind::Repositories, 1),
             6 => self.adjust_ttl(TtlKind::Detail, 1),
             7 => self.adjust_ttl(TtlKind::Search, 1),
-            8 => self.clear_cache(),
-            9 => self.save_config(true),
+            8 => self.adjust_commit_limit(1),
+            9 => self.clear_cache(),
+            10 => self.save_config(true),
             _ => {}
         }
+    }
+
+    pub fn adjust_commit_limit(&mut self, direction: i32) {
+        let step = 10_i64 * i64::from(direction.signum());
+        let next = (self.config.commit_limit as i64 + step).clamp(10, 100);
+        self.config.commit_limit = next as usize;
+        self.config_dirty = true;
+        self.set_status(
+            StatusKind::Info,
+            &format!("提交页每次读 {} 条，记得到设置页保存哦喵~", next),
+        );
     }
 
     pub fn cycle_theme(&mut self, direction: i32) {
@@ -4914,7 +5442,7 @@ impl App {
     }
 
     pub fn handle_settings_row(&mut self, row: usize) {
-        self.settings_row = row.min(9);
+        self.settings_row = row.min(10);
     }
 
     pub fn handle_paste(&mut self, text: &str) {
@@ -4924,9 +5452,10 @@ impl App {
             {
                 for ch in text.chars().filter(|ch| *ch != '\n' && *ch != '\r') {
                     match edit.row {
-                        0 => edit.description.insert(ch),
-                        1 => edit.homepage.insert(ch),
-                        2 => edit.topics.insert(ch),
+                        0 => edit.name.insert(ch),
+                        1 => edit.description.insert(ch),
+                        2 => edit.homepage.insert(ch),
+                        3 => edit.topics.insert(ch),
                         _ => {}
                     }
                 }
@@ -4992,6 +5521,17 @@ impl App {
             MouseEventKind::Down(MouseButton::Left) => {
                 if self.overlay == Some(Overlay::Help) {
                     self.overlay = None;
+                    return;
+                }
+                if self.overlay == Some(Overlay::Branches) {
+                    if let Some(hit) = self.hit_at(mouse.column, mouse.row).cloned() {
+                        self.handle_action(hit.action);
+                    } else if !self
+                        .layout
+                        .contains(self.layout.overlay, mouse.column, mouse.row)
+                    {
+                        self.overlay = None;
+                    }
                     return;
                 }
                 if self.overlay == Some(Overlay::Languages) {
@@ -5067,6 +5607,10 @@ impl App {
             Action::SaveConfig => self.save_config(true),
             Action::OpenDownloadDir => self.open_download_dir(),
             Action::SetSettingsRow(row) => self.handle_settings_row(row),
+            Action::CommitLimit(direction) => {
+                self.settings_row = 8;
+                self.adjust_commit_limit(direction);
+            }
             Action::OpenLanguages => self.open_languages(),
             Action::DownloadAsset { release, asset } => self.download_asset(release, asset),
             Action::DownloadSource => self.download_source_zip(),
@@ -5085,18 +5629,24 @@ impl App {
             Action::OpenRepoEdit => self.open_repo_edit(),
             Action::EditRepoRow(row) => {
                 if let Some(edit) = self.repo_edit.as_mut() {
-                    edit.row = row.min(4);
-                    edit.editing = row <= 2;
-                    if row == 3 {
-                        edit.private = !edit.private;
-                    } else if row == 4 {
-                        edit.archived = !edit.archived;
+                    edit.row = row.min(8);
+                    edit.editing = row <= 3;
+                    match row {
+                        4 => edit.private = !edit.private,
+                        5 => edit.archived = !edit.archived,
+                        6 => edit.has_issues = !edit.has_issues,
+                        7 => edit.has_discussions = !edit.has_discussions,
+                        8 => edit.has_wiki = !edit.has_wiki,
+                        _ => {}
                     }
                 }
             }
             Action::SaveRepoEdit => self.save_repo_edit(),
             Action::RefreshRateLimit => self.fetch_rate_limit(true),
             Action::OpenActions => self.open_actions(),
+            Action::OpenBranches => self.open_branches(),
+            Action::SelectBranch(branch) => self.select_branch(branch),
+            Action::OpenCommits => self.open_commits(),
             Action::SelectActionRun(index) => self.select_action_run(index),
             Action::OpenIssues => self.open_issues(IssueKind::Issues),
             Action::OpenPullRequests => self.open_issues(IssueKind::PullRequests),
@@ -5114,6 +5664,7 @@ impl App {
                     self.open_selected_issue();
                 }
             }
+            Action::SelectCommit(index) => self.select_commit(index),
             Action::SetIssueKind(kind) => self.set_issue_kind(kind),
             Action::SetIssueState(state) => self.set_issue_state(state),
             Action::SelectNotification(index) => {
@@ -5202,8 +5753,16 @@ fn tree_cache_key(name: &str, branch: &str) -> String {
     format!("tree_{}_{}", key_part(name), key_part(branch))
 }
 
-fn readme_cache_key(name: &str) -> String {
-    format!("readme_{}", key_part(name))
+fn readme_cache_key(name: &str, branch: &str) -> String {
+    format!("readme_{}_{}", key_part(name), key_part(branch))
+}
+
+fn branches_cache_key(name: &str) -> String {
+    format!("branches_{}", key_part(name))
+}
+
+fn commits_cache_key(name: &str, branch: &str) -> String {
+    format!("commits_{}_{}", key_part(name), key_part(branch))
 }
 
 fn actions_cache_key(name: &str) -> String {

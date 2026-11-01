@@ -49,8 +49,13 @@ fn main() -> Result<()> {
         Command::Log { path, limit } => return finish(commands::log(&path, limit)),
         Command::Tags { path } => return finish(commands::tags(&path)),
         Command::Push { path } => return finish(commands::push(&path)),
-        Command::Config { show, path_only } => {
-            return finish(commands::config(show, path_only));
+        Command::Config { action } => {
+            return finish(commands::config(action));
+        }
+        Command::Commits { repo, limit } => return finish(commands::remote_commits(&repo, limit)),
+        Command::Branches { repo } => return finish(commands::remote_branches(&repo)),
+        Command::Switch { branch, path } => {
+            return finish(commands::switch_branch(&path, &branch));
         }
         Command::Cache { action } => return finish(commands::cache(action)),
         Command::Doctor => return finish(commands::doctor()),

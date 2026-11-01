@@ -48,6 +48,7 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
         Page::Repo => draw_repo_page(frame, app, &theme, chunks[1], &mut hits),
         Page::Actions => draw_actions_page(frame, app, &theme, chunks[1], &mut hits),
         Page::Issues => draw_issues_page(frame, app, &theme, chunks[1], &mut hits),
+        Page::Commits => draw_commits_page(frame, app, &theme, chunks[1], &mut hits),
         Page::ReleaseDetail => draw_release_page(frame, app, &theme, chunks[1], &mut hits),
     }
     draw_footer(frame, app, &theme, chunks[2], &hits);
@@ -61,6 +62,7 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
         Some(Overlay::EditRepo) => draw_repo_edit_overlay(frame, app, &theme, area, &mut hits),
         Some(Overlay::Cache) => draw_cache_overlay(frame, app, &theme, area, &mut hits),
         Some(Overlay::RunWorkflow) => draw_workflow_overlay(frame, app, &theme, area, &mut hits),
+        Some(Overlay::Branches) => draw_branches_overlay(frame, app, &theme, area, &mut hits),
         None => app.layout.overlay = Rect::default(),
     }
 
@@ -276,11 +278,14 @@ fn hints_for(app: &App) -> &'static str {
             "j/k 挑通知  Enter 打开  m 已读  M 全部已读  u 未读/全部  r 刷新  Esc 返回喵~"
         }
         Page::Settings => "j/k 选    h/l 调    Enter 操作    Ctrl+S 保存    Esc 离开喵~",
-        Page::Repo => "Esc 返回  Tab 换面板  j/k 滚动  F 全屏 README  a 工作流  i 议题  o 主页喵~",
+        Page::Repo => {
+            "Esc 返回  Tab 换面板  b 分支  C 提交  F 全屏 README  a 工作流  i 议题  o 主页喵~"
+        }
         Page::Actions => {
             "j/k 挑运行  Enter 去浏览器  R/x 运行工作流  PgUp/PgDn 滚任务  r 刷新  Esc 返回喵~"
         }
         Page::Issues => "j/k 挑  Enter 打开  v 换类型  s 换状态  r 刷新  Esc 返回喵~",
+        Page::Commits => "j/k 挑提交  Enter/o 浏览器打开  b 切分支  r 刷新  Esc 返回仓库喵~",
         Page::ReleaseDetail => "j/k 挑文件  Enter 下载  o 去 GitHub  PgUp/PgDn 滚说明  Esc 返回喵~",
     }
 }
@@ -2383,7 +2388,7 @@ fn draw_repo_page(
     };
     let mut facts = vec![
         format!("{visibility_icon} {}", repo.visibility()),
-        format!("{} {}", icons::BRANCH, repo.default_branch),
+        format!("{} {}", icons::BRANCH, app.branch_for(&repo)),
         format!("{} {}", icons::LICENSE, repo.license_label()),
         format!(
             "{} {}",
@@ -2433,6 +2438,16 @@ fn draw_repo_page(
         (
             icons::label(icons::DOWNLOAD, "下载源码喵~"),
             Action::DownloadSource,
+            false,
+        ),
+        (
+            icons::label(icons::BRANCH, "分支喵~"),
+            Action::OpenBranches,
+            false,
+        ),
+        (
+            icons::label(icons::COMMIT, "提交喵~"),
+            Action::OpenCommits,
             false,
         ),
         (
@@ -3588,6 +3603,420 @@ fn issue_label_color(hex: &str) -> Color {
     Color::Gray
 }
 
+fn draw_commits_page(
+    frame: &mut Frame,
+    app: &mut App,
+    theme: &Theme,
+    area: Rect,
+    hits: &mut Vec<HitBox>,
+) {
+    fill(frame, area, theme.color("base"));
+    let inner = Rect::new(
+        area.x + 2,
+        area.y + 1,
+        area.width.saturating_sub(4),
+        area.height.saturating_sub(2),
+    );
+    if inner.height < 8 {
+        draw_center_message(
+            frame,
+            theme,
+            inner,
+            "这里有点挤喵~",
+            "把终端拉大一点，人家才摆得下提交页喵~",
+        );
+        return;
+    }
+    let back_label = icons::label(icons::BACK, "返回喵~");
+    let back_width = format::text_width(&back_label) as u16 + 2;
+    let back_rect = Rect::new(inner.x, inner.y, back_width, 1);
+    frame.render_widget(
+        Paragraph::new(back_label).style(if app.hover.as_ref() == Some(&Action::Back) {
+            Style::default().fg(theme.color("blue"))
+        } else {
+            Style::default().fg(theme.color("subtext0"))
+        }),
+        back_rect,
+    );
+    register(hits, back_rect, Action::Back);
+    let refresh_label = icons::label(icons::REFRESH, "刷新喵~");
+    let refresh_width = format::text_width(&refresh_label) as u16 + 4;
+    let refresh_x = inner.x + inner.width.saturating_sub(refresh_width);
+    draw_button(
+        frame,
+        app,
+        theme,
+        hits,
+        Rect::new(refresh_x, inner.y, refresh_width, 1),
+        &refresh_label,
+        Action::Refresh,
+        false,
+    );
+    let title_width = refresh_x.saturating_sub(inner.x + back_width + 2);
+    frame.render_widget(
+        Paragraph::new(format::truncate(
+            &format!("{} 提交喵~  {}", icons::COMMIT, app.commit_repo_label()),
+            title_width as usize,
+        ))
+        .style(
+            Style::default()
+                .fg(theme.color("text"))
+                .add_modifier(Modifier::BOLD),
+        ),
+        Rect::new(inner.x + back_width + 2, inner.y, title_width, 1),
+    );
+    frame.render_widget(
+        Paragraph::new(format!(
+            "{} 个提交 · b 换分支 · Enter 去 GitHub 看详情喵~",
+            app.commits.len()
+        ))
+        .style(Style::default().fg(theme.color("subtext0"))),
+        Rect::new(inner.x, inner.y + 1, inner.width, 1),
+    );
+    let content = Rect::new(
+        inner.x,
+        inner.y + 3,
+        inner.width,
+        inner.height.saturating_sub(3),
+    );
+    let detail_width = if content.width >= 94 {
+        (content.width * 2 / 5).max(32)
+    } else {
+        0
+    };
+    let columns =
+        Layout::horizontal([Constraint::Min(30), Constraint::Length(detail_width)]).split(content);
+    app.layout.list = columns[0];
+    draw_commit_list(frame, app, theme, columns[0], hits);
+    if detail_width > 0 {
+        app.layout.detail = columns[1];
+        draw_commit_detail(frame, app, theme, columns[1], hits);
+    }
+}
+
+fn draw_commit_list(
+    frame: &mut Frame,
+    app: &mut App,
+    theme: &Theme,
+    area: Rect,
+    hits: &mut Vec<HitBox>,
+) {
+    if area.width < 8 || area.height < 3 {
+        return;
+    }
+    fill(frame, area, theme.color("mantle"));
+    frame.render_widget(
+        Paragraph::new(icons::label(icons::COMMIT, "提交列表喵~")).style(
+            Style::default()
+                .fg(theme.color("text"))
+                .add_modifier(Modifier::BOLD),
+        ),
+        Rect::new(area.x + 1, area.y, area.width.saturating_sub(2), 1),
+    );
+    fill(
+        frame,
+        Rect::new(area.x, area.y + 1, area.width, 1),
+        theme.color("surface0"),
+    );
+    let body = Rect::new(
+        area.x + 1,
+        area.y + 2,
+        area.width.saturating_sub(2),
+        area.height.saturating_sub(2),
+    );
+    if app.commits.is_empty() {
+        let (title, detail) = if app.commits_loading.is_some() {
+            ("人家正在翻提交记录喵~...", "网络慢一点就再等一会儿哦喵~")
+        } else {
+            ("这个分支还没有提交喵~", "按 b 换个分支，或按 r 刷新看看喵~")
+        };
+        draw_center_message(frame, theme, body, title, detail);
+        return;
+    }
+    let rows = (body.height / 2).max(1) as usize;
+    let selected = app.commit_selected.min(app.commits.len() - 1);
+    let start = selected.saturating_sub(rows - 1);
+    let end = (start + rows).min(app.commits.len());
+    for (offset, index) in (start..end).enumerate() {
+        let y = body.y + offset as u16 * 2;
+        if y + 1 >= body.y + body.height {
+            break;
+        }
+        let commit = &app.commits[index];
+        let rect = Rect::new(body.x, y, body.width, 2);
+        if index == selected {
+            fill(frame, rect, theme.color("surface0"));
+        }
+        frame.render_widget(
+            Paragraph::new(Line::from(vec![
+                Span::styled(
+                    format!("{} ", commit.short_sha()),
+                    Style::default()
+                        .fg(theme.color("peach"))
+                        .add_modifier(Modifier::BOLD),
+                ),
+                Span::styled(
+                    format::truncate(
+                        &format::clean_text(commit.summary()),
+                        body.width.saturating_sub(12) as usize,
+                    ),
+                    Style::default().fg(theme.color("text")),
+                ),
+            ])),
+            Rect::new(body.x + 1, y, body.width.saturating_sub(1), 1),
+        );
+        let meta = format!(
+            "   {} · {}",
+            if commit.author_name().is_empty() {
+                "未知"
+            } else {
+                commit.author_name()
+            },
+            format::relative_time(&commit.commit.author.date)
+        );
+        frame.render_widget(
+            Paragraph::new(format::truncate(&meta, body.width as usize))
+                .style(Style::default().fg(theme.color("overlay0"))),
+            Rect::new(body.x + 1, y + 1, body.width.saturating_sub(1), 1),
+        );
+        register(hits, rect, Action::SelectCommit(index));
+    }
+}
+
+fn draw_commit_detail(
+    frame: &mut Frame,
+    app: &mut App,
+    theme: &Theme,
+    area: Rect,
+    hits: &mut Vec<HitBox>,
+) {
+    fill(frame, area, theme.color("mantle"));
+    frame.render_widget(
+        Block::new()
+            .borders(Borders::LEFT)
+            .border_style(Style::default().fg(theme.color("surface0"))),
+        area,
+    );
+    let inner = Rect::new(
+        area.x + 2,
+        area.y + 1,
+        area.width.saturating_sub(4),
+        area.height.saturating_sub(2),
+    );
+    if inner.width < 10 || inner.height < 4 {
+        return;
+    }
+    let Some(commit) = app.selected_commit() else {
+        draw_center_message(
+            frame,
+            theme,
+            area,
+            "挑一个提交看看喵~",
+            "点左边列表，人家就把提交信息摆在这里喵~",
+        );
+        return;
+    };
+    frame.render_widget(
+        Paragraph::new(format!("{} {}", icons::COMMIT, commit.short_sha())).style(
+            Style::default()
+                .fg(theme.color("peach"))
+                .add_modifier(Modifier::BOLD),
+        ),
+        Rect::new(inner.x, inner.y, inner.width, 1),
+    );
+    let mut y = inner.y + 1;
+    frame.render_widget(
+        Paragraph::new(format!(
+            "{} · {}",
+            if commit.author_name().is_empty() {
+                "未知"
+            } else {
+                commit.author_name()
+            },
+            format::relative_time(&commit.commit.author.date)
+        ))
+        .style(Style::default().fg(theme.color("subtext0"))),
+        Rect::new(inner.x, y, inner.width, 1),
+    );
+    y += 2;
+    let budget = (inner.y + inner.height).saturating_sub(y + 3) as usize;
+    let message = format::clean_text(&commit.commit.message);
+    for line in format::wrap_text(&message, inner.width as usize, budget.max(1)) {
+        frame.render_widget(
+            Paragraph::new(line).style(Style::default().fg(theme.color("text"))),
+            Rect::new(inner.x, y, inner.width, 1),
+        );
+        y += 1;
+    }
+    let open = icons::label(icons::EXTERNAL, "去 GitHub 看喵~");
+    let open_width = format::text_width(&open) as u16 + 4;
+    draw_button(
+        frame,
+        app,
+        theme,
+        hits,
+        Rect::new(
+            inner.x,
+            inner.y + inner.height.saturating_sub(1),
+            open_width,
+            1,
+        ),
+        &open,
+        Action::OpenExternal(commit.html_url.clone()),
+        true,
+    );
+}
+
+fn draw_branches_overlay(
+    frame: &mut Frame,
+    app: &mut App,
+    theme: &Theme,
+    area: Rect,
+    hits: &mut Vec<HitBox>,
+) {
+    let width = area.width.saturating_sub(12).min(58);
+    let height = area.height.saturating_sub(8).clamp(10, 24);
+    let rect = Rect::new(
+        area.x + (area.width.saturating_sub(width)) / 2,
+        area.y + (area.height.saturating_sub(height)) / 2,
+        width,
+        height,
+    );
+    app.layout.overlay = rect;
+    frame.render_widget(Clear, rect);
+    fill(frame, rect, theme.color("mantle"));
+    frame.render_widget(
+        Block::new()
+            .borders(Borders::ALL)
+            .border_style(Style::default().fg(theme.color("blue"))),
+        rect,
+    );
+    let inner = Rect::new(
+        rect.x + 2,
+        rect.y + 1,
+        rect.width.saturating_sub(4),
+        rect.height.saturating_sub(2),
+    );
+    frame.render_widget(
+        Paragraph::new(icons::label(icons::BRANCH, "换个分支喵~")).style(
+            Style::default()
+                .fg(theme.color("text"))
+                .add_modifier(Modifier::BOLD),
+        ),
+        Rect::new(inner.x, inner.y, inner.width.saturating_sub(10), 1),
+    );
+    draw_button(
+        frame,
+        app,
+        theme,
+        hits,
+        Rect::new(inner.x + inner.width.saturating_sub(9), inner.y, 9, 1),
+        "关掉喵~",
+        Action::CloseOverlay,
+        false,
+    );
+    let current = app
+        .page_repo
+        .as_ref()
+        .map(|repo| app.branch_for(repo))
+        .unwrap_or_default();
+    frame.render_widget(
+        Paragraph::new(format!(
+            "{} 个分支 · 当前 {}喵~",
+            app.branches.len(),
+            format::truncate(&current, 24)
+        ))
+        .style(Style::default().fg(theme.color("overlay0"))),
+        Rect::new(inner.x, inner.y + 1, inner.width, 1),
+    );
+    let list = Rect::new(
+        inner.x,
+        inner.y + 3,
+        inner.width,
+        inner.height.saturating_sub(4),
+    );
+    app.branch_viewport = list.height as usize;
+    let max_offset = app
+        .branches
+        .len()
+        .saturating_sub(app.branch_viewport.max(1));
+    app.branch_offset = app.branch_offset.min(max_offset);
+    if app.branches.is_empty() {
+        draw_center_message(
+            frame,
+            theme,
+            list,
+            "分支还没到喵~",
+            if app.branches_loading.is_some() {
+                "人家正在取分支列表喵~..."
+            } else {
+                "按 r 再刷新一下嘛喵~"
+            },
+        );
+    }
+    for (row, branch) in app
+        .branches
+        .iter()
+        .skip(app.branch_offset)
+        .take(app.branch_viewport)
+        .enumerate()
+    {
+        let index = app.branch_offset + row;
+        let item = Rect::new(list.x, list.y + row as u16, list.width, 1);
+        let selected = index == app.branch_selected;
+        let active = branch.name == current;
+        if selected || active {
+            fill(
+                frame,
+                item,
+                if selected {
+                    theme.color("surface1")
+                } else {
+                    theme.color("surface0")
+                },
+            );
+        }
+        if active {
+            fill(frame, Rect::new(item.x, item.y, 1, 1), theme.color("green"));
+        }
+        frame.render_widget(
+            Paragraph::new(format!(
+                "{} {}",
+                if active { icons::CHECK } else { icons::BRANCH },
+                format::truncate(&branch.name, item.width.saturating_sub(12) as usize)
+            ))
+            .style(if active {
+                Style::default()
+                    .fg(theme.color("green"))
+                    .add_modifier(Modifier::BOLD)
+            } else if selected {
+                Style::default().fg(theme.color("text"))
+            } else {
+                Style::default().fg(theme.color("subtext1"))
+            }),
+            Rect::new(item.x + 1, item.y, item.width.saturating_sub(10), 1),
+        );
+        frame.render_widget(
+            Paragraph::new(format::truncate(&branch.commit.sha, 7))
+                .alignment(Alignment::Right)
+                .style(Style::default().fg(theme.color("overlay0"))),
+            Rect::new(item.x, item.y, item.width.saturating_sub(2), 1),
+        );
+        register(hits, item, Action::SelectBranch(branch.name.clone()));
+    }
+    frame.render_widget(
+        Paragraph::new("j/k 挑选   Enter 切换   r 刷新   Esc 关掉喵~")
+            .alignment(Alignment::Center)
+            .style(Style::default().fg(theme.color("overlay0"))),
+        Rect::new(
+            inner.x,
+            inner.y + inner.height.saturating_sub(1),
+            inner.width,
+            1,
+        ),
+    );
+}
+
 fn draw_actions_page(
     frame: &mut Frame,
     app: &mut App,
@@ -4383,7 +4812,7 @@ fn draw_file_tree_panel(
         "{}   {} {}   {counts}",
         title,
         icons::BRANCH,
-        format::truncate(&repo.default_branch, 18)
+        format::truncate(&app.branch_for(repo), 18)
     );
     frame.render_widget(
         Paragraph::new(format::truncate(
@@ -5636,6 +6065,15 @@ fn draw_settings_page(
                 5 + index,
             );
         }
+        if y + 7 < actions_y {
+            draw_commit_limit_row(
+                frame,
+                app,
+                theme,
+                hits,
+                Rect::new(right_column.x, y + 7, right_column.width, 1),
+            );
+        }
     }
 
     let mut x = inner.x;
@@ -5961,6 +6399,51 @@ fn draw_ttl_row(
     }
 }
 
+fn draw_commit_limit_row(
+    frame: &mut Frame,
+    app: &App,
+    theme: &Theme,
+    hits: &mut Vec<HitBox>,
+    area: Rect,
+) {
+    if app.settings_row == 8 {
+        fill(frame, area, theme.color("surface0"));
+    }
+    frame.render_widget(
+        Paragraph::new("提交条数喵~").style(Style::default().fg(theme.color("subtext1"))),
+        Rect::new(area.x + 1, area.y, 16, 1),
+    );
+    frame.render_widget(
+        Paragraph::new(format!("{} 条", app.config.commit_limit))
+            .style(Style::default().fg(theme.color("text"))),
+        Rect::new(area.x + 17, area.y, 12, 1),
+    );
+    for (x, label, action) in [
+        (area.width.saturating_sub(17), "-", Action::CommitLimit(-1)),
+        (area.width.saturating_sub(9), "+", Action::CommitLimit(1)),
+    ] {
+        let rect = Rect::new(area.x + x, area.y, 5, 1);
+        let hovered = app.hover.as_ref() == Some(&action);
+        fill(
+            frame,
+            rect,
+            if hovered {
+                theme.color("surface1")
+            } else {
+                theme.color("mantle")
+            },
+        );
+        frame.render_widget(
+            Paragraph::new(label)
+                .alignment(Alignment::Center)
+                .style(Style::default().fg(theme.color("text"))),
+            rect,
+        );
+        register(hits, rect, action);
+    }
+    register(hits, area, Action::SetSettingsRow(8));
+}
+
 fn render_scrolled(
     frame: &mut Frame,
     area: Rect,
@@ -6069,7 +6552,7 @@ fn draw_repo_edit_overlay(
         return;
     };
     let width = area.width.saturating_sub(12).min(72);
-    let height = area.height.saturating_sub(8).min(18);
+    let height = area.height.saturating_sub(8).min(22);
     let rect = Rect::new(
         area.x + (area.width.saturating_sub(width)) / 2,
         area.y + (area.height.saturating_sub(height)) / 2,
@@ -6109,9 +6592,19 @@ fn draw_repo_edit_overlay(
     );
 
     let mut y = inner.y + 3;
-    for (row, label) in ["简介", "主页", "主题", "可见性", "归档"]
-        .iter()
-        .enumerate()
+    for (row, label) in [
+        "名称",
+        "简介",
+        "主页",
+        "主题",
+        "可见性",
+        "归档",
+        "议题",
+        "讨论",
+        "Wiki",
+    ]
+    .iter()
+    .enumerate()
     {
         if y >= inner.y + inner.height - 3 {
             break;
@@ -6138,10 +6631,11 @@ fn draw_repo_edit_overlay(
         let value_x = inner.x + 12;
         let value_width = inner.width.saturating_sub(12);
         let (value, cursor) = match row {
-            0 => visible_input(&edit.description, editing, value_width),
-            1 => visible_input(&edit.homepage, editing, value_width),
-            2 => visible_input(&edit.topics, editing, value_width),
-            3 => (
+            0 => visible_input(&edit.name, editing, value_width),
+            1 => visible_input(&edit.description, editing, value_width),
+            2 => visible_input(&edit.homepage, editing, value_width),
+            3 => visible_input(&edit.topics, editing, value_width),
+            4 => (
                 if edit.private {
                     "私有 · 只有自己能看到喵~".to_string()
                 } else {
@@ -6149,7 +6643,7 @@ fn draw_repo_edit_overlay(
                 },
                 0,
             ),
-            _ => (
+            5 => (
                 if edit.archived {
                     "已归档 · 只读状态喵~".to_string()
                 } else {
@@ -6157,17 +6651,52 @@ fn draw_repo_edit_overlay(
                 },
                 0,
             ),
+            6 => (
+                format!(
+                    "Issues {}",
+                    if edit.has_issues {
+                        "开启喵~"
+                    } else {
+                        "关闭喵~"
+                    }
+                ),
+                0,
+            ),
+            7 => (
+                format!(
+                    "Discussions {}",
+                    if edit.has_discussions {
+                        "开启喵~"
+                    } else {
+                        "关闭喵~"
+                    }
+                ),
+                0,
+            ),
+            _ => (
+                format!(
+                    "Wiki {}",
+                    if edit.has_wiki {
+                        "开启喵~"
+                    } else {
+                        "关闭喵~"
+                    }
+                ),
+                0,
+            ),
         };
         let empty = match row {
-            0 => edit.description.is_empty(),
-            1 => edit.homepage.is_empty(),
-            2 => edit.topics.is_empty(),
+            0 => edit.name.is_empty(),
+            1 => edit.description.is_empty(),
+            2 => edit.homepage.is_empty(),
+            3 => edit.topics.is_empty(),
             _ => false,
         };
         let placeholder = match row {
-            0 => "还没写简介喵~",
-            1 => "没有主页喵~",
-            2 => "还没有主题喵~",
+            0 => "仓库名不能空喵~",
+            1 => "还没写简介喵~",
+            2 => "没有主页喵~",
+            3 => "还没有主题喵~",
             _ => "",
         };
         let shown = if empty {
@@ -6408,7 +6937,7 @@ fn draw_help(frame: &mut Frame, app: &mut App, theme: &Theme, area: Rect, hits: 
         ("看仓库喵~", "Enter 进仓库页  o 去浏览器  y 复制克隆地址喵~"),
         (
             "改自己喵~",
-            "自己的仓库按 e 改简介、主页、主题、可见性和归档喵~",
+            "自己的仓库按 e 改名称、简介、主页、主题、可见性、归档和功能开关喵~",
         ),
         (
             "找找喵~",
@@ -6418,6 +6947,14 @@ fn draw_help(frame: &mut Frame, app: &mut App, theme: &Theme, area: Rect, hits: 
         (
             "看说明喵~",
             "仓库页按 F 全屏看 README，TAB 切面板，j/k 滚动喵~",
+        ),
+        (
+            "提交喵~",
+            "仓库页按 C 看提交，j/k 挑，Enter 去 GitHub，b 换分支喵~",
+        ),
+        (
+            "分支喵~",
+            "仓库页或提交页按 b 选分支，树和 README 会跟着换喵~",
         ),
         ("账号喵~", "4 看账号信息，还能查 GitHub API 额度喵~"),
         (

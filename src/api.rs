@@ -1,8 +1,9 @@
 use crate::format::base64_decode;
 use crate::model::{
-    Issue, IssueState, Notification, RateLimit, ReadmeContent, Release, Repo, SearchOutcome,
-    SearchResponse, SearchSort, StarredRepo, TreeResponse, TrendingPeriod, User, Workflow,
-    WorkflowJob, WorkflowJobsResponse, WorkflowListResponse, WorkflowRun, WorkflowRunsResponse,
+    Branch, Commit, Issue, IssueState, Notification, RateLimit, ReadmeContent, Release, Repo,
+    SearchOutcome, SearchResponse, SearchSort, StarredRepo, TreeResponse, TrendingPeriod, User,
+    Workflow, WorkflowJob, WorkflowJobsResponse, WorkflowListResponse, WorkflowRun,
+    WorkflowRunsResponse,
 };
 use serde::de::DeserializeOwned;
 use std::fs;
@@ -12,7 +13,7 @@ use std::process::Command;
 use std::time::{Duration, Instant};
 
 const API: &str = "https://api.github.com";
-const USER_AGENT: &str = "gxt/0.2.0";
+const USER_AGENT: &str = "gxt/0.2.1";
 
 #[derive(Clone)]
 pub struct ApiClient {
@@ -277,6 +278,34 @@ impl ApiClient {
         )
     }
 
+    pub fn commits(
+        &self,
+        full_name: &str,
+        branch: &str,
+        limit: usize,
+        private: bool,
+    ) -> Result<Vec<Commit>, String> {
+        let url = format!(
+            "{API}/repos/{full_name}/commits?sha={}&per_page={}",
+            percent_encode(branch),
+            limit.clamp(1, 100)
+        );
+        if private {
+            self.get_json(&url, true)
+        } else {
+            self.get_public_with_fallback(&url)
+        }
+    }
+
+    pub fn branches(&self, full_name: &str, private: bool) -> Result<Vec<Branch>, String> {
+        let url = format!("{API}/repos/{full_name}/branches?per_page=100");
+        if private {
+            self.get_json(&url, true)
+        } else {
+            self.get_public_with_fallback(&url)
+        }
+    }
+
     pub fn file_tree(
         &self,
         full_name: &str,
@@ -299,8 +328,16 @@ impl ApiClient {
         }
     }
 
-    pub fn readme(&self, full_name: &str, private: bool) -> Result<ReadmeContent, String> {
-        let url = format!("{API}/repos/{full_name}/readme");
+    pub fn readme(
+        &self,
+        full_name: &str,
+        branch: &str,
+        private: bool,
+    ) -> Result<ReadmeContent, String> {
+        let mut url = format!("{API}/repos/{full_name}/readme");
+        if !branch.trim().is_empty() {
+            url.push_str(&format!("?ref={}", percent_encode(branch)));
+        }
         let raw: ReadmeApi = if private {
             self.get_json(&url, true)?
         } else {
