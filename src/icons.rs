@@ -48,3 +48,5 @@ pub const PLAY: &str = "\u{f04b}";
 pub const PULL: &str = "\u{f126}";
 pub const DOWNLOAD_DIR: &str = "\u{f07c}";
 pub const CODE_FILE: &str = "\u{f1c9}";
+pub const FLAME: &str = "\u{f06d}";
+pub const EXPAND: &str = "\u{f0b2}";

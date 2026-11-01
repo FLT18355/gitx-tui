@@ -5,7 +5,7 @@ use crate::format::{self, base64};
 use crate::icons;
 use crate::model::{
     Issue, IssueState, Notification, RateLimit, ReadmeContent, Release, Repo, RepoSort,
-    SearchResponse, SearchSort, StarSort, TreeResponse, User, Workflow, key_part,
+    SearchResponse, SearchSort, StarSort, TreeResponse, TrendingPeriod, User, Workflow, key_part,
 };
 use crate::theme::{FLAVORS, Theme};
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers, MouseButton, MouseEvent, MouseEventKind};
@@ -19,6 +19,7 @@ pub enum Page {
     Repositories,
     Starred,
     Search,
+    Trending,
     Account,
     Notifications,
     Settings,
@@ -36,6 +37,7 @@ impl Page {
             Self::Search => Some(2),
             Self::Account => Some(3),
             Self::Notifications => Some(4),
+            Self::Trending => Some(5),
             Self::Repo | Self::Actions | Self::Issues | Self::ReleaseDetail | Self::Settings => {
                 None
             }
@@ -48,6 +50,7 @@ impl Page {
             2 => Self::Search,
             3 => Self::Account,
             4 => Self::Notifications,
+            5 => Self::Trending,
             _ => Self::Repositories,
         }
     }
@@ -57,6 +60,7 @@ impl Page {
             Self::Repositories => "人家的仓库喵~",
             Self::Starred => "星星收藏喵~",
             Self::Search => "找仓库喵~",
+            Self::Trending => "热门仓库喵~",
             Self::Account => "账号喵~",
             Self::Notifications => "通知喵~",
             Self::Settings => "设置喵~",
@@ -152,6 +156,8 @@ pub enum Action {
     SetRepoSort(RepoSort),
     SetStarSort(StarSort),
     SetSearchSort(SearchSort),
+    SetTrendingPeriod(TrendingPeriod),
+    ToggleReadmeFullscreen,
     SearchFocus,
     ListFilterFocus,
     ReleaseFilterFocus,
@@ -428,6 +434,10 @@ enum Msg {
         sort: SearchSort,
         result: Result<crate::model::SearchOutcome, String>,
     },
+    Trending {
+        period: TrendingPeriod,
+        result: Result<crate::model::SearchOutcome, String>,
+    },
     Detail {
         name: String,
         result: Result<Repo, String>,
@@ -558,7 +568,13 @@ pub struct App {
     pub search_total: Option<u64>,
     pub search_submitted: Option<String>,
     pub search_input: TextInput,
+    pub search_filter: TextInput,
     pub search_focus: bool,
+    pub trending: Vec<Repo>,
+    pub trending_total: Option<u64>,
+    pub trending_filter: TextInput,
+    pub trending_period: TrendingPeriod,
+    trending_selected: usize,
     pub repo_filter: TextInput,
     pub star_filter: TextInput,
     pub list_filter_focus: bool,
@@ -603,6 +619,7 @@ pub struct App {
     pub readme_loading: Option<String>,
     pub readme_scroll: u16,
     pub readme_scroll_max: u16,
+    pub readme_fullscreen: bool,
 
     pub repo_edit: Option<RepoEdit>,
     pub settings_row: usize,
@@ -622,6 +639,7 @@ pub struct App {
     pub repos_loading: bool,
     pub starred_loading: bool,
     pub search_loading: bool,
+    pub trending_loading: bool,
     pub detail_loading: Option<String>,
     pub releases_loading: Option<String>,
 
@@ -731,7 +749,13 @@ impl App {
             search_total: None,
             search_submitted: None,
             search_input: TextInput::new(""),
+            search_filter: TextInput::new(""),
             search_focus: false,
+            trending: Vec::new(),
+            trending_total: None,
+            trending_filter: TextInput::new(""),
+            trending_period: TrendingPeriod::Weekly,
+            trending_selected: 0,
             repo_filter: TextInput::new(""),
             star_filter: TextInput::new(""),
             list_filter_focus: false,
@@ -774,6 +798,7 @@ impl App {
             readme_loading: None,
             readme_scroll: 0,
             readme_scroll_max: 0,
+            readme_fullscreen: false,
             repo_edit: None,
             settings_row: 0,
             editing_proxy: false,
@@ -791,6 +816,7 @@ impl App {
             repos_loading: false,
             starred_loading: false,
             search_loading: false,
+            trending_loading: false,
             detail_loading: None,
             releases_loading: None,
             status: Status {
@@ -1003,6 +1029,50 @@ impl App {
                                 &format!(
                                     "找到 {} 个仓库，人家先摆出前 100 个，可以分页翻喵~",
                                     outcome.total
+                                ),
+                            );
+                        }
+                    }
+                    Err(error) => self.set_status(StatusKind::Error, &error),
+                }
+            }
+            Msg::Trending { period, result } => {
+                self.trending_loading = false;
+                if self.trending_period != period {
+                    if self.page == Page::Trending {
+                        self.fetch_trending(false);
+                    }
+                    return;
+                }
+                match result {
+                    Ok(outcome) => {
+                        self.trending = outcome.items;
+                        self.trending_total = Some(outcome.total);
+                        self.trending_selected = 0;
+                        if self.page == Page::Trending {
+                            self.list_offset = 0;
+                        }
+                        let response = SearchResponse {
+                            total_count: outcome.total,
+                            incomplete_results: false,
+                            items: self.trending.clone(),
+                        };
+                        let _ = self.cache.save(&trending_key(period), &response);
+                        self.refresh_cache_stats();
+                        if self.page == Page::Trending {
+                            self.schedule_selected_detail();
+                        }
+                        if self.trending.is_empty() {
+                            self.set_status(
+                                StatusKind::Info,
+                                "这段时间没有热门仓库喵~换个时段看看嘛~",
+                            );
+                        } else {
+                            self.set_status(
+                                StatusKind::Ok,
+                                &format!(
+                                    "{}的热门仓库前 100 个已经摆好啦喵~",
+                                    period.short_label()
                                 ),
                             );
                         }
@@ -2566,6 +2636,9 @@ impl App {
         if self.search_loading && self.page == Page::Search {
             return Some("人家正在翻找仓库喵~...");
         }
+        if self.trending_loading && self.page == Page::Trending {
+            return Some("人家正在打听最近的热门仓库喵~...");
+        }
         if self.star_loading.is_some() {
             return Some("人家正在改星星喵~...");
         }
@@ -2582,7 +2655,7 @@ impl App {
         if self.detail_loading.is_some()
             && matches!(
                 self.page,
-                Page::Repositories | Page::Starred | Page::Search | Page::Repo
+                Page::Repositories | Page::Starred | Page::Search | Page::Trending | Page::Repo
             )
         {
             return Some("人家正在读仓库详情喵~...");
@@ -2646,6 +2719,7 @@ impl App {
         match page {
             Page::Starred => &self.starred,
             Page::Search => &self.search_results,
+            Page::Trending => &self.trending,
             _ => &self.repos,
         }
     }
@@ -2655,18 +2729,20 @@ impl App {
     }
 
     fn filter_for(&self, page: Page) -> &TextInput {
-        if page == Page::Starred {
-            &self.star_filter
-        } else {
-            &self.repo_filter
+        match page {
+            Page::Starred => &self.star_filter,
+            Page::Search => &self.search_filter,
+            Page::Trending => &self.trending_filter,
+            _ => &self.repo_filter,
         }
     }
 
     fn filter_for_mut(&mut self, page: Page) -> &mut TextInput {
-        if page == Page::Starred {
-            &mut self.star_filter
-        } else {
-            &mut self.repo_filter
+        match page {
+            Page::Starred => &mut self.star_filter,
+            Page::Search => &mut self.search_filter,
+            Page::Trending => &mut self.trending_filter,
+            _ => &mut self.repo_filter,
         }
     }
 
@@ -2675,12 +2751,23 @@ impl App {
     }
 
     pub fn list_filter_active(&self) -> bool {
-        matches!(self.page, Page::Repositories | Page::Starred)
-            && !self.current_filter().value.trim().is_empty()
+        let page = self.page;
+        if !matches!(
+            page,
+            Page::Repositories | Page::Starred | Page::Search | Page::Trending
+        ) {
+            return false;
+        }
+        let language_active = matches!(page, Page::Repositories | Page::Search | Page::Trending)
+            && self.language_filter.is_some();
+        language_active || !self.current_filter().value.trim().is_empty()
     }
 
     pub fn focus_list_filter(&mut self) {
-        if !matches!(self.page, Page::Repositories | Page::Starred) {
+        if !matches!(
+            self.page,
+            Page::Repositories | Page::Starred | Page::Search | Page::Trending
+        ) {
             return;
         }
         self.search_focus = false;
@@ -2731,12 +2818,15 @@ impl App {
 
     fn visible_indices_for(&self, page: Page) -> Vec<usize> {
         let raw = self.raw_list(page);
-        let language = if page == Page::Repositories {
+        let language = if matches!(page, Page::Repositories | Page::Search | Page::Trending) {
             self.language_filter.as_deref()
         } else {
             None
         };
-        let query = if matches!(page, Page::Repositories | Page::Starred) {
+        let query = if matches!(
+            page,
+            Page::Repositories | Page::Starred | Page::Search | Page::Trending
+        ) {
             self.filter_for(page).value.trim().to_lowercase()
         } else {
             String::new()
@@ -2781,6 +2871,7 @@ impl App {
         match page {
             Page::Starred => self.star_selected,
             Page::Search => self.search_selected,
+            Page::Trending => self.trending_selected,
             _ => self.repo_selected,
         }
     }
@@ -2789,6 +2880,7 @@ impl App {
         match page {
             Page::Starred => self.star_selected = value,
             Page::Search => self.search_selected = value,
+            Page::Trending => self.trending_selected = value,
             _ => self.repo_selected = value,
         }
     }
@@ -2855,7 +2947,10 @@ impl App {
     }
 
     fn is_list_page(page: Page) -> bool {
-        matches!(page, Page::Repositories | Page::Starred | Page::Search)
+        matches!(
+            page,
+            Page::Repositories | Page::Starred | Page::Search | Page::Trending
+        )
     }
 
     pub fn next_list_page(&mut self) {
@@ -2916,7 +3011,12 @@ impl App {
     }
 
     fn clamp_selection(&mut self) {
-        for page in [Page::Repositories, Page::Starred, Page::Search] {
+        for page in [
+            Page::Repositories,
+            Page::Starred,
+            Page::Search,
+            Page::Trending,
+        ] {
             let len = self.visible_indices_for(page).len();
             let selected = self.selection_for(page);
             if len == 0 {
@@ -2947,7 +3047,7 @@ impl App {
     pub fn language_counts(&self) -> Vec<(String, usize)> {
         let mut counts: std::collections::BTreeMap<String, usize> =
             std::collections::BTreeMap::new();
-        for repo in &self.repos {
+        for repo in self.raw_list(self.current_list_page()) {
             let language = repo.language_label().to_string();
             *counts.entry(language).or_insert(0) += 1;
         }
@@ -2963,7 +3063,11 @@ impl App {
     }
 
     pub fn language_choices(&self) -> Vec<(Option<String>, String, usize)> {
-        let mut choices = vec![(None, "全部语言喵~".to_string(), self.repos.len())];
+        let mut choices = vec![(
+            None,
+            "全部语言喵~".to_string(),
+            self.raw_list(self.current_list_page()).len(),
+        )];
         for (language, count) in self.language_counts() {
             choices.push((Some(language.clone()), language, count));
         }
@@ -3042,7 +3146,12 @@ impl App {
             .search_total
             .map(format::human_count)
             .unwrap_or_else(|| "?".to_string());
-        format!("「{query}」一共找到 {total} 个呢喵~")
+        let language = self
+            .language_filter
+            .as_deref()
+            .map(|language| format!(" · 只看 {language}"))
+            .unwrap_or_default();
+        format!("「{query}」一共找到 {total} 个{language}呢喵~")
     }
 
     pub fn auth_label(&self) -> String {
@@ -3134,6 +3243,43 @@ impl App {
             let _ = tx.send(Msg::Starred {
                 login,
                 result: client.starred(),
+            });
+        });
+    }
+
+    fn fetch_trending(&mut self, force: bool) {
+        if self.trending_loading {
+            return;
+        }
+        let period = self.trending_period;
+        let key = trending_key(period);
+        let cached = self.cache.load::<SearchResponse>(&key);
+        let fresh = cached
+            .as_ref()
+            .is_some_and(|cached| cached.is_fresh(self.config.search_ttl_secs));
+        if let Some(cached) = &cached {
+            self.trending = cached.data.items.clone();
+            self.trending_total = Some(cached.data.total_count);
+        }
+        if force || cached.is_none() {
+            self.trending.clear();
+            self.trending_total = None;
+        }
+        self.clamp_selection();
+        if fresh && !force {
+            if self.page == Page::Trending {
+                self.schedule_selected_detail();
+                self.set_status(StatusKind::Info, "热门列表刚从缓存里拿出来啦喵~");
+            }
+            return;
+        }
+        self.trending_loading = true;
+        let tx = self.tx.clone();
+        let client = self.client.clone();
+        std::thread::spawn(move || {
+            let _ = tx.send(Msg::Trending {
+                period,
+                result: client.trending(period),
             });
         });
     }
@@ -3343,6 +3489,7 @@ impl App {
                     self.perform_search(true);
                 }
             }
+            Page::Trending => self.fetch_trending(true),
             Page::Repo => {
                 if let Some(repo) = self.page_repo.clone().or_else(|| self.selected_repo()) {
                     self.fetch_detail_if_needed(repo.clone(), true);
@@ -3394,6 +3541,7 @@ impl App {
         self.search_focus = page == Page::Search;
         self.list_filter_focus = false;
         self.release_filter_focus = false;
+        self.readme_fullscreen = false;
         self.list_offset = 0;
         self.pending_detail = None;
         if page == Page::Settings {
@@ -3407,6 +3555,10 @@ impl App {
         }
         if page == Page::Search {
             self.schedule_selected_detail();
+        }
+        if page == Page::Trending {
+            self.schedule_selected_detail();
+            self.fetch_trending(false);
         }
         if page == Page::Account {
             self.fetch_rate_limit(false);
@@ -3435,6 +3587,7 @@ impl App {
         self.page = Page::Repo;
         self.page_scroll = 0;
         self.search_focus = false;
+        self.readme_fullscreen = false;
         self.detail_scroll_reset = true;
         self.detail_for = None;
         self.detail = None;
@@ -3466,6 +3619,7 @@ impl App {
             return;
         };
         self.search_focus = false;
+        self.readme_fullscreen = false;
         if target == Page::Repo {
             self.page = Page::Repo;
             return;
@@ -3485,6 +3639,7 @@ impl App {
         }
         self.search_focus = false;
         self.search_submitted = Some(query.clone());
+        self.search_filter = TextInput::new("");
         self.config.remember_search(&query);
         let _ = self.config.save(&self.paths);
         self.search_selected = 0;
@@ -3569,11 +3724,37 @@ impl App {
         }
     }
 
+    pub fn set_trending_period(&mut self, period: TrendingPeriod) {
+        if self.trending_period == period {
+            return;
+        }
+        self.trending_period = period;
+        self.trending_selected = 0;
+        self.list_offset = 0;
+        self.fetch_trending(false);
+        self.schedule_selected_detail();
+    }
+
+    pub fn toggle_readme_fullscreen(&mut self) {
+        if self.page != Page::Repo || !self.config.show_readme {
+            self.set_status(StatusKind::Info, "仓库页里打开 README 才能全屏看哦喵~");
+            return;
+        }
+        self.readme_fullscreen = !self.readme_fullscreen;
+        self.readme_scroll = 0;
+        self.list_filter_focus = false;
+        self.release_filter_focus = false;
+    }
+
     pub fn set_language(&mut self, language: Option<String>) {
         self.language_filter = language;
-        self.repo_selected = 0;
+        let page = self.current_list_page();
+        self.set_selection_for(page, 0);
         self.list_offset = 0;
         self.overlay = None;
+        if Self::is_list_page(page) {
+            self.follow_selection();
+        }
         self.schedule_selected_detail();
     }
 
@@ -4037,6 +4218,22 @@ impl App {
             return;
         }
 
+        if self.readme_fullscreen {
+            match key.code {
+                KeyCode::Esc | KeyCode::Char('F') | KeyCode::Char('q') => {
+                    self.readme_fullscreen = false;
+                }
+                KeyCode::Up | KeyCode::Char('k') => self.scroll_repo_pane(-1),
+                KeyCode::Down | KeyCode::Char('j') => self.scroll_repo_pane(1),
+                KeyCode::Char('g') | KeyCode::Home => self.set_repo_pane_scroll(0),
+                KeyCode::Char('G') | KeyCode::End => self.set_repo_pane_scroll(u16::MAX),
+                KeyCode::PageUp => self.scroll_repo_pane(-10),
+                KeyCode::PageDown => self.scroll_repo_pane(10),
+                _ => {}
+            }
+            return;
+        }
+
         if self.editing_proxy {
             match key.code {
                 KeyCode::Enter => self.commit_proxy_edit(),
@@ -4168,7 +4365,7 @@ impl App {
                     );
                     return;
                 }
-                KeyCode::Char('1'..='5')
+                KeyCode::Char('1'..='6')
                 | KeyCode::Char('/')
                 | KeyCode::Char('s')
                 | KeyCode::Char('a')
@@ -4223,6 +4420,9 @@ impl App {
             KeyCode::Char('/') if matches!(self.page, Page::Repositories | Page::Starred) => {
                 self.focus_list_filter()
             }
+            KeyCode::Char('/') if matches!(self.page, Page::Search | Page::Trending) => {
+                self.focus_list_filter()
+            }
             KeyCode::Char('/')
                 if self.page == Page::Repo && self.repo_pane == RepoPane::Releases =>
             {
@@ -4234,6 +4434,11 @@ impl App {
             KeyCode::Char('3') => self.navigate(Page::Search),
             KeyCode::Char('4') => self.open_account(),
             KeyCode::Char('5') => self.navigate(Page::Notifications),
+            KeyCode::Char('6') => self.navigate(Page::Trending),
+            KeyCode::Char('p') if self.page == Page::Trending => {
+                self.set_trending_period(self.trending_period.next())
+            }
+            KeyCode::Char('F') if self.page == Page::Repo => self.toggle_readme_fullscreen(),
             KeyCode::Tab => self.navigate_next_page(),
             KeyCode::Esc => match self.page {
                 Page::Repo | Page::Actions | Page::Issues | Page::ReleaseDetail => self.go_back(),
@@ -4262,7 +4467,10 @@ impl App {
             KeyCode::Char('[') => self.prev_list_page(),
             KeyCode::Char(']') => self.next_list_page(),
             KeyCode::Char('l') => {
-                if self.page == Page::Repositories {
+                if matches!(
+                    self.page,
+                    Page::Repositories | Page::Search | Page::Trending
+                ) {
                     self.open_languages();
                 }
             }
@@ -4294,7 +4502,7 @@ impl App {
             .page
             .nav_index()
             .unwrap_or_else(|| self.return_page.nav_index().unwrap_or(0));
-        let next = (current + 1) % 5;
+        let next = (current + 1) % 6;
         self.navigate(Page::from_nav(next));
     }
 
@@ -4837,6 +5045,8 @@ impl App {
             Action::SetRepoSort(sort) => self.set_repo_sort(sort),
             Action::SetStarSort(sort) => self.set_star_sort(sort),
             Action::SetSearchSort(sort) => self.set_search_sort(sort),
+            Action::SetTrendingPeriod(period) => self.set_trending_period(period),
+            Action::ToggleReadmeFullscreen => self.toggle_readme_fullscreen(),
             Action::SearchFocus => self.focus_search(),
             Action::ListFilterFocus => self.focus_list_filter(),
             Action::ReleaseFilterFocus => self.focus_release_filter(),
@@ -5014,6 +5224,10 @@ fn issues_cache_key(name: &str, state: IssueState) -> String {
 
 fn notifications_cache_key(all: bool) -> String {
     format!("notifications_{}", if all { "all" } else { "unread" })
+}
+
+fn trending_key(period: TrendingPeriod) -> String {
+    search_key(&format!("trending:{}", period.key()), "stars")
 }
 
 fn parse_workflow_inputs(raw: &str) -> Result<Option<serde_json::Value>, String> {

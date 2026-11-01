@@ -4,7 +4,7 @@ use crate::app::{
 };
 use crate::format;
 use crate::icons;
-use crate::model::{Issue, IssueState, Repo, RepoSort, SearchSort, StarSort};
+use crate::model::{Issue, IssueState, Repo, RepoSort, SearchSort, StarSort, TrendingPeriod};
 use crate::theme::{FLAVORS, Theme};
 use ratatui::Frame;
 use ratatui::layout::{Alignment, Constraint, Layout, Position, Rect};
@@ -41,6 +41,7 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
         Page::Repositories => draw_repositories_page(frame, app, &theme, chunks[1], &mut hits),
         Page::Starred => draw_starred_page(frame, app, &theme, chunks[1], &mut hits),
         Page::Search => draw_search_page(frame, app, &theme, chunks[1], &mut hits),
+        Page::Trending => draw_trending_page(frame, app, &theme, chunks[1], &mut hits),
         Page::Account => draw_account_page(frame, app, &theme, chunks[1], &mut hits),
         Page::Notifications => draw_notifications_page(frame, app, &theme, chunks[1], &mut hits),
         Page::Settings => draw_settings_page(frame, app, &theme, chunks[1], &mut hits),
@@ -110,7 +111,7 @@ fn draw_header(frame: &mut Frame, app: &App, theme: &Theme, area: Rect, hits: &m
         icons::PALETTE,
         Theme::label(&app.theme.flavor)
     );
-    if area.width > 118 {
+    if area.width > 126 {
         let account_width = format::text_width(&account) as u16 + 2;
         let right = Rect::new(
             area.x + area.width.saturating_sub(account_width),
@@ -134,6 +135,7 @@ fn draw_header(frame: &mut Frame, app: &App, theme: &Theme, area: Rect, hits: &m
         icons::label(icons::SEARCH, "搜索喵~"),
         icons::label(icons::USER, "账号喵~"),
         icons::label(icons::BELL, "通知喵~"),
+        icons::label(icons::FLAME, "热门喵~"),
     ];
     let pages = [
         Page::Repositories,
@@ -141,6 +143,7 @@ fn draw_header(frame: &mut Frame, app: &App, theme: &Theme, area: Rect, hits: &m
         Page::Search,
         Page::Account,
         Page::Notifications,
+        Page::Trending,
     ];
     let mut x = area.x + 2;
     for (index, label) in labels.iter().enumerate() {
@@ -175,7 +178,7 @@ fn draw_header(frame: &mut Frame, app: &App, theme: &Theme, area: Rect, hits: &m
         x += width + 1;
     }
 
-    if area.width > 100 {
+    if area.width > 124 {
         let hint = "Tab 切页   / 搜索   ? 帮助喵~";
         let width = format::text_width(hint) as u16;
         let rect = Rect::new(
@@ -231,7 +234,7 @@ fn draw_footer(frame: &mut Frame, app: &App, theme: &Theme, area: Rect, _hits: &
         );
         let width = area.width.saturating_sub(2);
         let rect = Rect::new(area.x + 2, area.y + 1, width, 1);
-        let hint = hints_for(app.page);
+        let hint = hints_for(app);
         let info_width = format::text_width(&info) as u16;
         let left_width = width.saturating_sub(info_width + 2);
         frame.render_widget(
@@ -246,7 +249,7 @@ fn draw_footer(frame: &mut Frame, app: &App, theme: &Theme, area: Rect, _hits: &
             Rect::new(rect.x, rect.y, width, 1),
         );
     } else {
-        let hint = hints_for(app.page);
+        let hint = hints_for(app);
         frame.render_widget(
             Paragraph::new(format::truncate(hint, area.width as usize - 4))
                 .style(Style::default().fg(theme.color("overlay0"))),
@@ -255,23 +258,25 @@ fn draw_footer(frame: &mut Frame, app: &App, theme: &Theme, area: Rect, _hits: &
     }
 }
 
-fn hints_for(page: Page) -> &'static str {
-    match page {
+fn hints_for(app: &App) -> &'static str {
+    if app.readme_fullscreen && app.page == Page::Repo {
+        return "j/k 滚动    g/G 首尾    PgUp/PgDn 翻页    F/Esc 退出全屏喵~";
+    }
+    match app.page {
         Page::Repositories => {
             "j/k 挑    [ ] 翻页    Enter 打开    / 筛选    e 编辑    f 收藏    l 语言喵~"
         }
         Page::Starred => {
             "j/k 挑    [ ] 翻页    Enter 打开    / 筛选    f 收藏    o 主页    r 刷新喵~"
         }
-        Page::Search => "输入后回车    Esc 离开输入    j/k 挑    [ ] 翻页    Enter 打开喵~",
+        Page::Search => "回车搜索  / 结果筛选  l 语言  j/k 挑  [ ] 翻页  Enter 打开喵~",
+        Page::Trending => "j/k 挑  [ ] 翻页  p 换时段  / 筛选  l 语言  Enter 打开  r 刷新喵~",
         Page::Account => "r 刷新账号和额度    Enter 打开主页    Esc 回仓库喵~",
         Page::Notifications => {
             "j/k 挑通知  Enter 打开  m 已读  M 全部已读  u 未读/全部  r 刷新  Esc 返回喵~"
         }
         Page::Settings => "j/k 选    h/l 调    Enter 操作    Ctrl+S 保存    Esc 离开喵~",
-        Page::Repo => {
-            "Esc 返回    Tab 换面板    j/k 滚动    a 工作流    i 议题    e 编辑自己    o 主页喵~"
-        }
+        Page::Repo => "Esc 返回  Tab 换面板  j/k 滚动  F 全屏 README  a 工作流  i 议题  o 主页喵~",
         Page::Actions => {
             "j/k 挑运行  Enter 去浏览器  R/x 运行工作流  PgUp/PgDn 滚任务  r 刷新  Esc 返回喵~"
         }
@@ -848,18 +853,26 @@ fn draw_search_page(
         Rect::new(inner.x, sort_y + 1, inner.width, 1),
     );
 
+    draw_list_filter(
+        frame,
+        app,
+        theme,
+        Rect::new(inner.x, sort_y + 2, inner.width, 1),
+        hits,
+    );
+
     draw_list_pagination(
         frame,
         app,
         theme,
         hits,
-        Rect::new(inner.x, sort_y + 2, inner.width, 1),
+        Rect::new(inner.x, sort_y + 3, inner.width, 1),
     );
     let content = Rect::new(
         inner.x,
-        sort_y + 3,
+        sort_y + 4,
         inner.width,
-        inner.height.saturating_sub(sort_y - inner.y + 3),
+        inner.height.saturating_sub(sort_y - inner.y + 4),
     );
     let detail_width = if area.width >= 116 {
         42
@@ -872,6 +885,108 @@ fn draw_search_page(
         Layout::horizontal([Constraint::Min(30), Constraint::Length(detail_width)]).split(content);
     app.layout.list = columns[0];
     draw_cards(frame, app, theme, columns[0], hits, EmptyKind::Search);
+    if detail_width > 0 {
+        draw_repository_detail(frame, app, theme, columns[1], hits);
+        app.layout.detail = columns[1];
+    }
+}
+
+fn draw_trending_page(
+    frame: &mut Frame,
+    app: &mut App,
+    theme: &Theme,
+    area: Rect,
+    hits: &mut Vec<HitBox>,
+) {
+    fill(frame, area, theme.color("base"));
+    let inner = Rect::new(
+        area.x + 2,
+        area.y + 1,
+        area.width.saturating_sub(4),
+        area.height.saturating_sub(2),
+    );
+    let period = app.trending_period;
+    let total = app
+        .trending_total
+        .map(format::human_count)
+        .unwrap_or_else(|| "?".to_string());
+    let language = app
+        .language_filter
+        .as_deref()
+        .map(|language| format!(" · 只看 {language}"))
+        .unwrap_or_default();
+    draw_page_title(
+        frame,
+        app,
+        theme,
+        inner,
+        &icons::label(icons::FLAME, "热门仓库喵~"),
+        &format!(
+            "GitHub 最近{}涨星最快的仓库，一共 {total} 个{language}喵~按 p 换时段哦喵~",
+            period.short_label()
+        ),
+        "刷新一下喵~",
+        Action::Refresh,
+        hits,
+    );
+
+    let chips_y = inner.y + 3;
+    draw_sort_chips(
+        frame,
+        app,
+        theme,
+        hits,
+        Rect::new(inner.x, chips_y, inner.width, 1),
+        &icons::label(icons::CLOCK, "时段喵~"),
+        &[
+            (
+                TrendingPeriod::Daily.label(),
+                Action::SetTrendingPeriod(TrendingPeriod::Daily),
+                period == TrendingPeriod::Daily,
+            ),
+            (
+                TrendingPeriod::Weekly.label(),
+                Action::SetTrendingPeriod(TrendingPeriod::Weekly),
+                period == TrendingPeriod::Weekly,
+            ),
+            (
+                TrendingPeriod::Monthly.label(),
+                Action::SetTrendingPeriod(TrendingPeriod::Monthly),
+                period == TrendingPeriod::Monthly,
+            ),
+        ],
+    );
+    draw_list_filter(
+        frame,
+        app,
+        theme,
+        Rect::new(inner.x, chips_y + 1, inner.width, 1),
+        hits,
+    );
+    draw_list_pagination(
+        frame,
+        app,
+        theme,
+        hits,
+        Rect::new(inner.x, chips_y + 2, inner.width, 1),
+    );
+    let content = Rect::new(
+        inner.x,
+        chips_y + 3,
+        inner.width,
+        inner.height.saturating_sub(chips_y - inner.y + 3),
+    );
+    let detail_width = if area.width >= 116 {
+        42
+    } else if area.width >= 96 {
+        35
+    } else {
+        0
+    };
+    let columns =
+        Layout::horizontal([Constraint::Min(30), Constraint::Length(detail_width)]).split(content);
+    app.layout.list = columns[0];
+    draw_cards(frame, app, theme, columns[0], hits, EmptyKind::Trending);
     if detail_width > 0 {
         draw_repository_detail(frame, app, theme, columns[1], hits);
         app.layout.detail = columns[1];
@@ -1471,6 +1586,7 @@ enum EmptyKind {
     Repositories,
     Starred,
     Search,
+    Trending,
 }
 
 fn draw_empty_state(
@@ -1481,7 +1597,7 @@ fn draw_empty_state(
     hits: &mut Vec<HitBox>,
     kind: EmptyKind,
 ) {
-    if matches!(kind, EmptyKind::Search) {
+    if matches!(kind, EmptyKind::Search) && app.search_submitted.is_none() {
         draw_search_history(frame, app, theme, area, hits);
         return;
     }
@@ -1489,10 +1605,11 @@ fn draw_empty_state(
         EmptyKind::Repositories => app.repos_loading,
         EmptyKind::Starred => app.starred_loading,
         EmptyKind::Search => app.search_loading,
+        EmptyKind::Trending => app.trending_loading,
     };
     let (title, detail) = if loading {
         ("人家正在搬数据喵~...", "第一次同步会慢一点点，等一等哦喵~")
-    } else if !app.client.token_present() {
+    } else if !app.client.token_present() && !matches!(kind, EmptyKind::Trending) {
         (
             "还没有登录 GitHub喵~",
             "在终端跑一下 gh auth login，再重新打开人家嘛喵~",
@@ -1513,6 +1630,7 @@ fn draw_empty_state(
                 "去 GitHub 点一颗星星，这里就会热闹起来啦喵~",
             ),
             EmptyKind::Search => ("没有搜到仓库喵~", "换个关键词再试试嘛喵~"),
+            EmptyKind::Trending => ("热门仓库还没到喵~", "按 r 刷新，或者稍等一下再看看嘛喵~"),
         }
     };
     draw_center_message(frame, theme, area, title, detail);
@@ -2133,6 +2251,14 @@ fn draw_repo_page(
             "这里有点挤喵~",
             "把终端拉大一点，人家才摆得下仓库页喵~",
         );
+        return;
+    }
+
+    if app.readme_fullscreen {
+        app.layout.page_readme = inner;
+        app.layout.page_tree = Rect::default();
+        app.layout.page_releases = Rect::default();
+        draw_readme_panel(frame, app, theme, inner, hits);
         return;
     }
 
@@ -4236,12 +4362,33 @@ fn draw_file_tree_panel(
     register(hits, area, Action::FocusRepoPane(RepoPane::Tree));
     let focused = app.repo_pane == RepoPane::Tree;
     let title = icons::label(icons::FOLDER_OPEN, "文件树喵~");
+    let counts = app
+        .tree
+        .as_ref()
+        .map(|tree| {
+            let directories = tree
+                .tree
+                .iter()
+                .filter(|entry| entry.kind == "tree")
+                .count();
+            let files = tree
+                .tree
+                .iter()
+                .filter(|entry| entry.kind == "blob")
+                .count();
+            format!("{directories} 目录 · {files} 文件")
+        })
+        .unwrap_or_default();
+    let heading = format!(
+        "{}   {} {}   {counts}",
+        title,
+        icons::BRANCH,
+        format::truncate(&repo.default_branch, 18)
+    );
     frame.render_widget(
-        Paragraph::new(format!(
-            "{}   {} {}",
-            title,
-            icons::BRANCH,
-            format::truncate(&repo.default_branch, 18)
+        Paragraph::new(format::truncate(
+            &heading,
+            area.width.saturating_sub(2) as usize,
         ))
         .style(if focused {
             Style::default()
@@ -4300,7 +4447,7 @@ fn draw_file_tree_panel(
         .iter()
         .filter(|entry| entry.kind == "blob" || entry.kind == "tree")
         .collect();
-    entries.sort_by(|left, right| left.path.cmp(&right.path));
+    entries.sort_by_cached_key(|entry| tree_sort_key(&entry.path, entry.kind == "tree"));
     if entries.is_empty() {
         draw_center_message(
             frame,
@@ -4311,33 +4458,55 @@ fn draw_file_tree_panel(
         );
         return;
     }
+    let mut last_child: std::collections::HashMap<String, String> =
+        std::collections::HashMap::new();
+    for entry in &entries {
+        let (parent, name) = path_parent_and_name(&entry.path);
+        last_child.insert(parent, name);
+    }
     let mut lines: Vec<Line> = Vec::new();
     let mut actions = Vec::new();
     for entry in entries.iter().take(1200) {
-        let depth = entry.path.matches('/').count().min(10);
-        let name = format::clean_text(entry.path.rsplit('/').next().unwrap_or(&entry.path));
+        let (parent, name) = path_parent_and_name(&entry.path);
         let directory = entry.kind == "tree";
         let icon = if directory {
             icons::FOLDER_OPEN
         } else {
             file_icon(&name)
         };
-        let indent = "  ".repeat(depth);
-        let suffix = if !directory {
-            entry
-                .size
-                .map(|size| format!("  {}", format::format_size(size)))
-                .unwrap_or_default()
-        } else {
+        let parts: Vec<&str> = entry.path.split('/').collect();
+        let depth = parts.len().saturating_sub(1).min(8);
+        let mut prefix = String::new();
+        for level in 0..depth {
+            let ancestor = parts[..=level].join("/");
+            let (ancestor_parent, ancestor_name) = path_parent_and_name(&ancestor);
+            let ancestor_is_last = last_child
+                .get(&ancestor_parent)
+                .is_some_and(|last| last == &ancestor_name);
+            prefix.push_str(if ancestor_is_last { "   " } else { "│  " });
+        }
+        let is_last = last_child.get(&parent).is_some_and(|last| last == &name);
+        prefix.push_str(if is_last { "└─ " } else { "├─ " });
+        let prefix_width = format::text_width(&prefix);
+        let size_text = if directory {
             String::new()
+        } else {
+            entry.size.map(format::format_size).unwrap_or_default()
         };
+        let size_width = format::text_width(&size_text);
+        let label = format::truncate(
+            &format::clean_text(&name),
+            (body.width as usize)
+                .saturating_sub(prefix_width + size_width + 3)
+                .max(1),
+        );
         let action = Action::OpenTreePath {
             path: entry.path.clone(),
             directory,
         };
         actions.push((lines.len(), action));
-        lines.push(Line::from(vec![
-            Span::styled(indent, Style::default().fg(theme.color("surface2"))),
+        let mut spans = vec![
+            Span::styled(prefix, Style::default().fg(theme.color("surface2"))),
             Span::styled(
                 format!("{icon} "),
                 Style::default().fg(if directory {
@@ -4347,17 +4516,24 @@ fn draw_file_tree_panel(
                 }),
             ),
             Span::styled(
-                format::truncate(
-                    &format!("{name}{suffix}"),
-                    body.width.saturating_sub(3) as usize,
-                ),
+                label.clone(),
                 Style::default().fg(if directory {
                     theme.color("subtext1")
                 } else {
                     theme.color("subtext0")
                 }),
             ),
-        ]));
+        ];
+        if size_width > 0 && body.width as usize > prefix_width + size_width + 10 {
+            let pad = (body.width as usize)
+                .saturating_sub(prefix_width + size_width + 3 + format::text_width(&label));
+            spans.push(Span::styled(" ".repeat(pad), Style::default()));
+            spans.push(Span::styled(
+                size_text,
+                Style::default().fg(theme.color("overlay0")),
+            ));
+        }
+        lines.push(Line::from(spans));
     }
     if tree.truncated || entries.len() > 1200 {
         lines.push(Line::from(Span::styled(
@@ -4368,6 +4544,21 @@ fn draw_file_tree_panel(
     app.tree_scroll_max = lines.len().saturating_sub(body.height as usize) as u16;
     app.tree_scroll = app.tree_scroll.min(app.tree_scroll_max);
     render_scrolled(frame, body, lines, actions, app.tree_scroll, theme, hits);
+}
+
+fn tree_sort_key(path: &str, directory: bool) -> Vec<(u8, String)> {
+    let mut parts: Vec<&str> = path.split('/').collect();
+    let last = parts.pop().unwrap_or_default();
+    let mut key: Vec<(u8, String)> = parts.iter().map(|part| (0, part.to_lowercase())).collect();
+    key.push((u8::from(!directory), last.to_lowercase()));
+    key
+}
+
+fn path_parent_and_name(path: &str) -> (String, String) {
+    match path.rsplit_once('/') {
+        Some((parent, name)) => (parent.to_string(), name.to_string()),
+        None => (String::new(), path.to_string()),
+    }
 }
 
 fn draw_releases_panel(
@@ -4540,8 +4731,13 @@ fn draw_readme_panel(
         .as_ref()
         .map(|repo| repo.display_full_name())
         .unwrap_or_default();
+    let title_text = if app.readme_fullscreen {
+        icons::label(icons::BOOK, "README · 全屏喵~")
+    } else {
+        icons::label(icons::BOOK, "README")
+    };
     frame.render_widget(
-        Paragraph::new(icons::label(icons::BOOK, "README")).style(if focused {
+        Paragraph::new(title_text).style(if focused || app.readme_fullscreen {
             Style::default()
                 .fg(theme.color("blue"))
                 .add_modifier(Modifier::BOLD)
@@ -4551,11 +4747,6 @@ fn draw_readme_panel(
         Rect::new(area.x + 1, area.y, area.width.saturating_sub(2), 1),
     );
     if let Some(readme) = app.readme.as_ref() {
-        frame.render_widget(
-            Paragraph::new(format::truncate(&format::clean_text(&readme.path), 30))
-                .style(Style::default().fg(theme.color("overlay0"))),
-            Rect::new(area.x + 12, area.y, area.width.saturating_sub(28), 1),
-        );
         let open_label = icons::label(icons::EXTERNAL, "去 GitHub 看喵~");
         let open_width = format::text_width(&open_label) as u16 + 2;
         let open_rect = Rect::new(
@@ -4578,6 +4769,50 @@ fn draw_readme_panel(
             open_rect,
             Action::OpenExternal(readme.html_url.clone()),
         );
+        if app.readme_fullscreen {
+            let exit_label = icons::label(icons::BACK, "退出全屏喵~");
+            let exit_width = format::text_width(&exit_label) as u16 + 4;
+            let exit_x = open_rect.x.saturating_sub(exit_width + 1);
+            if exit_x > area.x + 12 {
+                draw_button(
+                    frame,
+                    app,
+                    theme,
+                    hits,
+                    Rect::new(exit_x, area.y, exit_width, 1),
+                    &exit_label,
+                    Action::ToggleReadmeFullscreen,
+                    true,
+                );
+            }
+        } else {
+            let full_label = icons::label(icons::EXPAND, "全屏喵~");
+            let full_width = format::text_width(&full_label) as u16 + 4;
+            let full_x = open_rect.x.saturating_sub(full_width + 1);
+            if full_x > area.x + 12 {
+                draw_button(
+                    frame,
+                    app,
+                    theme,
+                    hits,
+                    Rect::new(full_x, area.y, full_width, 1),
+                    &full_label,
+                    Action::ToggleReadmeFullscreen,
+                    false,
+                );
+            }
+            let path_width = full_x.saturating_sub(area.x + 13);
+            if path_width > 4 {
+                frame.render_widget(
+                    Paragraph::new(format::truncate(
+                        &format::clean_text(&readme.path),
+                        path_width as usize,
+                    ))
+                    .style(Style::default().fg(theme.color("overlay0"))),
+                    Rect::new(area.x + 12, area.y, path_width, 1),
+                );
+            }
+        }
     }
     fill(
         frame,
@@ -4642,74 +4877,417 @@ fn file_icon(name: &str) -> &'static str {
 fn markdown_lines(text: &str, width: usize, theme: &Theme) -> Vec<Line<'static>> {
     let width = width.max(10);
     let mut out: Vec<Line<'static>> = Vec::new();
-    let mut in_code = false;
-    for raw in text.lines() {
-        let trimmed = raw.trim_end();
-        if trimmed.trim_start().starts_with("```") {
-            in_code = !in_code;
-            continue;
-        }
-        if trimmed.trim_start().starts_with("<!--") {
-            continue;
-        }
-        let clean = format::clean_text(trimmed);
-        if clean.is_empty() {
+    let lines: Vec<&str> = text.lines().collect();
+    let mut index = 0;
+    while index < lines.len() && out.len() < 2000 {
+        let raw = lines[index].trim_end();
+        let trimmed = raw.trim_start();
+        let indent = raw.len().saturating_sub(trimmed.len());
+
+        if trimmed.is_empty() {
             if out.last().is_some_and(|line| line.width() > 0) {
                 out.push(Line::default());
             }
+            index += 1;
             continue;
         }
-        if in_code {
-            for line in format::wrap_text(&clean, width, 4) {
+        if trimmed.starts_with("<!--") {
+            while index < lines.len() && !lines[index].contains("-->") {
+                index += 1;
+            }
+            index += 1;
+            continue;
+        }
+        let fence = if trimmed.starts_with("```") {
+            Some("```")
+        } else if trimmed.starts_with("~~~") {
+            Some("~~~")
+        } else {
+            None
+        };
+        if let Some(fence) = fence {
+            index += 1;
+            while index < lines.len() && !lines[index].trim_start().starts_with(fence) {
+                let code = format::clean_text(lines[index].trim_end());
+                let chunks = if code.is_empty() {
+                    vec![String::new()]
+                } else {
+                    format::wrap_text(&code, width.saturating_sub(2), 40)
+                };
+                for chunk in chunks {
+                    out.push(Line::from(vec![
+                        Span::styled("│ ", Style::default().fg(theme.color("surface2"))),
+                        Span::styled(chunk, Style::default().fg(theme.color("overlay1"))),
+                    ]));
+                }
+                index += 1;
+            }
+            index += 1;
+            out.push(Line::default());
+            continue;
+        }
+        if trimmed.contains('|')
+            && lines
+                .get(index + 1)
+                .is_some_and(|next| is_table_separator(next))
+        {
+            let mut rows = Vec::new();
+            while index < lines.len()
+                && lines[index].contains('|')
+                && !lines[index].trim().is_empty()
+            {
+                rows.push(lines[index]);
+                index += 1;
+            }
+            out.extend(render_markdown_table(&rows, width, theme));
+            out.push(Line::default());
+            continue;
+        }
+        if is_horizontal_rule(trimmed) {
+            out.push(Line::from(Span::styled(
+                "─".repeat(width),
+                Style::default().fg(theme.color("surface1")),
+            )));
+            index += 1;
+            continue;
+        }
+        if let Some(quote) = trimmed.strip_prefix('>') {
+            let text = strip_markdown_inline(quote.trim_start());
+            for chunk in wrap_prefixed("│ ", &text, width, 30) {
                 out.push(Line::from(Span::styled(
-                    line,
-                    Style::default().fg(theme.color("overlay1")),
+                    chunk,
+                    Style::default()
+                        .fg(theme.color("overlay1"))
+                        .add_modifier(Modifier::ITALIC),
                 )));
             }
+            index += 1;
             continue;
         }
-        let heading = clean.starts_with('#');
-        let list = clean.starts_with("- ") || clean.starts_with("* ") || clean.starts_with("+ ");
-        let plain = if heading {
-            strip_markdown_inline(clean.trim_start_matches('#').trim())
-        } else {
-            strip_markdown_inline(&clean)
-        };
-        let prefix = if heading {
-            "".to_string()
-        } else if list {
-            "  • ".to_string()
-        } else {
-            "".to_string()
-        };
-        let text = if list {
-            plain
-                .trim_start_matches(['-', '*', '+'])
-                .trim_start()
-                .to_string()
-        } else {
-            plain
-        };
-        let style = if heading {
-            Style::default()
-                .fg(theme.color("blue"))
-                .add_modifier(Modifier::BOLD)
-        } else {
-            Style::default().fg(theme.color("subtext0"))
-        };
-        for line in format::wrap_text(&format!("{prefix}{text}"), width, 3) {
-            out.push(Line::from(Span::styled(line, style)));
+        let heading_level = trimmed.chars().take_while(|ch| *ch == '#').count();
+        if (1..=6).contains(&heading_level) && trimmed[heading_level..].starts_with(' ') {
+            let text = strip_markdown_inline(trimmed[heading_level..].trim());
+            let prefix = if heading_level == 1 { "▌ " } else { "" };
+            let style = Style::default()
+                .fg(if heading_level <= 2 {
+                    theme.color("blue")
+                } else {
+                    theme.color("peach")
+                })
+                .add_modifier(Modifier::BOLD);
+            for chunk in wrap_prefixed(prefix, &text, width, 6) {
+                out.push(Line::from(Span::styled(chunk, style)));
+            }
+            if heading_level <= 2 {
+                out.push(Line::from(Span::styled(
+                    "─".repeat(width.min(40)),
+                    Style::default().fg(theme.color("surface1")),
+                )));
+            } else {
+                out.push(Line::default());
+            }
+            index += 1;
+            continue;
         }
-        if heading {
-            out.push(Line::default());
+        if let Some((marker, rest)) = list_marker(trimmed) {
+            let level = (indent / 2).min(6);
+            let pad = "  ".repeat(level);
+            let text = strip_markdown_inline(rest);
+            let prefix = format!("{pad}{marker}");
+            for chunk in wrap_prefixed(&prefix, &text, width, 20) {
+                out.push(Line::from(Span::styled(
+                    chunk,
+                    Style::default().fg(theme.color("subtext0")),
+                )));
+            }
+            index += 1;
+            continue;
         }
-        if out.len() > 1600 {
-            break;
+
+        let mut paragraph = String::new();
+        while index < lines.len() {
+            let candidate = lines[index].trim();
+            let first = paragraph.is_empty();
+            if !first
+                && (candidate.is_empty()
+                    || candidate.starts_with("<!--")
+                    || candidate.starts_with('>')
+                    || candidate.starts_with('#')
+                    || candidate.starts_with("```")
+                    || candidate.starts_with("~~~")
+                    || candidate.contains('|')
+                    || is_horizontal_rule(candidate)
+                    || list_marker(candidate).is_some())
+            {
+                break;
+            }
+            if !first {
+                paragraph.push(' ');
+            }
+            paragraph.push_str(candidate);
+            index += 1;
+        }
+        let clean = strip_markdown_inline(&paragraph);
+        if clean.is_empty() {
+            continue;
+        }
+        for chunk in format::wrap_text(&clean, width, 60) {
+            out.push(Line::from(Span::styled(
+                chunk,
+                Style::default().fg(theme.color("subtext0")),
+            )));
         }
     }
     if out.is_empty() {
         out.push(Line::from("这个 README 空空的，人家什么也没读到喵~"));
     }
+    out
+}
+
+fn wrap_prefixed(prefix: &str, text: &str, width: usize, max_lines: usize) -> Vec<String> {
+    let prefix_width = format::text_width(prefix);
+    let body_width = width.saturating_sub(prefix_width).max(4);
+    let chunks = format::wrap_text(text, body_width, max_lines);
+    if chunks.is_empty() {
+        return vec![prefix.to_string()];
+    }
+    chunks
+        .into_iter()
+        .enumerate()
+        .map(|(line, chunk)| {
+            if line == 0 {
+                format!("{prefix}{chunk}")
+            } else {
+                format!("{}{chunk}", " ".repeat(prefix_width))
+            }
+        })
+        .collect()
+}
+
+fn list_marker(line: &str) -> Option<(String, &str)> {
+    for (marker, prefix) in [
+        ("- [ ] ", "[ ] "),
+        ("- [x] ", "[x] "),
+        ("- [X] ", "[x] "),
+        ("* [ ] ", "[ ] "),
+        ("* [x] ", "[x] "),
+        ("- ", "• "),
+        ("* ", "• "),
+        ("+ ", "• "),
+    ] {
+        if let Some(rest) = line.strip_prefix(marker) {
+            return Some((prefix.to_string(), rest));
+        }
+    }
+    let digits = line.chars().take_while(|ch| ch.is_ascii_digit()).count();
+    if digits > 0
+        && digits <= 3
+        && matches!(line.as_bytes().get(digits), Some(b'.') | Some(b')'))
+        && line.as_bytes().get(digits + 1) == Some(&b' ')
+    {
+        return Some((
+            format!("{}. ", &line[..digits]),
+            line[digits + 2..].trim_start(),
+        ));
+    }
+    None
+}
+
+fn is_horizontal_rule(line: &str) -> bool {
+    let compact: String = line.chars().filter(|ch| !ch.is_whitespace()).collect();
+    compact.len() >= 3
+        && compact.chars().all(|ch| matches!(ch, '-' | '*' | '_'))
+        && compact
+            .chars()
+            .next()
+            .is_some_and(|first| compact.chars().all(|ch| ch == first))
+}
+
+fn is_table_separator(line: &str) -> bool {
+    let cells = split_table_row(line);
+    !cells.is_empty()
+        && cells.iter().all(|cell| {
+            let cell = cell.trim();
+            cell.contains('-') && cell.chars().all(|ch| ch == '-' || ch == ':')
+        })
+}
+
+fn table_alignments(line: &str) -> Vec<Alignment> {
+    split_table_row(line)
+        .iter()
+        .map(|cell| {
+            let cell = cell.trim();
+            if cell.starts_with(':') && cell.ends_with(':') {
+                Alignment::Center
+            } else if cell.ends_with(':') {
+                Alignment::Right
+            } else {
+                Alignment::Left
+            }
+        })
+        .collect()
+}
+
+fn split_table_row(line: &str) -> Vec<String> {
+    let line = line.trim();
+    let line = line.strip_prefix('|').unwrap_or(line);
+    let line = line.strip_suffix('|').unwrap_or(line);
+    let mut cells = Vec::new();
+    let mut cell = String::new();
+    let mut in_code = false;
+    let mut chars = line.chars().peekable();
+    while let Some(ch) = chars.next() {
+        match ch {
+            '\\' if chars.peek() == Some(&'|') => {
+                chars.next();
+                cell.push('|');
+            }
+            '`' => {
+                in_code = !in_code;
+                cell.push(ch);
+            }
+            '|' if !in_code => {
+                cells.push(strip_markdown_inline(cell.trim()));
+                cell.clear();
+            }
+            _ => cell.push(ch),
+        }
+    }
+    cells.push(strip_markdown_inline(cell.trim()));
+    cells
+}
+
+fn pad_table_cell(text: &str, width: usize, align: Alignment) -> String {
+    let text = format::truncate(text, width);
+    let pad = width.saturating_sub(format::text_width(&text));
+    match align {
+        Alignment::Right => format!("{}{text}", " ".repeat(pad)),
+        Alignment::Center => {
+            let left = pad / 2;
+            format!("{}{text}{}", " ".repeat(left), " ".repeat(pad - left))
+        }
+        _ => format!("{text}{}", " ".repeat(pad)),
+    }
+}
+
+fn render_markdown_table(rows: &[&str], width: usize, theme: &Theme) -> Vec<Line<'static>> {
+    if rows.len() < 2 {
+        return Vec::new();
+    }
+    let header = split_table_row(rows[0]);
+    let aligns = table_alignments(rows[1]);
+    let body: Vec<Vec<String>> = rows
+        .iter()
+        .skip(2)
+        .map(|row| split_table_row(row))
+        .collect();
+    let columns = header
+        .len()
+        .max(body.iter().map(Vec::len).max().unwrap_or(0));
+    if columns == 0 {
+        return Vec::new();
+    }
+    if width < 3 * columns + 1 {
+        return rows
+            .iter()
+            .enumerate()
+            .filter(|(row, _)| *row != 1)
+            .flat_map(|(_, row)| {
+                let text = split_table_row(row).join(" · ");
+                format::wrap_text(&text, width, 12)
+                    .into_iter()
+                    .map(Line::from)
+                    .collect::<Vec<_>>()
+            })
+            .collect();
+    }
+    let mut widths: Vec<usize> = (0..columns)
+        .map(|column| {
+            std::iter::once(
+                header
+                    .get(column)
+                    .map(|cell| format::text_width(cell))
+                    .unwrap_or(0),
+            )
+            .chain(body.iter().map(|row| {
+                row.get(column)
+                    .map(|cell| format::text_width(cell))
+                    .unwrap_or(0)
+            }))
+            .max()
+            .unwrap_or(1)
+            .clamp(2, 48)
+        })
+        .collect();
+    let mut total = 1 + widths.iter().map(|cell| cell + 3).sum::<usize>();
+    while total > width {
+        let Some((slot, _)) = widths
+            .iter()
+            .enumerate()
+            .filter(|(_, cell)| **cell > 2)
+            .max_by_key(|(_, cell)| **cell)
+        else {
+            break;
+        };
+        widths[slot] -= 1;
+        total -= 1;
+    }
+
+    let border_style = Style::default().fg(theme.color("overlay0"));
+    let header_style = Style::default()
+        .fg(theme.color("blue"))
+        .add_modifier(Modifier::BOLD);
+    let cell_style = Style::default().fg(theme.color("subtext0"));
+    let border = |left: &str, middle: &str, right: &str| {
+        let mut text = String::from(left);
+        for (column, cell) in widths.iter().enumerate() {
+            text.push_str(&"─".repeat(cell + 2));
+            text.push_str(if column + 1 == widths.len() {
+                right
+            } else {
+                middle
+            });
+        }
+        Line::from(Span::styled(text, border_style))
+    };
+    let render_row = |cells: &[String], align: &[Alignment], style: Style| {
+        let wrapped: Vec<Vec<String>> = (0..columns)
+            .map(|column| {
+                let text = cells.get(column).cloned().unwrap_or_default();
+                let chunks = format::wrap_text(&text, widths[column], 8);
+                if chunks.is_empty() {
+                    vec![String::new()]
+                } else {
+                    chunks
+                }
+            })
+            .collect();
+        let height = wrapped.iter().map(Vec::len).max().unwrap_or(1);
+        let mut lines = Vec::new();
+        for row in 0..height {
+            let mut spans = vec![Span::styled("│", border_style)];
+            for column in 0..columns {
+                let text = wrapped[column].get(row).cloned().unwrap_or_default();
+                let alignment = align.get(column).copied().unwrap_or(Alignment::Left);
+                spans.push(Span::styled(
+                    format!(" {} ", pad_table_cell(&text, widths[column], alignment)),
+                    style,
+                ));
+                spans.push(Span::styled("│", border_style));
+            }
+            lines.push(Line::from(spans));
+        }
+        lines
+    };
+
+    let mut out = vec![border("╭", "┬", "╮")];
+    let header_align = vec![Alignment::Left; columns];
+    out.extend(render_row(&header, &header_align, header_style));
+    out.push(border("├", "┼", "┤"));
+    for row in &body {
+        out.extend(render_row(row, &aligns, cell_style));
+    }
+    out.push(border("╰", "┴", "╯"));
     out
 }
 
@@ -5821,7 +6399,7 @@ fn draw_help(frame: &mut Frame, app: &mut App, theme: &Theme, area: Rect, hits: 
     let lines = [
         (
             "换页喵~",
-            "1 仓库  2 收藏  3 搜索  4 账号  5 通知  Tab 切页喵~",
+            "1 仓库  2 收藏  3 搜索  4 账号  5 通知  6 热门  Tab 切页喵~",
         ),
         (
             "挑挑喵~",
@@ -5834,7 +6412,12 @@ fn draw_help(frame: &mut Frame, app: &mut App, theme: &Theme, area: Rect, hits: 
         ),
         (
             "找找喵~",
-            "/ 筛选仓库/收藏/发行版，Enter/Esc 离开，s 全局搜索喵~",
+            "s 输入关键词  / 在结果里筛选  l 挑语言  Enter 打开喵~",
+        ),
+        ("热门喵~", "6 看热门仓库，p 换今日/本周/本月，/ 筛选喵~"),
+        (
+            "看说明喵~",
+            "仓库页按 F 全屏看 README，TAB 切面板，j/k 滚动喵~",
         ),
         ("账号喵~", "4 看账号信息，还能查 GitHub API 额度喵~"),
         (
@@ -5981,5 +6564,24 @@ mod tests {
             strip_markdown_inline("**bold** and `code`"),
             "bold and code"
         );
+    }
+
+    #[test]
+    fn renders_markdown_tables_within_width() {
+        let paths = crate::config::Paths::for_test("missing".into(), "missing".into());
+        let theme = Theme::load(&paths, "mocha");
+        let markdown = "# 标题\n\n| 名称 | 说明 |\n| --- | :---: |\n| gxt | 终端里的工作台，支持很多很多很多很多很多很多很多很多很多很多很多功能喵~ |\n\n普通段落。\n";
+        for width in [20usize, 40, 80] {
+            let lines = markdown_lines(markdown, width, &theme);
+            assert!(
+                lines
+                    .iter()
+                    .any(|line| line.spans.iter().any(|span| span.content.contains('╭'))),
+                "table should be drawn as a grid"
+            );
+            for line in lines {
+                assert!(line.width() <= width, "line wider than {width}: {:?}", line);
+            }
+        }
     }
 }

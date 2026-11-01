@@ -1,8 +1,8 @@
 use crate::format::base64_decode;
 use crate::model::{
     Issue, IssueState, Notification, RateLimit, ReadmeContent, Release, Repo, SearchOutcome,
-    SearchResponse, SearchSort, StarredRepo, TreeResponse, User, Workflow, WorkflowJob,
-    WorkflowJobsResponse, WorkflowListResponse, WorkflowRun, WorkflowRunsResponse,
+    SearchResponse, SearchSort, StarredRepo, TreeResponse, TrendingPeriod, User, Workflow,
+    WorkflowJob, WorkflowJobsResponse, WorkflowListResponse, WorkflowRun, WorkflowRunsResponse,
 };
 use serde::de::DeserializeOwned;
 use std::fs;
@@ -12,7 +12,7 @@ use std::process::Command;
 use std::time::{Duration, Instant};
 
 const API: &str = "https://api.github.com";
-const USER_AGENT: &str = "gxt/0.1.7-1";
+const USER_AGENT: &str = "gxt/0.2.0";
 
 #[derive(Clone)]
 pub struct ApiClient {
@@ -268,6 +268,13 @@ impl ApiClient {
             total: response.total_count,
             items: response.items,
         })
+    }
+
+    pub fn trending(&self, period: TrendingPeriod) -> Result<SearchOutcome, String> {
+        self.search(
+            &format!("created:>{}", days_ago_date(period.days())),
+            SearchSort::Stars,
+        )
     }
 
     pub fn file_tree(
@@ -645,6 +652,29 @@ fn join_proxy(base: &str, github_url: &str) -> String {
     }
 }
 
+fn days_ago_date(days: u64) -> String {
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|duration| duration.as_secs())
+        .unwrap_or(0);
+    let day = now.saturating_sub(days.saturating_mul(86_400)) / 86_400;
+    let (year, month, day_of_month) = civil_from_days(day as i64);
+    format!("{year:04}-{month:02}-{day_of_month:02}")
+}
+
+fn civil_from_days(days: i64) -> (i64, u32, u32) {
+    let z = days + 719_468;
+    let era = if z >= 0 { z } else { z - 146_096 } / 146_097;
+    let doe = z - era * 146_097;
+    let yoe = (doe - doe / 1460 + doe / 36_524 - doe / 146_096) / 365;
+    let y = yoe + era * 400;
+    let doy = doe - (365 * yoe + yoe / 4 - yoe / 100);
+    let mp = (5 * doy + 2) / 153;
+    let d = doy - (153 * mp + 2) / 5 + 1;
+    let m = mp + if mp < 10 { 3 } else { -9 };
+    (y + i64::from(m <= 2), m as u32, d as u32)
+}
+
 fn percent_encode(input: &str) -> String {
     let mut out = String::new();
     for byte in input.as_bytes() {
@@ -718,6 +748,13 @@ mod tests {
             "topic%3Acli%20stars%3A%3E100"
         );
         assert_eq!(percent_encode("中文"), "%E4%B8%AD%E6%96%87");
+    }
+
+    #[test]
+    fn civil_dates_are_exact() {
+        assert_eq!(civil_from_days(0), (1970, 1, 1));
+        assert_eq!(civil_from_days(10_957), (2000, 1, 1));
+        assert_eq!(civil_from_days(19_723), (2024, 1, 1));
     }
 
     #[test]

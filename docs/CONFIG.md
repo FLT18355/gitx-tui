@@ -28,7 +28,7 @@ download_dir = "~/Downloads/gitx-tui"
 | `proxy` | 公开 API 与发行版下载的加速地址 |
 | `repos_ttl_secs` | 仓库和收藏列表缓存时间 |
 | `detail_ttl_secs` | 仓库详情、文件树、README、发行版、Actions、议题和通知缓存时间 |
-| `search_ttl_secs` | 搜索结果缓存时间 |
+| `search_ttl_secs` | 搜索结果和热门列表缓存时间 |
 | `search_history` | 最近搜索，最多 8 条 |
 | `show_file_tree` | 是否加载仓库文件树 |
 | `show_readme` | 是否加载 README |

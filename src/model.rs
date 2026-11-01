@@ -384,6 +384,55 @@ impl SearchSort {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum TrendingPeriod {
+    Daily,
+    Weekly,
+    Monthly,
+}
+
+impl TrendingPeriod {
+    pub fn label(self) -> &'static str {
+        match self {
+            Self::Daily => "今日喵~",
+            Self::Weekly => "本周喵~",
+            Self::Monthly => "本月喵~",
+        }
+    }
+
+    pub fn days(self) -> u64 {
+        match self {
+            Self::Daily => 1,
+            Self::Weekly => 7,
+            Self::Monthly => 30,
+        }
+    }
+
+    pub fn short_label(self) -> &'static str {
+        match self {
+            Self::Daily => "今日",
+            Self::Weekly => "本周",
+            Self::Monthly => "本月",
+        }
+    }
+
+    pub fn key(self) -> &'static str {
+        match self {
+            Self::Daily => "daily",
+            Self::Weekly => "weekly",
+            Self::Monthly => "monthly",
+        }
+    }
+
+    pub fn next(self) -> Self {
+        match self {
+            Self::Daily => Self::Weekly,
+            Self::Weekly => Self::Monthly,
+            Self::Monthly => Self::Daily,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum StarSort {
     Starred,
     Updated,
