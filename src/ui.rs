@@ -64,6 +64,8 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
         Some(Overlay::Cache) => draw_cache_overlay(frame, app, &theme, area, &mut hits),
         Some(Overlay::RunWorkflow) => draw_workflow_overlay(frame, app, &theme, area, &mut hits),
         Some(Overlay::Branches) => draw_branches_overlay(frame, app, &theme, area, &mut hits),
+        Some(Overlay::ForkRepo) => draw_fork_overlay(frame, app, &theme, area, &mut hits),
+        Some(Overlay::DeleteRepo) => draw_delete_overlay(frame, app, &theme, area, &mut hits),
         None => app.layout.overlay = Rect::default(),
     }
 
@@ -281,7 +283,7 @@ fn hints_for(app: &App) -> &'static str {
         }
         Page::Settings => "j/k 选    h/l 调    Enter 操作    Ctrl+S 保存    Esc 离开喵~",
         Page::Repo => {
-            "Esc 返回  Tab 换面板  b 分支  C 提交  F 全屏 README  a 工作流  i 议题  Y Fork  o 主页喵~"
+            "Esc 返回  Tab 换面板  b 分支  C 提交  F 全屏 README  a 工作流  i 议题  Y Fork  D 删除  o 主页喵~"
         }
         Page::Actions => {
             "j/k 挑运行  Enter 去浏览器  R/x 运行工作流  PgUp/PgDn 滚任务  r 刷新  Esc 返回喵~"
@@ -2212,6 +2214,55 @@ fn draw_repo_card(
     }
 }
 
+fn repo_title_line(
+    theme: &Theme,
+    repo: &Repo,
+    owner_hovered: bool,
+    max_width: u16,
+) -> Line<'static> {
+    let icon = format!("{} ", icons::REPO);
+    let owner = repo.owner_name();
+    let name = repo.name.as_str();
+    let icon_width = format::text_width(&icon);
+    let max_width = max_width as usize;
+    let name_style = Style::default()
+        .fg(theme.color("text"))
+        .add_modifier(Modifier::BOLD);
+    if max_width <= icon_width {
+        return Line::from(Span::styled(
+            format::truncate(&format!("{icon}{owner}/{name}"), max_width),
+            name_style,
+        ));
+    }
+    let owner_style = if owner_hovered {
+        Style::default()
+            .fg(theme.color("blue"))
+            .add_modifier(Modifier::UNDERLINED)
+    } else {
+        Style::default().fg(theme.color("overlay1"))
+    };
+    let owner_display = format::truncate(owner, max_width - icon_width);
+    let owner_width = format::text_width(&owner_display);
+    let mut spans = vec![
+        Span::styled(icon, name_style),
+        Span::styled(owner_display, owner_style),
+    ];
+    let used = icon_width + owner_width;
+    if used < max_width {
+        spans.push(Span::styled(
+            "/",
+            Style::default().fg(theme.color("overlay0")),
+        ));
+        if used + 1 < max_width {
+            spans.push(Span::styled(
+                format::truncate(name, max_width - used - 1),
+                name_style,
+            ));
+        }
+    }
+    Line::from(spans)
+}
+
 fn draw_repository_detail(
     frame: &mut Frame,
     app: &mut App,
@@ -2255,16 +2306,12 @@ fn draw_repository_detail(
             .style(Style::default().fg(theme.color("overlay0"))),
         Rect::new(inner.x, inner.y, inner.width, 1),
     );
+    let owner_hovered = app
+        .hover
+        .as_ref()
+        .is_some_and(|action| action == &Action::OpenProfile(repo.owner_name().to_string()));
     frame.render_widget(
-        Paragraph::new(format::truncate(
-            &format!("{} {}", icons::REPO, repo.display_full_name()),
-            inner.width as usize,
-        ))
-        .style(
-            Style::default()
-                .fg(theme.color("text"))
-                .add_modifier(Modifier::BOLD),
-        ),
+        Paragraph::new(repo_title_line(theme, &repo, owner_hovered, inner.width)),
         Rect::new(inner.x, inner.y + 1, inner.width, 1),
     );
     register_owner_hit(hits, inner.x, inner.y + 1, inner.width, repo.owner_name());
@@ -2704,14 +2751,13 @@ fn draw_repo_page(
         !starred,
     );
 
-    let title = format!("{} {}", icons::REPO, repo.display_full_name());
     let title_width = inner.width.saturating_sub(star_width + 3);
+    let owner_hovered = app
+        .hover
+        .as_ref()
+        .is_some_and(|action| action == &Action::OpenProfile(repo.owner_name().to_string()));
     frame.render_widget(
-        Paragraph::new(format::truncate(&title, title_width as usize)).style(
-            Style::default()
-                .fg(theme.color("text"))
-                .add_modifier(Modifier::BOLD),
-        ),
+        Paragraph::new(repo_title_line(theme, &repo, owner_hovered, title_width)),
         Rect::new(inner.x, inner.y + 1, title_width, 1),
     );
     register_owner_hit(hits, inner.x, inner.y + 1, title_width, repo.owner_name());
@@ -2814,6 +2860,15 @@ fn draw_repo_page(
             (
                 icons::label(icons::FORK, "Fork 喵~"),
                 Action::ForkRepo,
+                false,
+            ),
+        );
+    } else {
+        buttons.insert(
+            2,
+            (
+                icons::label(icons::TRASH, "删除喵~"),
+                Action::DeleteRepo,
                 false,
             ),
         );
@@ -5128,6 +5183,273 @@ fn draw_workflow_overlay(
     app.layout.overlay = rect;
 }
 
+fn draw_fork_overlay(
+    frame: &mut Frame,
+    app: &mut App,
+    theme: &Theme,
+    area: Rect,
+    hits: &mut Vec<HitBox>,
+) {
+    let width = area.width.saturating_sub(12).min(68);
+    let height = area.height.saturating_sub(8).min(15);
+    if width < 38 || height < 10 {
+        return;
+    }
+    let rect = Rect::new(
+        area.x + (area.width.saturating_sub(width)) / 2,
+        area.y + (area.height.saturating_sub(height)) / 2,
+        width,
+        height,
+    );
+    frame.render_widget(Clear, rect);
+    fill(frame, rect, theme.color("mantle"));
+    frame.render_widget(
+        Block::new()
+            .borders(Borders::ALL)
+            .border_style(Style::default().fg(theme.color("blue"))),
+        rect,
+    );
+    let inner = Rect::new(
+        rect.x + 2,
+        rect.y + 1,
+        rect.width.saturating_sub(4),
+        rect.height.saturating_sub(2),
+    );
+    frame.render_widget(
+        Paragraph::new(icons::label(icons::FORK, "Fork 仓库喵~")).style(
+            Style::default()
+                .fg(theme.color("text"))
+                .add_modifier(Modifier::BOLD),
+        ),
+        Rect::new(inner.x, inner.y, inner.width, 1),
+    );
+    let Some(repo) = app.fork_repo.as_ref() else {
+        draw_center_message(
+            frame,
+            theme,
+            inner,
+            "没有选仓库喵~",
+            "关掉这个小窗口再挑一个嘛喵~",
+        );
+        app.layout.overlay = rect;
+        return;
+    };
+    let mut y = inner.y + 2;
+    frame.render_widget(
+        Paragraph::new(format::truncate(
+            &format!("{} {}", icons::REPO, repo.display_full_name()),
+            inner.width as usize,
+        ))
+        .style(
+            Style::default()
+                .fg(theme.color("text"))
+                .add_modifier(Modifier::BOLD),
+        ),
+        Rect::new(inner.x, y, inner.width, 1),
+    );
+    y += 1;
+    frame.render_widget(
+        Paragraph::new(format::truncate(
+            &format!(
+                "作者 @{}   {} 星标   {} Fork   默认分支 {}喵~",
+                repo.owner_name(),
+                format::human_count(repo.stargazers_count),
+                format::human_count(repo.forks_count),
+                app.branch_for(repo)
+            ),
+            inner.width as usize,
+        ))
+        .style(Style::default().fg(theme.color("subtext0"))),
+        Rect::new(inner.x, y, inner.width, 1),
+    );
+    y += 2;
+    let target = app.login.as_deref().unwrap_or("未登录");
+    frame.render_widget(
+        Paragraph::new(format::truncate(
+            &format!("{} 会复制到你的账号 @{} 下面喵~", icons::USER, target),
+            inner.width as usize,
+        ))
+        .style(Style::default().fg(theme.color("blue"))),
+        Rect::new(inner.x, y, inner.width, 1),
+    );
+    y += 1;
+    frame.render_widget(
+        Paragraph::new(format::truncate(
+            "Fork 只是复制一份，原仓库不会被改动喵~",
+            inner.width as usize,
+        ))
+        .style(Style::default().fg(theme.color("overlay0"))),
+        Rect::new(inner.x, y, inner.width, 1),
+    );
+    y += 1;
+    frame.render_widget(
+        Paragraph::new(format::truncate(
+            "之后可以在自己的账号里继续改，或者再发合并请求喵~",
+            inner.width as usize,
+        ))
+        .style(Style::default().fg(theme.color("overlay0"))),
+        Rect::new(inner.x, y, inner.width, 1),
+    );
+
+    let bottom = inner.y + inner.height.saturating_sub(1);
+    let mut x = inner.x;
+    let confirm = if app.fork_loading.is_some() {
+        format!("{} 正在 Fork 喵~", app.spinner())
+    } else {
+        icons::label(icons::FORK, "开始 Fork 喵~")
+    };
+    let confirm_width = format::text_width(&confirm) as u16 + 4;
+    if x + confirm_width <= inner.x + inner.width {
+        draw_button(
+            frame,
+            app,
+            theme,
+            hits,
+            Rect::new(x, bottom, confirm_width, 1),
+            &confirm,
+            Action::ConfirmFork,
+            true,
+        );
+        x += confirm_width + 1;
+    }
+    let cancel = "再想想喵~";
+    let cancel_width = format::text_width(cancel) as u16 + 4;
+    if x + cancel_width <= inner.x + inner.width {
+        draw_button(
+            frame,
+            app,
+            theme,
+            hits,
+            Rect::new(x, bottom, cancel_width, 1),
+            cancel,
+            Action::CloseOverlay,
+            false,
+        );
+    }
+    app.layout.overlay = rect;
+}
+
+fn draw_delete_overlay(
+    frame: &mut Frame,
+    app: &mut App,
+    theme: &Theme,
+    area: Rect,
+    hits: &mut Vec<HitBox>,
+) {
+    let width = area.width.saturating_sub(14).min(60);
+    let height = area.height.saturating_sub(10).min(12);
+    if width < 34 || height < 9 {
+        return;
+    }
+    let rect = Rect::new(
+        area.x + (area.width.saturating_sub(width)) / 2,
+        area.y + (area.height.saturating_sub(height)) / 2,
+        width,
+        height,
+    );
+    frame.render_widget(Clear, rect);
+    fill(frame, rect, theme.color("mantle"));
+    frame.render_widget(
+        Block::new()
+            .borders(Borders::ALL)
+            .border_style(Style::default().fg(theme.color("red"))),
+        rect,
+    );
+    let inner = Rect::new(
+        rect.x + 2,
+        rect.y + 1,
+        rect.width.saturating_sub(4),
+        rect.height.saturating_sub(2),
+    );
+    frame.render_widget(
+        Paragraph::new(icons::label(icons::TRASH, "删除仓库喵~")).style(
+            Style::default()
+                .fg(theme.color("red"))
+                .add_modifier(Modifier::BOLD),
+        ),
+        Rect::new(inner.x, inner.y, inner.width, 1),
+    );
+    let Some(repo) = app.delete_repo.as_ref() else {
+        draw_center_message(
+            frame,
+            theme,
+            inner,
+            "没有选仓库喵~",
+            "关掉这个小窗口再挑一个嘛喵~",
+        );
+        app.layout.overlay = rect;
+        return;
+    };
+    let mut y = inner.y + 2;
+    frame.render_widget(
+        Paragraph::new(format::truncate(
+            &format!("{} {}", icons::REPO, repo.display_full_name()),
+            inner.width as usize,
+        ))
+        .style(
+            Style::default()
+                .fg(theme.color("text"))
+                .add_modifier(Modifier::BOLD),
+        ),
+        Rect::new(inner.x, y, inner.width, 1),
+    );
+    y += 1;
+    frame.render_widget(
+        Paragraph::new(format::truncate(
+            "这个操作不能撤销喵！仓库里的议题、发行版和 Actions 记录都会一起消失喵~",
+            inner.width as usize,
+        ))
+        .style(Style::default().fg(theme.color("peach"))),
+        Rect::new(inner.x, y, inner.width, 1),
+    );
+    y += 1;
+    frame.render_widget(
+        Paragraph::new(format::truncate(
+            "确定要从 GitHub 删除这个仓库吗喵？",
+            inner.width as usize,
+        ))
+        .style(Style::default().fg(theme.color("red"))),
+        Rect::new(inner.x, y, inner.width, 1),
+    );
+
+    let bottom = inner.y + inner.height.saturating_sub(1);
+    let mut x = inner.x;
+    let confirm = if app.delete_loading.is_some() {
+        format!("{} 正在删除喵~", app.spinner())
+    } else {
+        icons::label(icons::TRASH, "确认删除喵~")
+    };
+    let confirm_width = format::text_width(&confirm) as u16 + 4;
+    if x + confirm_width <= inner.x + inner.width {
+        draw_button(
+            frame,
+            app,
+            theme,
+            hits,
+            Rect::new(x, bottom, confirm_width, 1),
+            &confirm,
+            Action::ConfirmDeleteRepo,
+            true,
+        );
+        x += confirm_width + 1;
+    }
+    let cancel = "取消喵~";
+    let cancel_width = format::text_width(cancel) as u16 + 4;
+    if x + cancel_width <= inner.x + inner.width {
+        draw_button(
+            frame,
+            app,
+            theme,
+            hits,
+            Rect::new(x, bottom, cancel_width, 1),
+            cancel,
+            Action::CloseOverlay,
+            false,
+        );
+    }
+    app.layout.overlay = rect;
+}
+
 fn draw_file_tree_panel(
     frame: &mut Frame,
     app: &mut App,
@@ -7288,7 +7610,7 @@ fn draw_help(frame: &mut Frame, app: &mut App, theme: &Theme, area: Rect, hits: 
         ),
         (
             "看仓库喵~",
-            "Enter 进仓库页  o 去浏览器  y 复制克隆  Y Fork 喵~",
+            "Enter 进仓库页  o 去浏览器  y 复制  Y Fork  D 删除喵~",
         ),
         (
             "改自己喵~",
@@ -7582,6 +7904,74 @@ mod tests {
             app.hitboxes
                 .iter()
                 .any(|hit| matches!(&hit.action, Action::OpenProfile(login) if login == "octocat"))
+        );
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn author_title_underlines_on_hover() {
+        let paths = crate::config::Paths::for_test("missing".into(), "missing".into());
+        let theme = Theme::load(&paths, "mocha");
+        let repo = test_repo("octocat", "hello-world");
+        let line = repo_title_line(&theme, &repo, true, 60);
+        assert!(line.spans.iter().any(|span| {
+            span.content.contains("octocat")
+                && span.style.add_modifier.contains(Modifier::UNDERLINED)
+        }));
+        let line = repo_title_line(&theme, &repo, false, 60);
+        assert!(line.spans.iter().all(|span| {
+            !span.content.contains("octocat")
+                || !span.style.add_modifier.contains(Modifier::UNDERLINED)
+        }));
+    }
+
+    #[test]
+    fn fork_and_delete_overlays_show_confirm_buttons() {
+        let dir = std::env::temp_dir().join(format!("gitx-confirm-ui-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        let paths = crate::config::Paths::for_test(dir.join("config"), dir.join("cache"));
+        let mut app = App::settings(paths, None);
+        app.settings_only = false;
+        app.login = Some("me".to_string());
+        let repo = test_repo("octocat", "hello-world");
+        app.page = Page::Repo;
+        app.return_page = Page::Repositories;
+        app.page_repo = Some(repo.clone());
+        app.detail = Some(repo.clone());
+        app.fork_repo = Some(repo.clone());
+        app.overlay = Some(Overlay::ForkRepo);
+        let mut terminal = ratatui::Terminal::new(ratatui::backend::TestBackend::new(100, 32))
+            .expect("test terminal");
+        terminal
+            .draw(|frame| draw(frame, &mut app))
+            .expect("render fork overlay");
+        let text = buffer_text(terminal.backend().buffer())
+            .split_whitespace()
+            .collect::<String>();
+        assert!(text.contains("Fork仓库"));
+        assert!(
+            app.hitboxes
+                .iter()
+                .any(|hit| hit.action == Action::ConfirmFork)
+        );
+
+        app.overlay = Some(Overlay::DeleteRepo);
+        app.fork_repo = None;
+        app.delete_repo = Some(repo);
+        let mut terminal = ratatui::Terminal::new(ratatui::backend::TestBackend::new(100, 32))
+            .expect("test terminal");
+        terminal
+            .draw(|frame| draw(frame, &mut app))
+            .expect("render delete overlay");
+        let text = buffer_text(terminal.backend().buffer())
+            .split_whitespace()
+            .collect::<String>();
+        assert!(text.contains("删除仓库"));
+        assert!(text.contains("不能撤销"));
+        assert!(
+            app.hitboxes
+                .iter()
+                .any(|hit| hit.action == Action::ConfirmDeleteRepo)
         );
         let _ = std::fs::remove_dir_all(dir);
     }

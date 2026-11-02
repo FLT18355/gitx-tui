@@ -96,6 +96,8 @@ pub enum Overlay {
     Cache,
     RunWorkflow,
     Branches,
+    ForkRepo,
+    DeleteRepo,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -199,6 +201,9 @@ pub enum Action {
     OpenExternal(String),
     OpenProfile(String),
     ForkRepo,
+    ConfirmFork,
+    DeleteRepo,
+    ConfirmDeleteRepo,
     ToggleStar,
     CloseOverlay,
     PrevListPage,
@@ -517,6 +522,10 @@ enum Msg {
         name: String,
         result: Result<Repo, String>,
     },
+    RepoDeleted {
+        name: String,
+        result: Result<(), String>,
+    },
     DownloadProgress {
         id: u64,
         received: u64,
@@ -620,7 +629,10 @@ pub struct App {
     pub profile_error: Option<String>,
     profile_selected: usize,
     profile_return_page: Page,
+    pub fork_repo: Option<Repo>,
     pub fork_loading: Option<String>,
+    pub delete_repo: Option<Repo>,
+    pub delete_loading: Option<String>,
     pub cache_row: usize,
     pub page: Page,
     pub return_page: Page,
@@ -819,7 +831,10 @@ impl App {
             profile_error: None,
             profile_selected: 0,
             profile_return_page: Page::Repositories,
+            fork_repo: None,
             fork_loading: None,
+            delete_repo: None,
+            delete_loading: None,
             cache_row: 0,
             page: if settings_only {
                 Page::Settings
@@ -1427,6 +1442,8 @@ impl App {
                 }
                 match result {
                     Ok(repo) => {
+                        self.overlay = None;
+                        self.fork_repo = None;
                         let own = self
                             .login
                             .as_deref()
@@ -1453,6 +1470,19 @@ impl App {
                                 repo.display_full_name()
                             ),
                         );
+                    }
+                    Err(error) => self.set_status(StatusKind::Error, &error),
+                }
+            }
+            Msg::RepoDeleted { name, result } => {
+                if self.delete_loading.as_deref() == Some(name.as_str()) {
+                    self.delete_loading = None;
+                }
+                match result {
+                    Ok(()) => {
+                        self.overlay = None;
+                        self.delete_repo = None;
+                        self.finish_deleted_repo(&name);
                     }
                     Err(error) => self.set_status(StatusKind::Error, &error),
                 }
@@ -2936,6 +2966,9 @@ impl App {
         }
         if self.fork_loading.is_some() {
             return Some("人家正在帮你 Fork 仓库喵~...");
+        }
+        if self.delete_loading.is_some() {
+            return Some("人家正在删除仓库喵~...");
         }
         if self.search_loading && self.page == Page::Search {
             return Some("人家正在翻找仓库喵~...");
@@ -4726,7 +4759,7 @@ impl App {
         });
     }
 
-    pub fn fork_current_repo(&mut self) {
+    pub fn open_fork_repo(&mut self) {
         let Some(repo) = self.effective_repo() else {
             self.set_status(StatusKind::Info, "先选一个仓库，人家才知道 Fork 哪个喵~");
             return;
@@ -4739,7 +4772,6 @@ impl App {
             self.set_status(StatusKind::Error, "还没登录呢，人家 Fork 不了哦喵~");
             return;
         }
-        let name = repo.display_full_name();
         if self.fork_loading.is_some() {
             self.set_status(
                 StatusKind::Info,
@@ -4747,6 +4779,18 @@ impl App {
             );
             return;
         }
+        self.fork_repo = Some(repo);
+        self.overlay = Some(Overlay::ForkRepo);
+    }
+
+    pub fn confirm_fork_repo(&mut self) {
+        let Some(repo) = self.fork_repo.clone() else {
+            return;
+        };
+        if self.fork_loading.is_some() {
+            return;
+        }
+        let name = repo.display_full_name();
         self.fork_loading = Some(name.clone());
         self.set_status(
             StatusKind::Info,
@@ -4758,6 +4802,104 @@ impl App {
             let result = client.fork_repository(&name);
             let _ = tx.send(Msg::RepoForked { name, result });
         });
+    }
+
+    pub fn open_delete_repo(&mut self) {
+        let Some(repo) = self.effective_repo() else {
+            self.set_status(StatusKind::Info, "先选一个仓库，人家才知道删哪个喵~");
+            return;
+        };
+        if !self.is_own_repo(&repo) {
+            self.set_status(StatusKind::Info, "只能删除自己的仓库哦喵~");
+            return;
+        }
+        if !self.client.token_present() {
+            self.set_status(StatusKind::Error, "还没登录呢，人家删不了仓库哦喵~");
+            return;
+        }
+        if self.delete_loading.is_some() {
+            self.set_status(StatusKind::Info, "上一个删除还在路上呢，等人家一下下嘛喵~");
+            return;
+        }
+        self.delete_repo = Some(repo);
+        self.overlay = Some(Overlay::DeleteRepo);
+    }
+
+    pub fn confirm_delete_repo(&mut self) {
+        let Some(repo) = self.delete_repo.clone() else {
+            return;
+        };
+        if !self.is_own_repo(&repo) {
+            self.set_status(StatusKind::Error, "这个仓库不是你的，删不了哦喵~");
+            return;
+        }
+        if self.delete_loading.is_some() {
+            return;
+        }
+        let name = repo.display_full_name();
+        self.delete_loading = Some(name.clone());
+        self.set_status(
+            StatusKind::Error,
+            &format!("人家正在删除 {name}，这个操作不能撤销喵~..."),
+        );
+        let tx = self.tx.clone();
+        let client = self.client.clone();
+        std::thread::spawn(move || {
+            let result = client.delete_repository(&name);
+            let _ = tx.send(Msg::RepoDeleted { name, result });
+        });
+    }
+
+    fn finish_deleted_repo(&mut self, name: &str) {
+        for list in [
+            &mut self.repos,
+            &mut self.starred,
+            &mut self.search_results,
+            &mut self.trending,
+            &mut self.profile_repos,
+        ] {
+            list.retain(|repo| repo.display_full_name() != name);
+        }
+        if let Some(login) = self.login.clone() {
+            let _ = self.cache.save(&repos_cache_key(&login), &self.repos);
+            let _ = self.cache.save(&starred_cache_key(&login), &self.starred);
+        }
+        let key = key_part(name);
+        let prefixes = [
+            format!("repo_{key}"),
+            format!("releases_{key}"),
+            format!("tree_{key}_"),
+            format!("readme_{key}_"),
+            format!("branches_{key}"),
+            format!("commits_{key}_"),
+            format!("actions_{key}"),
+        ];
+        let prefixes = prefixes.iter().map(String::as_str).collect::<Vec<_>>();
+        let _ = self.cache.clear_prefixes(&prefixes);
+        self.refresh_cache_stats();
+        let current = self
+            .page_repo
+            .as_ref()
+            .is_some_and(|repo| repo.display_full_name() == name)
+            || self
+                .detail
+                .as_ref()
+                .is_some_and(|repo| repo.display_full_name() == name);
+        if current {
+            self.page_repo = None;
+            self.detail = None;
+            self.detail_for = None;
+            self.detail_fetched_at = None;
+            self.releases.clear();
+            self.releases_fetched_at = None;
+            self.tree = None;
+            self.readme = None;
+            self.branches.clear();
+            self.commits.clear();
+            self.go_back();
+        }
+        self.clamp_selection();
+        self.set_status(StatusKind::Ok, &format!("{name} 已经从 GitHub 删除喵~"));
     }
 
     pub fn open_external_url(&mut self, url: &str) {
@@ -4907,6 +5049,36 @@ impl App {
         }
         if self.overlay == Some(Overlay::RunWorkflow) {
             self.handle_workflow_key(key);
+            return;
+        }
+        if self.overlay == Some(Overlay::ForkRepo) {
+            match key.code {
+                KeyCode::Esc | KeyCode::Char('q') => {
+                    if self.fork_loading.is_none() {
+                        self.overlay = None;
+                        self.fork_repo = None;
+                    }
+                }
+                KeyCode::Enter | KeyCode::Char('\r') | KeyCode::Char('\n') => {
+                    self.confirm_fork_repo();
+                }
+                _ => {}
+            }
+            return;
+        }
+        if self.overlay == Some(Overlay::DeleteRepo) {
+            match key.code {
+                KeyCode::Esc | KeyCode::Char('q') => {
+                    if self.delete_loading.is_none() {
+                        self.overlay = None;
+                        self.delete_repo = None;
+                    }
+                }
+                KeyCode::Enter | KeyCode::Char('\r') | KeyCode::Char('\n') => {
+                    self.confirm_delete_repo();
+                }
+                _ => {}
+            }
             return;
         }
         if self.overlay == Some(Overlay::Languages) {
@@ -5212,7 +5384,8 @@ impl App {
             KeyCode::Char('C') if self.page.is_repo_page() => self.open_commits(),
             KeyCode::Char('a') => self.open_actions(),
             KeyCode::Char('i') => self.open_issues(IssueKind::All),
-            KeyCode::Char('Y') if self.page == Page::Repo => self.fork_current_repo(),
+            KeyCode::Char('Y') if self.page == Page::Repo => self.open_fork_repo(),
+            KeyCode::Char('D') if self.page == Page::Repo => self.open_delete_repo(),
             KeyCode::Char('R') | KeyCode::Char('x') if self.page == Page::Actions => {
                 self.open_workflow_runner()
             }
@@ -5871,11 +6044,16 @@ impl App {
             Action::FocusRepoPane(pane) => self.set_repo_pane(pane),
             Action::OpenExternal(url) => self.open_external_url(&url),
             Action::OpenProfile(login) => self.open_user_profile(login),
-            Action::ForkRepo => self.fork_current_repo(),
+            Action::ForkRepo => self.open_fork_repo(),
+            Action::ConfirmFork => self.confirm_fork_repo(),
+            Action::DeleteRepo => self.open_delete_repo(),
+            Action::ConfirmDeleteRepo => self.confirm_delete_repo(),
             Action::ToggleStar => self.toggle_current_star(),
             Action::CloseOverlay => {
                 self.overlay = None;
                 self.repo_edit = None;
+                self.fork_repo = None;
+                self.delete_repo = None;
             }
             Action::PrevListPage => self.prev_list_page(),
             Action::NextListPage => self.next_list_page(),
@@ -6369,6 +6547,31 @@ mod tests {
         assert_eq!(app.detail_for.as_deref(), Some("octocat/hello"));
         assert_eq!(app.releases.len(), 1);
         assert_eq!(app.releases[0].tag_name, "v1");
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn deleted_repo_leaves_lists_and_returns_to_source() {
+        let dir = std::env::temp_dir().join(format!("gitx-delete-test-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        let paths = Paths::for_test(dir.join("config"), dir.join("cache"));
+        let mut app = App::settings(paths, None);
+        app.settings_only = false;
+        let repo = test_repo("me", "gone");
+        app.repos = vec![repo.clone()];
+        app.page = Page::Repo;
+        app.return_page = Page::Repositories;
+        app.page_repo = Some(repo.clone());
+        app.detail = Some(repo.clone());
+        app.releases = vec![Release {
+            tag_name: "v1".to_string(),
+            ..Default::default()
+        }];
+        app.finish_deleted_repo(&repo.display_full_name());
+        assert!(app.repos.is_empty());
+        assert!(app.page_repo.is_none());
+        assert!(app.releases.is_empty());
+        assert_eq!(app.page, Page::Repositories);
         let _ = std::fs::remove_dir_all(dir);
     }
 

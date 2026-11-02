@@ -142,6 +142,28 @@ impl ApiClient {
         }
     }
 
+    pub fn delete_repository(&self, full_name: &str) -> Result<(), String> {
+        let Some(token) = self.token.as_deref() else {
+            return Err("还没有登录 GitHub，删不了仓库哦喵~先运行 gh auth login 吧喵~".to_string());
+        };
+        let response = self
+            .agent
+            .delete(&format!("{API}/repos/{full_name}"))
+            .header("Accept", "application/vnd.github+json")
+            .header("X-GitHub-Api-Version", "2022-11-28")
+            .header("Authorization", format!("Bearer {token}"))
+            .call()
+            .map_err(|err| format_transport_error(&err))?;
+        let status = response.status().as_u16();
+        let mut response = response;
+        let body = response.body_mut().read_to_string().unwrap_or_default();
+        if (200..300).contains(&status) {
+            Ok(())
+        } else {
+            Err(status_message(status, &body))
+        }
+    }
+
     pub fn releases(&self, full_name: &str, private: bool) -> Result<Vec<Release>, String> {
         let url = format!("{API}/repos/{full_name}/releases?per_page=10");
         if private {
