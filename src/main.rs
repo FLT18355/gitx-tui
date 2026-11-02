@@ -12,6 +12,7 @@ mod local_git;
 mod local_ops;
 mod local_ui;
 mod model;
+mod release_tui;
 mod theme;
 mod ui;
 
@@ -59,9 +60,10 @@ fn main() -> Result<()> {
         }
         Command::Cache { action } => return finish(commands::cache(action)),
         Command::Doctor => return finish(commands::doctor()),
-        command @ (Command::Github { .. } | Command::Settings { .. } | Command::Local { .. }) => {
-            command
-        }
+        command @ (Command::Github { .. }
+        | Command::Release
+        | Command::Settings { .. }
+        | Command::Local { .. }) => command,
     };
 
     let paths = Paths::discover();
@@ -74,6 +76,7 @@ fn main() -> Result<()> {
             let mut app = App::new(paths, theme);
             run(&mut terminal, &mut app)
         }
+        Command::Release => release_tui::run(&mut terminal),
         Command::Settings { theme } => {
             let mut app = App::settings(paths, theme);
             run(&mut terminal, &mut app)

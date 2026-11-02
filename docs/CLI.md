@@ -9,6 +9,7 @@
 | `gxt` | 打开 GitHub 工作台 |
 | `gxt <路径>` | 打开本地仓库 TUI |
 | `gxt settings` | 打开全局设置 TUI |
+| `gxt release` | 打开个人发行版发布 TUI（依赖 `gh`） |
 | `gxt status [路径]` | 打印本地仓库状态 |
 | `gxt log [路径] [-n <条数>]` | 打印最近提交 |
 | `gxt tags [路径]` | 打印标签 |
@@ -37,6 +38,7 @@
 gxt
 gxt ~/code/demo
 gxt settings
+gxt release
 gxt status .
 gxt log . -n 50
 gxt tags .
