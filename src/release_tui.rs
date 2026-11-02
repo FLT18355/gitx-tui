@@ -748,7 +748,7 @@ fn draw_form(frame: &mut Frame, app: &mut ReleaseApp, area: Rect) {
         Field::Tag,
         icons::TAG,
         "标签喵~",
-        "v0.2.2（必填）",
+        "v0.3.0（必填）",
     );
     y += 1;
     draw_field(
@@ -1706,8 +1706,8 @@ mod tests {
     #[test]
     fn builds_release_args() {
         let form = Form {
-            tag: TextInput::new("v0.2.2"),
-            title: TextInput::new("Release 0.2.2"),
+            tag: TextInput::new("v0.3.0"),
+            title: TextInput::new("Release 0.3.0"),
             target: TextInput::new("main"),
             draft: true,
             prerelease: true,
@@ -1719,7 +1719,7 @@ mod tests {
         let args = release_args("owner/repo", &form);
         assert_eq!(args[0], "release");
         assert_eq!(args[1], "create");
-        assert_eq!(args[2], "v0.2.2");
+        assert_eq!(args[2], "v0.3.0");
         assert!(args.contains(&"--repo".to_string()));
         assert!(args.contains(&"--title".to_string()));
         assert!(args.contains(&"--notes".to_string()));

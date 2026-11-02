@@ -25,6 +25,7 @@ pub enum Page {
     Notifications,
     Settings,
     Repo,
+    Profile,
     Actions,
     Issues,
     Commits,
@@ -41,6 +42,7 @@ impl Page {
             Self::Notifications => Some(4),
             Self::Trending => Some(5),
             Self::Repo
+            | Self::Profile
             | Self::Actions
             | Self::Issues
             | Self::Commits
@@ -70,6 +72,7 @@ impl Page {
             Self::Notifications => "通知喵~",
             Self::Settings => "设置喵~",
             Self::Repo => "仓库详情喵~",
+            Self::Profile => "用户主页喵~",
             Self::Actions => "工作流喵~",
             Self::Issues => "议题喵~",
             Self::Commits => "提交喵~",
@@ -194,6 +197,8 @@ pub enum Action {
     OpenTreePath { path: String, directory: bool },
     FocusRepoPane(RepoPane),
     OpenExternal(String),
+    OpenProfile(String),
+    ForkRepo,
     ToggleStar,
     CloseOverlay,
     PrevListPage,
@@ -500,6 +505,18 @@ enum Msg {
         starred: bool,
         result: Result<(), String>,
     },
+    ProfileUser {
+        login: String,
+        result: Result<User, String>,
+    },
+    ProfileRepos {
+        login: String,
+        result: Result<Vec<Repo>, String>,
+    },
+    RepoForked {
+        name: String,
+        result: Result<Repo, String>,
+    },
     DownloadProgress {
         id: u64,
         received: u64,
@@ -595,6 +612,15 @@ pub struct App {
     pub issue_selected: usize,
     pub issue_kind: IssueKind,
     pub issue_state: IssueState,
+    pub profile_login: Option<String>,
+    pub profile_user: Option<User>,
+    pub profile_user_loading: bool,
+    pub profile_repos: Vec<Repo>,
+    pub profile_repos_loading: bool,
+    pub profile_error: Option<String>,
+    profile_selected: usize,
+    profile_return_page: Page,
+    pub fork_loading: Option<String>,
     pub cache_row: usize,
     pub page: Page,
     pub return_page: Page,
@@ -785,6 +811,15 @@ impl App {
             issue_selected: 0,
             issue_kind: IssueKind::All,
             issue_state: IssueState::Open,
+            profile_login: None,
+            profile_user: None,
+            profile_user_loading: false,
+            profile_repos: Vec::new(),
+            profile_repos_loading: false,
+            profile_error: None,
+            profile_selected: 0,
+            profile_return_page: Page::Repositories,
+            fork_loading: None,
             cache_row: 0,
             page: if settings_only {
                 Page::Settings
@@ -1349,6 +1384,75 @@ impl App {
                             },
                         );
                         self.schedule_selected_detail();
+                    }
+                    Err(error) => self.set_status(StatusKind::Error, &error),
+                }
+            }
+            Msg::ProfileUser { login, result } => {
+                if self.profile_login.as_deref() != Some(login.as_str()) {
+                    return;
+                }
+                self.profile_user_loading = false;
+                match result {
+                    Ok(user) => {
+                        self.profile_user = Some(user);
+                        self.profile_error = None;
+                    }
+                    Err(error) => {
+                        self.profile_error = Some(error.clone());
+                        self.set_status(StatusKind::Error, &error);
+                    }
+                }
+            }
+            Msg::ProfileRepos { login, result } => {
+                if self.profile_login.as_deref() != Some(login.as_str()) {
+                    return;
+                }
+                self.profile_repos_loading = false;
+                match result {
+                    Ok(repos) => {
+                        self.profile_repos = repos;
+                        self.clamp_selection();
+                        self.follow_selection();
+                    }
+                    Err(error) => {
+                        self.profile_error = Some(error.clone());
+                        self.set_status(StatusKind::Error, &error);
+                    }
+                }
+            }
+            Msg::RepoForked { name, result } => {
+                if self.fork_loading.as_deref() == Some(name.as_str()) {
+                    self.fork_loading = None;
+                }
+                match result {
+                    Ok(repo) => {
+                        let own = self
+                            .login
+                            .as_deref()
+                            .is_some_and(|login| login.eq_ignore_ascii_case(repo.owner_name()));
+                        if own {
+                            if let Some(existing) = self.repos.iter_mut().find(|item| {
+                                item.id == repo.id
+                                    || item.display_full_name() == repo.display_full_name()
+                            }) {
+                                *existing = repo.clone();
+                            } else {
+                                self.repos.insert(0, repo.clone());
+                            }
+                            if let Some(login) = self.login.clone() {
+                                let _ = self.cache.save(&repos_cache_key(&login), &self.repos);
+                            }
+                            let _ = self.cache.save(&repo.cache_key(), &repo);
+                            self.refresh_cache_stats();
+                        }
+                        self.set_status(
+                            StatusKind::Ok,
+                            &format!(
+                                "Fork 好啦：{} 已经放进你的仓库列表喵~",
+                                repo.display_full_name()
+                            ),
+                        );
                     }
                     Err(error) => self.set_status(StatusKind::Error, &error),
                 }
@@ -2827,6 +2931,12 @@ impl App {
         if self.starred_loading && self.page == Page::Starred {
             return Some("人家正在把全部收藏都整理出来喵~...");
         }
+        if self.page == Page::Profile && (self.profile_user_loading || self.profile_repos_loading) {
+            return Some("人家正在翻这个人的主页喵~...");
+        }
+        if self.fork_loading.is_some() {
+            return Some("人家正在帮你 Fork 仓库喵~...");
+        }
         if self.search_loading && self.page == Page::Search {
             return Some("人家正在翻找仓库喵~...");
         }
@@ -2918,6 +3028,7 @@ impl App {
     fn raw_list(&self, page: Page) -> &[Repo] {
         match page {
             Page::Starred => &self.starred,
+            Page::Profile => &self.profile_repos,
             Page::Search => &self.search_results,
             Page::Trending => &self.trending,
             _ => &self.repos,
@@ -3070,6 +3181,7 @@ impl App {
     fn selection_for(&self, page: Page) -> usize {
         match page {
             Page::Starred => self.star_selected,
+            Page::Profile => self.profile_selected,
             Page::Search => self.search_selected,
             Page::Trending => self.trending_selected,
             _ => self.repo_selected,
@@ -3079,6 +3191,7 @@ impl App {
     fn set_selection_for(&mut self, page: Page, value: usize) {
         match page {
             Page::Starred => self.star_selected = value,
+            Page::Profile => self.profile_selected = value,
             Page::Search => self.search_selected = value,
             Page::Trending => self.trending_selected = value,
             _ => self.repo_selected = value,
@@ -3149,7 +3262,7 @@ impl App {
     fn is_list_page(page: Page) -> bool {
         matches!(
             page,
-            Page::Repositories | Page::Starred | Page::Search | Page::Trending
+            Page::Repositories | Page::Starred | Page::Search | Page::Trending | Page::Profile
         )
     }
 
@@ -3214,6 +3327,7 @@ impl App {
         for page in [
             Page::Repositories,
             Page::Starred,
+            Page::Profile,
             Page::Search,
             Page::Trending,
         ] {
@@ -3485,6 +3599,11 @@ impl App {
     }
 
     fn schedule_selected_detail(&mut self) {
+        // Repo/Profile pages own their detail state; rescheduling would replace the
+        // releases of the repo the user is currently viewing.
+        if !should_schedule_selected_detail(self.page) {
+            return;
+        }
         let Some(repo) = self.selected_repo() else {
             if self.page != Page::Repo {
                 self.detail = None;
@@ -3947,6 +4066,11 @@ impl App {
                 self.fetch_user();
                 self.fetch_rate_limit(true);
             }
+            Page::Profile => {
+                if let Some(login) = self.profile_login.clone() {
+                    self.fetch_profile(login);
+                }
+            }
             Page::Actions => {
                 self.fetch_action_runs(true);
                 self.schedule_action_jobs(true);
@@ -4076,6 +4200,10 @@ impl App {
     }
 
     pub fn go_back(&mut self) {
+        if self.page == Page::Profile {
+            self.close_profile();
+            return;
+        }
         let Some(target) = back_target(self.page, self.return_page, self.page_repo.is_some())
         else {
             return;
@@ -4227,6 +4355,92 @@ impl App {
         };
         let url = user.html_url.clone();
         self.open_url(&url);
+    }
+
+    pub fn open_user_profile(&mut self, login: String) {
+        let login = login.trim().trim_start_matches('@').to_string();
+        if login.is_empty() {
+            self.set_status(StatusKind::Info, "这个作者没有留下名字喵~");
+            return;
+        }
+        if self.page != Page::Profile {
+            self.profile_return_page = if self.page.is_repo_page() {
+                if self.return_page == Page::Profile {
+                    Page::Repositories
+                } else {
+                    self.return_page
+                }
+            } else {
+                self.page
+            };
+        }
+        if self.profile_login.as_deref() != Some(login.as_str()) {
+            self.profile_login = Some(login.clone());
+            self.profile_user = None;
+            self.profile_repos.clear();
+            self.profile_selected = 0;
+            self.profile_error = None;
+        }
+        self.page = Page::Profile;
+        self.search_focus = false;
+        self.list_filter_focus = false;
+        self.release_filter_focus = false;
+        self.readme_fullscreen = false;
+        self.overlay = None;
+        self.pending_detail = None;
+        self.list_offset = 0;
+        self.fetch_profile(login);
+    }
+
+    fn fetch_profile(&mut self, login: String) {
+        self.profile_user_loading = true;
+        self.profile_repos_loading = true;
+        self.profile_error = None;
+        self.set_status(
+            StatusKind::Info,
+            &format!("人家正在翻 @{login} 的主页喵~..."),
+        );
+        let tx = self.tx.clone();
+        let client = self.client.clone();
+        let user_login = login.clone();
+        std::thread::spawn(move || {
+            let result = client.user_profile(&user_login);
+            let _ = tx.send(Msg::ProfileUser {
+                login: user_login,
+                result,
+            });
+        });
+        let tx = self.tx.clone();
+        let client = self.client.clone();
+        std::thread::spawn(move || {
+            let result = client.user_repositories(&login);
+            let _ = tx.send(Msg::ProfileRepos { login, result });
+        });
+    }
+
+    fn close_profile(&mut self) {
+        let target = match self.profile_return_page {
+            Page::Profile => Page::Repositories,
+            page => page,
+        };
+        let target = if target.is_repo_page() {
+            Page::Repositories
+        } else {
+            target
+        };
+        self.page = target;
+        self.page_repo = None;
+        self.issue_repo = None;
+        self.pending_detail = None;
+        self.search_focus = false;
+        self.list_filter_focus = false;
+        self.release_filter_focus = false;
+        self.readme_fullscreen = false;
+        self.list_offset = 0;
+        if Self::is_list_page(target) {
+            self.follow_selection();
+            self.schedule_selected_detail();
+        }
     }
 
     pub fn open_current(&mut self) {
@@ -4509,6 +4723,40 @@ impl App {
                 starred,
                 result,
             });
+        });
+    }
+
+    pub fn fork_current_repo(&mut self) {
+        let Some(repo) = self.effective_repo() else {
+            self.set_status(StatusKind::Info, "先选一个仓库，人家才知道 Fork 哪个喵~");
+            return;
+        };
+        if self.is_own_repo(&repo) {
+            self.set_status(StatusKind::Info, "这是你自己的仓库，不用再 Fork 啦喵~");
+            return;
+        }
+        if !self.client.token_present() {
+            self.set_status(StatusKind::Error, "还没登录呢，人家 Fork 不了哦喵~");
+            return;
+        }
+        let name = repo.display_full_name();
+        if self.fork_loading.is_some() {
+            self.set_status(
+                StatusKind::Info,
+                "上一个 Fork 还在路上呢，等人家一下下嘛喵~",
+            );
+            return;
+        }
+        self.fork_loading = Some(name.clone());
+        self.set_status(
+            StatusKind::Info,
+            &format!("人家正在把 {name} Fork 到你名下喵~..."),
+        );
+        let tx = self.tx.clone();
+        let client = self.client.clone();
+        std::thread::spawn(move || {
+            let result = client.fork_repository(&name);
+            let _ = tx.send(Msg::RepoForked { name, result });
         });
     }
 
@@ -4943,7 +5191,9 @@ impl App {
             KeyCode::Char('F') if self.page == Page::Repo => self.toggle_readme_fullscreen(),
             KeyCode::Tab => self.navigate_next_page(),
             KeyCode::Esc => match self.page {
-                Page::Repo | Page::Actions | Page::Issues | Page::ReleaseDetail => self.go_back(),
+                Page::Repo | Page::Profile | Page::Actions | Page::Issues | Page::ReleaseDetail => {
+                    self.go_back()
+                }
                 Page::Settings | Page::Account | Page::Notifications => {
                     self.navigate(Page::Repositories)
                 }
@@ -4962,6 +5212,7 @@ impl App {
             KeyCode::Char('C') if self.page.is_repo_page() => self.open_commits(),
             KeyCode::Char('a') => self.open_actions(),
             KeyCode::Char('i') => self.open_issues(IssueKind::All),
+            KeyCode::Char('Y') if self.page == Page::Repo => self.fork_current_repo(),
             KeyCode::Char('R') | KeyCode::Char('x') if self.page == Page::Actions => {
                 self.open_workflow_runner()
             }
@@ -5619,6 +5870,8 @@ impl App {
             Action::OpenTreePath { path, directory } => self.open_tree_path(&path, directory),
             Action::FocusRepoPane(pane) => self.set_repo_pane(pane),
             Action::OpenExternal(url) => self.open_external_url(&url),
+            Action::OpenProfile(login) => self.open_user_profile(login),
+            Action::ForkRepo => self.fork_current_repo(),
             Action::ToggleStar => self.toggle_current_star(),
             Action::CloseOverlay => {
                 self.overlay = None;
@@ -5725,6 +5978,10 @@ impl App {
     pub fn config_file_label(&self) -> String {
         format::display_path(&self.paths.config_file())
     }
+}
+
+fn should_schedule_selected_detail(page: Page) -> bool {
+    !page.is_repo_page() && page != Page::Profile
 }
 
 fn return_page_when_opening(current: Page, return_page: Page) -> Page {
@@ -6061,6 +6318,58 @@ mod tests {
         assert!(App::repo_matches_filter(&repo, "终端"));
         assert!(App::repo_matches_filter(&repo, "tui"));
         assert!(!App::repo_matches_filter(&repo, "python"));
+    }
+
+    #[test]
+    fn detail_rescheduling_skips_open_repo_pages() {
+        assert!(should_schedule_selected_detail(Page::Starred));
+        assert!(should_schedule_selected_detail(Page::Search));
+        assert!(!should_schedule_selected_detail(Page::Repo));
+        assert!(!should_schedule_selected_detail(Page::ReleaseDetail));
+        assert!(!should_schedule_selected_detail(Page::Profile));
+    }
+
+    fn test_repo(owner: &str, name: &str) -> Repo {
+        Repo {
+            name: name.to_string(),
+            full_name: format!("{owner}/{name}"),
+            owner: crate::model::Owner {
+                login: owner.to_string(),
+                ..Default::default()
+            },
+            ..Default::default()
+        }
+    }
+
+    #[test]
+    fn unstar_from_open_favorite_keeps_current_repo_detail() {
+        let dir = std::env::temp_dir().join(format!("gitx-unstar-test-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        let paths = Paths::for_test(dir.join("config"), dir.join("cache"));
+        let mut app = App::settings(paths, None);
+        app.settings_only = false;
+        let opened = test_repo("octocat", "hello");
+        let other = test_repo("octocat", "world");
+        app.page = Page::Repo;
+        app.return_page = Page::Starred;
+        app.page_repo = Some(opened.clone());
+        app.starred = vec![opened.clone(), other];
+        app.star_selected = 0;
+        app.detail_for = Some(opened.display_full_name());
+        app.detail = Some(opened.clone());
+        app.releases = vec![Release {
+            tag_name: "v1".to_string(),
+            ..Default::default()
+        }];
+        app.handle_message(Msg::StarToggled {
+            name: opened.display_full_name(),
+            starred: false,
+            result: Ok(()),
+        });
+        assert_eq!(app.detail_for.as_deref(), Some("octocat/hello"));
+        assert_eq!(app.releases.len(), 1);
+        assert_eq!(app.releases[0].tag_name, "v1");
+        let _ = std::fs::remove_dir_all(dir);
     }
 
     #[test]

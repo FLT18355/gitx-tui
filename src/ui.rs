@@ -43,6 +43,7 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
         Page::Search => draw_search_page(frame, app, &theme, chunks[1], &mut hits),
         Page::Trending => draw_trending_page(frame, app, &theme, chunks[1], &mut hits),
         Page::Account => draw_account_page(frame, app, &theme, chunks[1], &mut hits),
+        Page::Profile => draw_profile_page(frame, app, &theme, chunks[1], &mut hits),
         Page::Notifications => draw_notifications_page(frame, app, &theme, chunks[1], &mut hits),
         Page::Settings => draw_settings_page(frame, app, &theme, chunks[1], &mut hits),
         Page::Repo => draw_repo_page(frame, app, &theme, chunks[1], &mut hits),
@@ -274,12 +275,13 @@ fn hints_for(app: &App) -> &'static str {
         Page::Search => "回车搜索  / 结果筛选  l 语言  j/k 挑  [ ] 翻页  Enter 打开喵~",
         Page::Trending => "j/k 挑  [ ] 翻页  p 换时段  / 筛选  l 语言  Enter 打开  r 刷新喵~",
         Page::Account => "r 刷新账号和额度    Enter 打开主页    Esc 回仓库喵~",
+        Page::Profile => "j/k 挑仓库  [ ] 翻页  Enter 打开  o 去 GitHub  r 刷新  Esc 返回喵~",
         Page::Notifications => {
             "j/k 挑通知  Enter 打开  m 已读  M 全部已读  u 未读/全部  r 刷新  Esc 返回喵~"
         }
         Page::Settings => "j/k 选    h/l 调    Enter 操作    Ctrl+S 保存    Esc 离开喵~",
         Page::Repo => {
-            "Esc 返回  Tab 换面板  b 分支  C 提交  F 全屏 README  a 工作流  i 议题  o 主页喵~"
+            "Esc 返回  Tab 换面板  b 分支  C 提交  F 全屏 README  a 工作流  i 议题  Y Fork  o 主页喵~"
         }
         Page::Actions => {
             "j/k 挑运行  Enter 去浏览器  R/x 运行工作流  PgUp/PgDn 滚任务  r 刷新  Esc 返回喵~"
@@ -1043,6 +1045,319 @@ fn draw_account_page(
     draw_account_quota(frame, app, theme, quota_rect, hits);
 }
 
+fn draw_profile_page(
+    frame: &mut Frame,
+    app: &mut App,
+    theme: &Theme,
+    area: Rect,
+    hits: &mut Vec<HitBox>,
+) {
+    fill(frame, area, theme.color("base"));
+    let width = area.width.saturating_sub(8).min(118);
+    let left = area.x + (area.width.saturating_sub(width)) / 2;
+    let inner = Rect::new(left, area.y + 1, width, area.height.saturating_sub(2));
+    if inner.height < 10 || inner.width < 40 {
+        draw_center_message(
+            frame,
+            theme,
+            area,
+            "这里有点挤喵~",
+            "把终端拉大一点，人家才摆得下主页喵~",
+        );
+        return;
+    }
+
+    let back = icons::label(icons::BACK, "返回喵~");
+    let back_width = format::text_width(&back) as u16 + 4;
+    draw_button(
+        frame,
+        app,
+        theme,
+        hits,
+        Rect::new(inner.x, inner.y, back_width, 1),
+        &back,
+        Action::Back,
+        false,
+    );
+    let login = app.profile_login.clone().unwrap_or_default();
+    let title = if login.is_empty() {
+        "用户主页喵~".to_string()
+    } else {
+        format!("@{} 的主页喵~", format::clean_text(&login))
+    };
+    let title_x = inner.x + back_width + 2;
+    let refresh = icons::label(icons::REFRESH, "刷新喵~");
+    let refresh_width = format::text_width(&refresh) as u16 + 4;
+    let title_width = inner.width.saturating_sub(back_width + refresh_width + 4);
+    frame.render_widget(
+        Paragraph::new(format::truncate(&title, title_width as usize)).style(
+            Style::default()
+                .fg(theme.color("text"))
+                .add_modifier(Modifier::BOLD),
+        ),
+        Rect::new(title_x, inner.y, title_width, 1),
+    );
+    draw_button(
+        frame,
+        app,
+        theme,
+        hits,
+        Rect::new(
+            inner.x + inner.width.saturating_sub(refresh_width),
+            inner.y,
+            refresh_width,
+            1,
+        ),
+        &refresh,
+        Action::Refresh,
+        false,
+    );
+    frame.render_widget(
+        Paragraph::new(format::truncate(
+            "这个人的小档案和全部公开仓库喵~",
+            inner.width as usize,
+        ))
+        .style(Style::default().fg(theme.color("subtext0"))),
+        Rect::new(inner.x, inner.y + 1, inner.width, 1),
+    );
+
+    let content = Rect::new(
+        inner.x,
+        inner.y + 3,
+        inner.width,
+        inner.height.saturating_sub(3),
+    );
+    if content.height < 6 {
+        return;
+    }
+    if content.width >= 96 {
+        let profile_width = content.width.saturating_mul(2) / 5;
+        let gap = 2;
+        let profile_rect = Rect::new(content.x, content.y, profile_width, content.height);
+        let list_rect = Rect::new(
+            content.x + profile_width + gap,
+            content.y,
+            content.width.saturating_sub(profile_width + gap),
+            content.height,
+        );
+        draw_profile_card(frame, app, theme, profile_rect, hits);
+        draw_profile_repos(frame, app, theme, list_rect, hits);
+    } else {
+        let profile_height = (content.height.saturating_mul(2) / 5)
+            .clamp(6, 12)
+            .min(content.height.saturating_sub(4));
+        let profile_rect = Rect::new(content.x, content.y, content.width, profile_height);
+        let list_rect = Rect::new(
+            content.x,
+            content.y + profile_height + 1,
+            content.width,
+            content.height.saturating_sub(profile_height + 1),
+        );
+        draw_profile_card(frame, app, theme, profile_rect, hits);
+        draw_profile_repos(frame, app, theme, list_rect, hits);
+    }
+}
+
+fn draw_profile_card(
+    frame: &mut Frame,
+    app: &App,
+    theme: &Theme,
+    area: Rect,
+    hits: &mut Vec<HitBox>,
+) {
+    fill(frame, area, theme.color("mantle"));
+    frame.render_widget(
+        Block::new()
+            .borders(Borders::ALL)
+            .border_style(Style::default().fg(theme.color("surface0"))),
+        area,
+    );
+    let inner = Rect::new(
+        area.x + 2,
+        area.y + 1,
+        area.width.saturating_sub(4),
+        area.height.saturating_sub(2),
+    );
+    if inner.height < 6 || inner.width < 12 {
+        if let Some(user) = app.profile_user.as_ref() {
+            frame.render_widget(
+                Paragraph::new(format::truncate(
+                    &format!("@{} · {}", user.login, format::human_count(user.followers)),
+                    inner.width as usize,
+                ))
+                .style(Style::default().fg(theme.color("subtext0"))),
+                Rect::new(inner.x, inner.y, inner.width, 1),
+            );
+        }
+        return;
+    }
+    frame.render_widget(
+        Paragraph::new(icons::label(icons::USER, "用户小档案喵~"))
+            .style(Style::default().fg(theme.color("overlay0"))),
+        Rect::new(inner.x, inner.y, inner.width, 1),
+    );
+    let Some(user) = app.profile_user.as_ref() else {
+        let detail = if app.profile_user_loading {
+            format!("{} 人家正在问 GitHub 喵~...", app.spinner())
+        } else {
+            app.profile_error
+                .as_deref()
+                .unwrap_or("按 r 刷新一下，人家再去取喵~")
+                .to_string()
+        };
+        draw_center_message(frame, theme, area, "资料还没拿来喵~", &detail);
+        return;
+    };
+    frame.render_widget(
+        Paragraph::new(format::truncate(user.display_name(), inner.width as usize)).style(
+            Style::default()
+                .fg(theme.color("text"))
+                .add_modifier(Modifier::BOLD),
+        ),
+        Rect::new(inner.x, inner.y + 1, inner.width, 1),
+    );
+    frame.render_widget(
+        Paragraph::new(format::truncate(
+            &format!("@{}", user.login),
+            inner.width as usize,
+        ))
+        .style(Style::default().fg(theme.color("blue"))),
+        Rect::new(inner.x, inner.y + 2, inner.width, 1),
+    );
+
+    let mut y = inner.y + 4;
+    let compact = inner.height < 12;
+    if !compact {
+        let bio = user
+            .bio
+            .as_deref()
+            .map(format::clean_text)
+            .filter(|bio| !bio.trim().is_empty())
+            .unwrap_or_else(|| "还没有写简介喵~".to_string());
+        for line in format::wrap_text(&bio, inner.width as usize, 3) {
+            if y >= inner.y + inner.height - 5 {
+                break;
+            }
+            frame.render_widget(
+                Paragraph::new(line).style(Style::default().fg(theme.color("subtext0"))),
+                Rect::new(inner.x, y, inner.width, 1),
+            );
+            y += 1;
+        }
+        y += 1;
+        let facts = [
+            (icons::COGS, "公司喵~", user.company.clone()),
+            (icons::GLOBE, "位置喵~", user.location.clone()),
+            (icons::NETWORK, "博客喵~", user.blog.clone()),
+            (icons::CLOCK, "加入喵~", Some(user.joined_label())),
+        ];
+        for (icon, label, value) in facts {
+            if y >= inner.y + inner.height - 5 {
+                break;
+            }
+            let Some(value) = value
+                .map(|value| format::clean_text(&value))
+                .filter(|value| !value.trim().is_empty())
+            else {
+                continue;
+            };
+            frame.render_widget(
+                Paragraph::new(format::truncate(
+                    &format!("{icon} {label}  {value}"),
+                    inner.width as usize,
+                ))
+                .style(Style::default().fg(theme.color("subtext0"))),
+                Rect::new(inner.x, y, inner.width, 1),
+            );
+            y += 1;
+        }
+    }
+
+    let stars = app
+        .profile_repos
+        .iter()
+        .map(|repo| repo.stargazers_count)
+        .sum::<u64>();
+    let stats_y = (inner.y + inner.height).saturating_sub(3);
+    let stats = format!(
+        "{} 仓库 {}   {} 关注 {}   粉丝 {}   星标 {}喵~",
+        icons::REPO,
+        user.public_repos,
+        icons::USER,
+        user.following,
+        user.followers,
+        format::human_count(stars)
+    );
+    frame.render_widget(
+        Paragraph::new(format::truncate(&stats, inner.width as usize))
+            .style(Style::default().fg(theme.color("text"))),
+        Rect::new(inner.x, stats_y, inner.width, 1),
+    );
+    let open = icons::label(icons::EXTERNAL, "打开 GitHub 主页喵~");
+    let open_width = format::text_width(&open) as u16 + 4;
+    if stats_y + 1 < inner.y + inner.height && open_width < inner.width {
+        draw_button(
+            frame,
+            app,
+            theme,
+            hits,
+            Rect::new(inner.x, stats_y + 1, open_width, 1),
+            &open,
+            Action::OpenExternal(user.html_url.clone()),
+            true,
+        );
+    }
+}
+
+fn draw_profile_repos(
+    frame: &mut Frame,
+    app: &mut App,
+    theme: &Theme,
+    area: Rect,
+    hits: &mut Vec<HitBox>,
+) {
+    if area.height < 4 || area.width < 20 {
+        return;
+    }
+    let count = app.profile_repos.len();
+    let loading = app.profile_repos_loading;
+    let title = if loading && count == 0 {
+        format!("{} 人家正在搬仓库喵~...", app.spinner())
+    } else if loading {
+        format!(
+            "{} 全部仓库 {} 个 · {} 刷新中喵~",
+            icons::REPO,
+            count,
+            app.spinner()
+        )
+    } else {
+        format!("{} 全部仓库 {} 个喵~", icons::REPO, count)
+    };
+    frame.render_widget(
+        Paragraph::new(format::truncate(&title, area.width as usize)).style(
+            Style::default()
+                .fg(theme.color("text"))
+                .add_modifier(Modifier::BOLD),
+        ),
+        Rect::new(area.x, area.y, area.width, 1),
+    );
+    draw_list_pagination(
+        frame,
+        app,
+        theme,
+        hits,
+        Rect::new(area.x, area.y + 1, area.width, 1),
+    );
+    let list = Rect::new(
+        area.x,
+        area.y + 3,
+        area.width,
+        area.height.saturating_sub(3),
+    );
+    app.layout.list = list;
+    draw_cards(frame, app, theme, list, hits, EmptyKind::Profile);
+}
+
 fn draw_account_profile(
     frame: &mut Frame,
     app: &App,
@@ -1554,8 +1869,19 @@ fn draw_cards(
         let is_selected = slot == selected;
         let is_hovered = hovered.as_ref() == Some(&action);
         let repo = app.raw_repo(*index);
-        draw_repo_card(frame, theme, card, &repo, is_selected, is_hovered);
+        let owner_action = Action::OpenProfile(repo.owner_name().to_string());
+        let owner_hovered = hovered.as_ref() == Some(&owner_action);
         register(hits, card, action);
+        draw_repo_card(
+            frame,
+            theme,
+            card,
+            &repo,
+            is_selected,
+            is_hovered,
+            owner_hovered,
+            hits,
+        );
     }
 
     if indices.len() > viewport {
@@ -1592,6 +1918,7 @@ enum EmptyKind {
     Starred,
     Search,
     Trending,
+    Profile,
 }
 
 fn draw_empty_state(
@@ -1611,13 +1938,21 @@ fn draw_empty_state(
         EmptyKind::Starred => app.starred_loading,
         EmptyKind::Search => app.search_loading,
         EmptyKind::Trending => app.trending_loading,
+        EmptyKind::Profile => app.profile_repos_loading,
     };
     let (title, detail) = if loading {
         ("人家正在搬数据喵~...", "第一次同步会慢一点点，等一等哦喵~")
-    } else if !app.client.token_present() && !matches!(kind, EmptyKind::Trending) {
+    } else if !app.client.token_present()
+        && !matches!(kind, EmptyKind::Trending | EmptyKind::Profile)
+    {
         (
             "还没有登录 GitHub喵~",
             "在终端跑一下 gh auth login，再重新打开人家嘛喵~",
+        )
+    } else if matches!(kind, EmptyKind::Profile) && app.profile_error.is_some() {
+        (
+            "这个人的资料没取到喵~",
+            app.profile_error.as_deref().unwrap_or("按 r 再试一次嘛喵~"),
         )
     } else if app.list_filter_active() {
         (
@@ -1636,6 +1971,10 @@ fn draw_empty_state(
             ),
             EmptyKind::Search => ("没有搜到仓库喵~", "换个关键词再试试嘛喵~"),
             EmptyKind::Trending => ("热门仓库还没到喵~", "按 r 刷新，或者稍等一下再看看嘛喵~"),
+            EmptyKind::Profile => (
+                "这个人还没有公开仓库喵~",
+                "按 r 刷新，或者去 GitHub 上看看嘛喵~",
+            ),
         }
     };
     draw_center_message(frame, theme, area, title, detail);
@@ -1730,6 +2069,8 @@ fn draw_repo_card(
     repo: &Repo,
     selected: bool,
     hovered: bool,
+    owner_hovered: bool,
+    hits: &mut Vec<HitBox>,
 ) {
     let bg = if selected || hovered {
         theme.color("surface0")
@@ -1753,15 +2094,20 @@ fn draw_repo_card(
     }
     let left = area.x + 2;
     let width = area.width.saturating_sub(4);
+    let owner = repo.owner_name();
+    let owner_style = if owner_hovered {
+        Style::default()
+            .fg(theme.color("blue"))
+            .add_modifier(Modifier::UNDERLINED)
+    } else {
+        Style::default().fg(theme.color("overlay1"))
+    };
     let mut title = vec![
         Span::styled(
             format!("{} ", icons::REPO),
             Style::default().fg(theme.color("blue")),
         ),
-        Span::styled(
-            repo.owner_name().to_string(),
-            Style::default().fg(theme.color("overlay1")),
-        ),
+        Span::styled(owner.to_string(), owner_style),
         Span::styled("/", Style::default().fg(theme.color("overlay0"))),
         Span::styled(
             repo.name.clone(),
@@ -1793,6 +2139,8 @@ fn draw_repo_card(
         Paragraph::new(Line::from(title)),
         Rect::new(left, area.y, width.saturating_sub(right_width), 1),
     );
+    let title_width = width.saturating_sub(right_width);
+    register_owner_hit(hits, left, area.y, title_width, owner);
     frame.render_widget(
         Paragraph::new(format::truncate(&right, width as usize))
             .alignment(Alignment::Right)
@@ -1919,6 +2267,7 @@ fn draw_repository_detail(
         ),
         Rect::new(inner.x, inner.y + 1, inner.width, 1),
     );
+    register_owner_hit(hits, inner.x, inner.y + 1, inner.width, repo.owner_name());
     let mut y = inner.y + 2;
     let description = format::wrap_text(
         &format::clean_text(repo.description_text()),
@@ -2356,23 +2705,16 @@ fn draw_repo_page(
     );
 
     let title = format!("{} {}", icons::REPO, repo.display_full_name());
+    let title_width = inner.width.saturating_sub(star_width + 3);
     frame.render_widget(
-        Paragraph::new(format::truncate(
-            &title,
-            inner.width.saturating_sub(star_width + 3) as usize,
-        ))
-        .style(
+        Paragraph::new(format::truncate(&title, title_width as usize)).style(
             Style::default()
                 .fg(theme.color("text"))
                 .add_modifier(Modifier::BOLD),
         ),
-        Rect::new(
-            inner.x,
-            inner.y + 1,
-            inner.width.saturating_sub(star_width + 3),
-            1,
-        ),
+        Rect::new(inner.x, inner.y + 1, title_width, 1),
     );
+    register_owner_hit(hits, inner.x, inner.y + 1, title_width, repo.owner_name());
     frame.render_widget(
         Paragraph::new(format::truncate(
             &format::clean_text(repo.description_text()),
@@ -2424,7 +2766,7 @@ fn draw_repo_page(
 
     let actions_y = inner.y + 5;
     let mut action_x = inner.x;
-    let buttons = [
+    let mut buttons = vec![
         (
             icons::label(icons::EXTERNAL, "去主页喵~"),
             Action::OpenCurrent,
@@ -2466,6 +2808,16 @@ fn draw_repo_page(
             false,
         ),
     ];
+    if !app.is_own_repo(&repo) {
+        buttons.insert(
+            2,
+            (
+                icons::label(icons::FORK, "Fork 喵~"),
+                Action::ForkRepo,
+                false,
+            ),
+        );
+    }
     for (label, action, primary) in buttons {
         let button_width = format::text_width(&label) as u16 + 4;
         if action_x + button_width > inner.x + inner.width {
@@ -6934,7 +7286,10 @@ fn draw_help(frame: &mut Frame, app: &mut App, theme: &Theme, area: Rect, hits: 
             "挑挑喵~",
             "j / k 上下挑  [ ] 翻页  g / G 首尾页  PgUp/PgDn 翻页喵~",
         ),
-        ("看仓库喵~", "Enter 进仓库页  o 去浏览器  y 复制克隆地址喵~"),
+        (
+            "看仓库喵~",
+            "Enter 进仓库页  o 去浏览器  y 复制克隆  Y Fork 喵~",
+        ),
         (
             "改自己喵~",
             "自己的仓库按 e 改名称、简介、主页、主题、可见性、归档和功能开关喵~",
@@ -6969,7 +7324,7 @@ fn draw_help(frame: &mut Frame, app: &mut App, theme: &Theme, area: Rect, hits: 
         ("通知喵~", "5 看通知，m 已读，M 全部已读，u 切未读/全部喵~"),
         ("缓存喵~", "按 c 分类清理缓存，o 打开缓存目录喵~"),
         ("设置喵~", "退出后敲 gxt settings，用专门的设置 TUI 调喵~"),
-        ("鼠标喵~", "点一下挑，点两下进仓库页，滚轮随便滚喵~"),
+        ("鼠标喵~", "点一下挑，点两下进仓库页，点作者名看主页喵~"),
         ("回去喵~", "Esc 回列表  ? 关掉说明  q 退出人家喵~"),
     ];
     let mut y = inner.y;
@@ -7041,6 +7396,25 @@ fn draw_too_small(frame: &mut Frame, area: Rect, theme: &Theme) {
     frame.render_widget(
         Paragraph::new(Text::from(lines)).alignment(Alignment::Center),
         rect,
+    );
+}
+
+fn register_owner_hit(hits: &mut Vec<HitBox>, x: u16, y: u16, width: u16, owner: &str) {
+    if owner.is_empty() || width == 0 {
+        return;
+    }
+    let icon_width = format::text_width(&format!("{} ", icons::REPO)) as u16;
+    if icon_width >= width {
+        return;
+    }
+    let owner_width = format::text_width(owner) as u16;
+    if owner_width == 0 {
+        return;
+    }
+    register(
+        hits,
+        Rect::new(x + icon_width, y, owner_width.min(width - icon_width), 1),
+        Action::OpenProfile(owner.to_string()),
     );
 }
 
@@ -7120,5 +7494,95 @@ mod tests {
                 assert!(line.width() <= width, "line wider than {width}: {:?}", line);
             }
         }
+    }
+
+    fn test_repo(owner: &str, name: &str) -> Repo {
+        Repo {
+            name: name.to_string(),
+            full_name: format!("{owner}/{name}"),
+            owner: crate::model::Owner {
+                login: owner.to_string(),
+                ..Default::default()
+            },
+            description: Some("a test repo".to_string()),
+            ..Default::default()
+        }
+    }
+
+    fn buffer_text(buffer: &ratatui::buffer::Buffer) -> String {
+        let width = buffer.area.width as usize;
+        buffer
+            .content()
+            .chunks(width)
+            .map(|row| row.iter().map(|cell| cell.symbol()).collect::<String>())
+            .collect::<Vec<_>>()
+            .join("\n")
+    }
+
+    #[test]
+    fn profile_page_renders_details_and_all_repos() {
+        let dir = std::env::temp_dir().join(format!("gitx-profile-ui-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        let paths = crate::config::Paths::for_test(dir.join("config"), dir.join("cache"));
+        let mut app = App::settings(paths, None);
+        app.settings_only = false;
+        app.page = Page::Profile;
+        app.profile_login = Some("octocat".to_string());
+        app.profile_user = Some(crate::model::User {
+            login: "octocat".to_string(),
+            name: Some("The Octocat".to_string()),
+            bio: Some("cat".to_string()),
+            public_repos: 1,
+            ..Default::default()
+        });
+        app.profile_repos = vec![test_repo("octocat", "hello-world")];
+        let mut terminal = ratatui::Terminal::new(ratatui::backend::TestBackend::new(120, 40))
+            .expect("test terminal");
+        terminal
+            .draw(|frame| draw(frame, &mut app))
+            .expect("render profile");
+        let text = buffer_text(terminal.backend().buffer())
+            .split_whitespace()
+            .collect::<String>();
+        assert!(text.contains("octocat"));
+        assert!(text.contains("全部仓库"));
+        assert!(text.contains("hello-world"));
+        assert!(
+            app.hitboxes
+                .iter()
+                .any(|hit| matches!(&hit.action, Action::OpenProfile(login) if login == "octocat"))
+        );
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn repo_page_offers_fork_and_author_profile() {
+        let dir = std::env::temp_dir().join(format!("gitx-fork-ui-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        let paths = crate::config::Paths::for_test(dir.join("config"), dir.join("cache"));
+        let mut app = App::settings(paths, None);
+        app.settings_only = false;
+        app.login = Some("me".to_string());
+        let repo = test_repo("octocat", "hello-world");
+        app.page = Page::Repo;
+        app.return_page = Page::Repositories;
+        app.page_repo = Some(repo.clone());
+        app.detail = Some(repo);
+        let mut terminal = ratatui::Terminal::new(ratatui::backend::TestBackend::new(120, 40))
+            .expect("test terminal");
+        terminal
+            .draw(|frame| draw(frame, &mut app))
+            .expect("render repo");
+        assert!(
+            app.hitboxes
+                .iter()
+                .any(|hit| hit.action == Action::ForkRepo)
+        );
+        assert!(
+            app.hitboxes
+                .iter()
+                .any(|hit| matches!(&hit.action, Action::OpenProfile(login) if login == "octocat"))
+        );
+        let _ = std::fs::remove_dir_all(dir);
     }
 }

@@ -13,7 +13,7 @@ use std::process::Command;
 use std::time::{Duration, Instant};
 
 const API: &str = "https://api.github.com";
-const USER_AGENT: &str = "gxt/0.2.2";
+const USER_AGENT: &str = "gxt/0.3.0";
 
 #[derive(Clone)]
 pub struct ApiClient {
@@ -92,6 +92,53 @@ impl ApiClient {
             self.get_json(&url, true)
         } else {
             self.get_public_with_fallback(&url)
+        }
+    }
+
+    pub fn user_profile(&self, login: &str) -> Result<User, String> {
+        let url = format!("{API}/users/{}", percent_encode(login));
+        self.get_public_with_fallback(&url)
+    }
+
+    pub fn user_repositories(&self, login: &str) -> Result<Vec<Repo>, String> {
+        let login = percent_encode(login);
+        let mut all = Vec::new();
+        for page in 1..=1000 {
+            let url = format!(
+                "{API}/users/{login}/repos?per_page=100&sort=updated&direction=desc&page={page}"
+            );
+            let chunk: Vec<Repo> = self.get_public_with_fallback(&url)?;
+            let count = chunk.len();
+            all.extend(chunk);
+            if count < 100 {
+                break;
+            }
+        }
+        Ok(all)
+    }
+
+    pub fn fork_repository(&self, full_name: &str) -> Result<Repo, String> {
+        let Some(token) = self.token.as_deref() else {
+            return Err(
+                "还没有登录 GitHub，Fork 不了仓库哦喵~先运行 gh auth login 吧喵~".to_string(),
+            );
+        };
+        let response = self
+            .agent
+            .post(&format!("{API}/repos/{full_name}/forks"))
+            .header("Accept", "application/vnd.github+json")
+            .header("X-GitHub-Api-Version", "2022-11-28")
+            .header("Authorization", format!("Bearer {token}"))
+            .send_empty()
+            .map_err(|err| format_transport_error(&err))?;
+        let status = response.status().as_u16();
+        let mut response = response;
+        let body = response.body_mut().read_to_string().unwrap_or_default();
+        if (200..300).contains(&status) {
+            serde_json::from_str(&body)
+                .map_err(|err| format!("GitHub 送回来的 Fork 数据人家看不懂：{err}喵~"))
+        } else {
+            Err(status_message(status, &body))
         }
     }
 
