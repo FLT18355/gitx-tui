@@ -1,74 +1,111 @@
-# gitx-tui（命令 `gxt`）
+<div align="center">
 
-终端里的 GitHub 工作台和本地 git TUI，使用 Rust、ratatui 与 crossterm 写成喵~
+# 🐾 gitx-tui (`gxt`)
 
-GitHub 侧覆盖仓库、收藏、搜索、账号额度、仓库详情和 Actions；本地侧用 lazygit 风格查看改动、diff、分支、提交和标签，并支持暂存、提交、推送、拉取、取回和打标签。界面使用 Catppuccin 配色与 Nerd Font 图标，没有 emoji 喵~
+**终端里的 GitHub 工作台和本地 git TUI**<br>
+*使用 Rust、ratatui 与 crossterm 写成喵~*
 
-## 功能
+[![Rust](https://img.shields.io/badge/Rust-2024-orange?style=flat-square&logo=rust)](https://www.rust-lang.org/)
+[![Ratatui](https://img.shields.io/badge/UI-ratatui-blue?style=flat-square)](https://ratatui.rs/)
+[![License: MIT](https://img.shields.io/badge/License-MIT-green?style=flat-square)](LICENSE)
+[![Theme: Catppuccin](https://img.shields.io/badge/Theme-Catppuccin-f5c2e7?style=flat-square&logo=palette&logoColor=white)](https://catppuccin.com/)
 
-- GitHub 仓库：账号仓库、收藏、搜索、语言筛选、排序、分页和仓库详情。
-- 用户主页：点仓库作者进入，查看作者资料和全部公开仓库，并可继续打开仓库。
-- Fork：仓库页按 `Y` 打开 Fork 小窗口，确认后把别人的仓库 Fork 到自己账号。
-- 删除仓库：自己的仓库按 `D` 打开确认窗口，确认后从 GitHub 删除。
-- 热门页：按今日、本周、本月看 GitHub 上涨星最快的仓库，支持结果筛选和语言筛选。
-- 仓库与收藏筛选：`/` 在当前列表里按名称、简介、语言和主题筛选。
-- 搜索增强：搜索结果支持二次筛选、语言筛选和三种排序，搜索历史可直接点选。
-- 收藏排序：支持按收藏时间、最近更新、星标和名称排序。
-- 仓库详情：文件树、README、议题/合并请求页和自己的仓库编辑。
-- 提交查看：仓库页按 `C` 打开提交页，列表 + 完整提交信息，可跳转 GitHub。
-- 分支切换：仓库页和提交页按 `b` 选分支，文件树、README 和提交列表跟着切换。
-- 仓库编辑：自己的仓库可改名称、简介、主页、主题、可见性、归档，以及 Issues / Discussions / Wiki 开关。
-- 文件树：目录优先排序、树形连接线和右对齐文件大小。
-- README：渲染标题、列表、任务列表、引用、代码块、分隔线和表格，按 `F` 全屏查看。
-- 发行版：右侧发行版按钮支持关键词搜索，点进详情页看说明并逐个下载附带文件或源码包。
-- 个人发行版发布：运行 `gxt release` 打开独立 TUI，左侧用 `gh` 列个人仓库，右侧填标签、标题、目标分支和说明，确认后调用 `gh release create`。
-- 议题与合并请求：仓库内的议题/PR 列表、打开/关闭/全部状态筛选、类型筛选、正文预览和标签。
-- 通知：未读/全部通知、标单条已读、全部已读、原因与仓库信息、跳转 GitHub。
-- Actions：运行记录、jobs、steps、状态与耗时，以及手动触发工作流和 inputs。
-- 账号页：资料、仓库统计、GitHub API core/search/GraphQL 额度与恢复时间。
-- 本地仓库 TUI：
-  - 分支、标签、改动、提交、stash 五个列表，支持分页和选择；
-  - 选中文件、提交、分支、标签或 stash 时显示对应差异；
-  - 暂存、取消暂存、全部暂存、全部取消暂存；
-  - 提交、创建标签、推送当前分支、推送标签、fetch、pull；
-  - 分支面板合并、变基、删除选中分支，`Q` 中止进行中的合并或变基；
-  - 切换分支，stash 保存、恢复、应用和删除；
-  - 没有顶部页签按钮，`Tab` 循环、`1`~`6` 直达面板，底部快捷键随面板变化；
-  - 改动、提交、分支、标签和 stash 列表带滚动条，整体改用普通模式的扁平面板与分隔线；
-  - 改动面板按 `H` 查看选中文件的提交历史；
-  - 底部快捷键栏支持鼠标悬停高亮和点击执行；
-  - `h` / `?` 打开完整键位帮助；
-  - 中文输入、横向滚动和显示宽度正确的光标。
-- 全局设置 TUI：全部主题（含自定义）、预览开关、下载目录、代理、缓存时间和缓存管理。
-- 主题：Latte、Frappe、Macchiato、Mocha 四套 Catppuccin 配色，并支持 `~/.config/gitx-tui/themes/*.toml` 自定义主题，设置页可切换全部主题。
-- 缓存：仓库、收藏、搜索、详情、Actions 与工作流列表都会落盘，按 TTL 刷新。
-- 代理：公开 API 可走加速代理，认证请求直连 GitHub。
+[![GitHub last commit](https://img.shields.io/github/last-commit/FLT18355/gitx-tui?style=flat-square&color=89b4fa&logo=github)](https://github.com/FLT18355/gitx-tui)
+[![GitHub repo size](https://img.shields.io/github/repo-size/FLT18355/gitx-tui?style=flat-square&color=cba6f7)](https://github.com/FLT18355/gitx-tui)
 
-## 界面
+</div>
 
-- GitHub 工作台：仓库、收藏、搜索、账号、通知、热门六个页面，以及仓库详情、议题和 Actions。
-- 热门页：今日/本周/本月热门仓库、结果筛选、语言筛选、分页和仓库详情。
-- 仓库详情：文件树、发行版按钮、README（支持全屏）、议题/合并请求和 Actions 入口。
-- 发行版详情：发行说明、附带文件列表、去 GitHub 和下载源码按钮。
-- 提交页：提交列表、提交信息详情、分支切换和分页读取。
-- 本地仓库 TUI：顶部分支状态，左侧分支/标签/stash，中间改动和提交，右侧差异。
-- 设置 TUI：所有全局设置集中在一页。
-- 个人发行版发布 TUI：左侧 gh 个人仓库，右侧标签、标题、目标和发行说明表单。
+---
 
-## 文档
+## 📸 预览
 
-- CLI 用法：运行 `gxt -h`，或看 [docs/CLI.md](docs/CLI.md)。
-- 键位：看 [docs/KEYBINDINGS.md](docs/KEYBINDINGS.md)。
-- 配置、网络与缓存：看 [docs/CONFIG.md](docs/CONFIG.md)。
-- 构建、测试与架构：看 [docs/DEVELOPMENT.md](docs/DEVELOPMENT.md)。
+<div align="center">
+  <img src="./assets/preview.png" alt="gitx-tui preview" width="100%" style="border-radius: 8px;">
+</div>
 
-## 环境
+---
 
-- Rust 2024 / 1.88 或更新版本（从源码构建时）。
-- GitHub CLI `gh`，用于读取登录凭据。
-- 支持鼠标与真彩色的终端。
-- 推荐 Nerd Font；没有时图标可能显示成方块。
+## ✨ 关于
 
-## 许可证
+**`gitx-tui`** 是你在终端里的 GitHub 工作台与本地 Git 管理器。
+GitHub 侧覆盖仓库、收藏、搜索、账号额度、仓库详情和 Actions；本地侧用 lazygit 风格查看改动、diff、分支、提交和标签，并支持暂存、提交、推送、拉取等全套操作。
 
-MIT
+界面全面使用 **Catppuccin 配色** 与 **Nerd Font 图标**，拒绝乱码，只留极客美学，没有 emoji 喵~
+
+## 🚀 功能特性
+
+<details>
+<summary><b>🌐 GitHub 工作区 (点击展开)</b></summary>
+
+- **仓库与搜索**：账号仓库、收藏、搜索、语言筛选、排序、分页和仓库详情。
+- **热门页**：按今日、本周、本月看 GitHub 上涨星最快的仓库，支持结果筛选和语言筛选。
+- **筛选增强**：`/` 在当前列表里按名称、简介、语言和主题筛选；搜索结果支持二次筛选、语言筛选和三种排序，搜索历史可直接点选。
+- **用户主页**：点仓库作者进入，查看作者资料和全部公开仓库，并可继续打开仓库。
+- **仓库操作**：
+  - **Fork**：仓库页按 `Y` 打开 Fork 小窗口，确认后把别人的仓库 Fork 到自己账号。
+  - **删除**：自己的仓库按 `D` 打开确认窗口，确认后从 GitHub 删除。
+  - **编辑**：自己的仓库可改名称、简介、主页、主题、可见性、归档，以及 Issues / Discussions / Wiki 开关。
+- **仓库详情**：文件树（目录优先、树形连接线、右对齐文件大小）、README 渲染（标题、列表、代码块、表格，支持 `F` 全屏）。
+- **提交与分支**：仓库页按 `C` 打开提交页；按 `b` 选分支，文件树、README 和提交列表跟着切换。
+- **发行版 (Releases)**：右侧按钮支持关键词搜索，查看说明并逐个下载文件或源码包。运行 `gxt release` 可打开独立 TUI 直接发布个人发行版。
+- **议题与 PR**：列表、状态筛选、类型筛选、正文预览和标签。
+- **通知与 Actions**：未读/全部通知、标单条已读；查看 Actions 运行记录、jobs、steps 及手动触发。
+- **账号页**：资料、仓库统计、GitHub API core/search/GraphQL 额度与恢复时间。
+
+</details>
+
+<details>
+<summary><b>💻 本地仓库 TUI (点击展开)</b></summary>
+
+- **多面板视图**：分支、标签、改动、提交、stash 五个列表，支持分页和选择。
+- **差异预览**：选中文件、提交、分支、标签或 stash 时显示对应差异。
+- **暂存区管理**：暂存、取消暂存、全部暂存、全部取消暂存。
+- **提交与标签**：提交、创建标签、推送当前分支、推送标签、fetch、pull。
+- **分支操作**：切换分支、合并、变基、删除选中分支，`Q` 中止进行中的合并或变基。
+- **Stash**：保存、恢复、应用和删除。
+- **导航与输入**：顶部页签导航（`Tab` 循环、`1`~`6` 直达），底部快捷键随面板变化且支持鼠标点击；支持中文输入、横向滚动和显示宽度正确的光标。
+
+</details>
+
+<details>
+<summary><b>⚙️ 全局与体验 (点击展开)</b></summary>
+
+- **设置 TUI**：主题、预览开关、下载目录、代理、缓存时间和缓存管理集中在一页。
+- **主题系统**：内置 Latte、Frappe、Macchiato、Mocha 四套 Catppuccin 配色。
+- **缓存机制**：仓库、收藏、搜索、详情、Actions 等数据自动落盘并按 TTL 刷新。
+- **网络代理**：公开 API 可走加速代理，认证请求直连 GitHub，保证安全。
+
+</details>
+
+---
+
+## 📦 环境与安装
+
+**环境要求：**
+- Rust 2024 / 1.88 或更新版本（从源码构建时）
+- GitHub CLI `gh`（用于读取登录凭据）
+- 支持鼠标与真彩色的终端
+- 推荐安装 Nerd Font；没有时图标可能显示成方块
+
+**构建源码：**
+```bash
+git clone https://github.com/FLT18355/gitx-tui.git
+cd gitx-tui
+cargo build --release
+./target/release/gxt
+```
+
+---
+
+📖 文档导航
+
+· CLI 用法：运行 gxt -h，或看 docs/CLI.md
+· 按键操作：看 docs/KEYBINDINGS.md
+· 配置与网络：看 docs/CONFIG.md
+· 构建与架构：看 docs/DEVELOPMENT.md
+
+---
+
+<div align="center">
+  <sub>用 ❤️ 和 ☕ 以及猫猫能量驱动</sub>
+</div>
