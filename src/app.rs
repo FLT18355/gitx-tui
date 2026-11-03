@@ -8,7 +8,7 @@ use crate::model::{
     RepoSort, SearchResponse, SearchSort, StarSort, TreeResponse, TrendingPeriod, User, Workflow,
     key_part,
 };
-use crate::theme::{FLAVORS, Theme};
+use crate::theme::Theme;
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers, MouseButton, MouseEvent, MouseEventKind};
 use ratatui::layout::Rect;
 use std::io::Write;
@@ -579,6 +579,7 @@ pub struct App {
     pub paths: Paths,
     pub config: Config,
     pub theme: Theme,
+    pub themes: Vec<String>,
     pub client: ApiClient,
     pub cache: Cache,
     pub user: Option<User>,
@@ -765,9 +766,10 @@ impl App {
     fn build(paths: Paths, theme_override: Option<String>, settings_only: bool) -> Self {
         let config = Config::load(&paths);
         let theme_name = theme_override
-            .filter(|value| FLAVORS.contains(&value.as_str()))
+            .filter(|value| Theme::exists(&paths, value))
             .unwrap_or_else(|| config.theme.clone());
         let theme = Theme::load(&paths, &theme_name);
+        let themes = Theme::available(&paths);
         let client = if settings_only {
             ApiClient::without_auth(config.proxy.clone())
         } else {
@@ -781,6 +783,7 @@ impl App {
             paths,
             config,
             theme,
+            themes,
             client,
             cache,
             user: None,
@@ -5673,26 +5676,27 @@ impl App {
     }
 
     pub fn cycle_theme(&mut self, direction: i32) {
-        let index = FLAVORS
+        let index = self
+            .themes
             .iter()
             .position(|flavor| *flavor == self.theme.flavor)
-            .unwrap_or(3) as i32;
-        let next = (index + direction).rem_euclid(FLAVORS.len() as i32) as usize;
-        self.set_theme(FLAVORS[next].to_string());
+            .unwrap_or(0) as i32;
+        let next = (index + direction).rem_euclid(self.themes.len() as i32) as usize;
+        self.set_theme(self.themes[next].clone());
     }
 
     pub fn set_theme(&mut self, flavor: String) {
-        if !FLAVORS.contains(&flavor.as_str()) {
+        if !Theme::exists(&self.paths, &flavor) {
             return;
         }
         self.theme = Theme::load(&self.paths, &flavor);
-        self.config.theme = flavor.clone();
+        self.config.theme = flavor;
         self.config_dirty = true;
         self.set_status(
             StatusKind::Info,
             &format!(
                 "主题换成 {} 啦，记得到设置页保存哦喵~",
-                Theme::label(&flavor)
+                self.theme.display_name()
             ),
         );
     }

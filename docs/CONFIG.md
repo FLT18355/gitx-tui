@@ -24,7 +24,7 @@ download_dir = "~/Downloads/gitx-tui"
 
 | 字段 | 说明 |
 | --- | --- |
-| `theme` | `latte`、`frappe`、`macchiato`、`mocha` |
+| `theme` | `latte`、`frappe`、`macchiato`、`mocha`，或 `~/.config/gitx-tui/themes/` 里的自定义主题名 |
 | `proxy` | 公开 API 与发行版下载的加速地址 |
 | `repos_ttl_secs` | 仓库和收藏列表缓存时间 |
 | `detail_ttl_secs` | 仓库详情、文件树、README、发行版、Actions、议题和通知缓存时间 |
@@ -46,7 +46,15 @@ themes/macchiato.toml
 themes/mocha.toml
 ```
 
-优先读取当前目录的 `themes/`，其次读取 `~/.config/gitx-tui/themes/`，最后使用编译进二进制的同一套主题。
+优先读取 `~/.config/gitx-tui/themes/`，其次读取当前目录的 `themes/`，最后使用编译进二进制的同一套主题。
+
+自定义主题：
+
+1. 新建 `~/.config/gitx-tui/themes/neon.toml`，名字只用字母、数字、`-` 和 `_`。
+2. 写入与内置主题相同的颜色键，至少包含 `base`、`mantle`、`crust`、`surface0`、`surface1`、`surface2`、`overlay0`、`overlay1`、`overlay2`、`text`、`subtext0`、`subtext1`、`blue`、`green`、`peach`、`red`，共 16 个以上。
+3. 在 `config.toml` 里写 `theme = "neon"`，或运行 `gxt settings` 在主题卡片里点选。
+
+主题文件里的 `name` 是设置页显示的标题，例如 `name = "Neon"`。所有内置和自定义主题都会出现在设置页，按 `t` 也会在全部主题之间循环。
 
 ## 网络
 

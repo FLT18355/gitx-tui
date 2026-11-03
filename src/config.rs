@@ -71,13 +71,13 @@ impl Config {
             .ok()
             .and_then(|raw| toml::from_str::<Config>(&raw).ok())
             .unwrap_or_default();
-        config.normalize();
+        config.normalize(paths);
         config
     }
 
-    fn normalize(&mut self) {
+    fn normalize(&mut self, paths: &Paths) {
         self.theme = self.theme.trim().to_ascii_lowercase();
-        if !crate::theme::FLAVORS.contains(&self.theme.as_str()) {
+        if !crate::theme::Theme::exists(paths, &self.theme) {
             self.theme = "mocha".to_string();
         }
         self.proxy = self.proxy.trim().trim_end_matches('/').to_string();
@@ -166,14 +166,20 @@ impl Paths {
         self.config_dir.join("config.toml")
     }
 
+    pub fn themes_dir(&self) -> PathBuf {
+        self.config_dir.join("themes")
+    }
+
     pub fn theme_file(&self, flavor: &str) -> PathBuf {
-        self.config_dir
-            .join("themes")
-            .join(format!("{flavor}.toml"))
+        self.themes_dir().join(format!("{flavor}.toml"))
+    }
+
+    pub fn local_themes_dir() -> PathBuf {
+        PathBuf::from("themes")
     }
 
     pub fn local_theme_file(flavor: &str) -> PathBuf {
-        PathBuf::from("themes").join(format!("{flavor}.toml"))
+        Self::local_themes_dir().join(format!("{flavor}.toml"))
     }
 }
 
@@ -240,6 +246,22 @@ mod tests {
                 PathBuf::from(home).join("Downloads/gitx-tui")
             );
         }
+    }
+
+    #[test]
+    fn accepts_custom_theme_from_config_dir() {
+        let root =
+            std::env::temp_dir().join(format!("gitx-tui-custom-theme-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&root);
+        let paths = Paths::for_test(root.join("config"), root.join("cache"));
+        fs::create_dir_all(paths.themes_dir()).unwrap();
+        fs::write(paths.theme_file("neon"), "name = \"Neon\"\nmocha = 1\n").unwrap();
+        fs::create_dir_all(paths.config_dir()).unwrap();
+        fs::write(paths.config_file(), "theme = \"neon\"\n").unwrap();
+        assert_eq!(Config::load(&paths).theme, "neon");
+        fs::remove_file(paths.theme_file("neon")).unwrap();
+        assert_eq!(Config::load(&paths).theme, "mocha");
+        let _ = fs::remove_dir_all(&root);
     }
 
     #[test]

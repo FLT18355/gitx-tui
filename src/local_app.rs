@@ -4,7 +4,7 @@ use crate::format;
 use crate::local::{self, LocalRepo};
 use crate::local_ops;
 use crate::local_ui;
-use crate::theme::{FLAVORS, Theme};
+use crate::theme::Theme;
 use anyhow::Result;
 use crossterm::event::{
     self, Event, KeyCode, KeyEvent, KeyEventKind, KeyModifiers, MouseButton, MouseEvent,
@@ -125,6 +125,9 @@ pub struct LocalApp {
     pub stash_rows: usize,
     pub help: bool,
     pub hover: Option<LocalAction>,
+    pub hover_pane: Option<LocalPane>,
+    pub hover_row: Option<usize>,
+    pub pointer: Option<(u16, u16)>,
     pub hits: Vec<(Rect, LocalAction)>,
     pub message: String,
     pub message_error: bool,
@@ -141,7 +144,7 @@ impl LocalApp {
         let paths = Paths::discover();
         let config = Config::load(&paths);
         let theme_name = theme_override
-            .filter(|value| FLAVORS.contains(&value.as_str()))
+            .filter(|value| Theme::exists(&paths, value))
             .unwrap_or_else(|| config.theme.clone());
         let theme = Theme::load(&paths, &theme_name);
         let repo = LocalRepo::open(path)?;
@@ -178,6 +181,9 @@ impl LocalApp {
             stash_rows: 4,
             help: false,
             hover: None,
+            hover_pane: None,
+            hover_row: None,
+            pointer: None,
             hits: Vec::new(),
             message,
             message_error: false,
@@ -1006,54 +1012,79 @@ impl LocalApp {
         }
     }
 
-    fn select_clicked(&mut self, pane: LocalPane, y: u16) -> bool {
-        let (rect, rows, row_height, len) = match pane {
-            LocalPane::Status => (
+    fn pane_list(&self, pane: LocalPane) -> Option<(Rect, usize, u16, usize, usize)> {
+        match pane {
+            LocalPane::Status => Some((
                 self.layout.status,
                 self.status_rows.max(1),
                 1,
                 self.repo.files.len(),
-            ),
-            LocalPane::Commits => (
+                self.file_selected,
+            )),
+            LocalPane::Commits => Some((
                 self.layout.commits,
                 self.commit_rows.max(1),
                 2,
                 self.repo.commits.len(),
-            ),
-            LocalPane::Branches => (
+                self.commit_selected,
+            )),
+            LocalPane::Branches => Some((
                 self.layout.branches,
                 self.branch_rows.max(1),
                 1,
                 self.repo.branches.len(),
-            ),
-            LocalPane::Tags => (
+                self.branch_selected,
+            )),
+            LocalPane::Tags => Some((
                 self.layout.tags,
                 self.tag_rows.max(1),
                 1,
                 self.repo.tags.len(),
-            ),
-            LocalPane::Stashes => (
+                self.tag_selected,
+            )),
+            LocalPane::Stashes => Some((
                 self.layout.stashes,
                 self.stash_rows.max(1),
                 1,
                 self.repo.stashes.len(),
-            ),
-            LocalPane::Diff => return false,
+                self.stash_selected,
+            )),
+            LocalPane::Diff => None,
+        }
+    }
+
+    fn row_at(&self, pane: LocalPane, y: u16) -> Option<usize> {
+        let (rect, rows, row_height, len, selected) = self.pane_list(pane)?;
+        if len == 0 || y < rect.y {
+            return None;
+        }
+        let offset = ((y - rect.y) / row_height) as usize;
+        let index = (selected / rows) * rows + offset;
+        (index < len).then_some(index)
+    }
+
+    fn update_hover(&mut self, x: u16, y: u16) {
+        self.pointer = Some((x, y));
+        self.hover = self.key_at(x, y);
+        self.hover_pane = match self.hover {
+            Some(LocalAction::Focus(pane)) => Some(pane),
+            _ => self.pane_at(x, y),
+        };
+        self.hover_row = self
+            .hover_pane
+            .filter(|pane| *pane != LocalPane::Diff)
+            .and_then(|pane| self.row_at(pane, y));
+    }
+
+    fn select_clicked(&mut self, pane: LocalPane, y: u16) -> bool {
+        let Some((rect, rows, row_height, len, selected)) = self.pane_list(pane) else {
+            return false;
         };
         if len == 0 || y < rect.y {
             return false;
         }
         let offset = ((y - rect.y) / row_height) as usize;
-        let selected = match pane {
-            LocalPane::Status => self.file_selected,
-            LocalPane::Commits => self.commit_selected,
-            LocalPane::Branches => self.branch_selected,
-            LocalPane::Tags => self.tag_selected,
-            LocalPane::Stashes => self.stash_selected,
-            LocalPane::Diff => return false,
-        };
-        let start = (selected / rows) * rows;
-        let index = start + offset;
+        let index = (selected / rows) * rows + offset;
         if index >= len {
             return false;
         }
@@ -1132,11 +1163,11 @@ impl LocalApp {
         }
         match mouse.kind {
             MouseEventKind::Moved => {
-                self.hover = self.key_at(mouse.column, mouse.row);
+                self.update_hover(mouse.column, mouse.row);
             }
             MouseEventKind::Down(MouseButton::Left) => {
-                if let Some(action) = self.key_at(mouse.column, mouse.row) {
-                    self.hover = Some(action);
+                self.update_hover(mouse.column, mouse.row);
+                if let Some(action) = self.hover {
                     self.run_action(action);
                     return;
                 }
@@ -1150,6 +1181,7 @@ impl LocalApp {
                 }
             }
             MouseEventKind::ScrollUp | MouseEventKind::ScrollDown => {
+                self.update_hover(mouse.column, mouse.row);
                 let Some(pane) = self.pane_at(mouse.column, mouse.row) else {
                     return;
                 };

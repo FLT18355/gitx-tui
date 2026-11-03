@@ -5,7 +5,7 @@ use crate::app::{
 use crate::format;
 use crate::icons;
 use crate::model::{Issue, IssueState, Repo, RepoSort, SearchSort, StarSort, TrendingPeriod};
-use crate::theme::{FLAVORS, Theme};
+use crate::theme::Theme;
 use ratatui::Frame;
 use ratatui::layout::{Alignment, Constraint, Layout, Position, Rect};
 use ratatui::style::{Color, Modifier, Style};
@@ -114,7 +114,7 @@ fn draw_header(frame: &mut Frame, app: &App, theme: &Theme, area: Rect, hits: &m
         icons::USER,
         app.auth_label(),
         icons::PALETTE,
-        Theme::label(&app.theme.flavor)
+        app.theme.display_name()
     );
     if area.width > 126 {
         let account_width = format::text_width(&account) as u16 + 2;
@@ -1025,6 +1025,26 @@ fn draw_account_page(
         hits,
     );
 
+    let (public, private, languages, stars) = app.repo_stats();
+    let (starred, starred_languages, starred_stars) = app.starred_stats();
+    let summary = format!(
+        "{} 公开 {} · 私有 {} · 语言 {} 种 · 星标 {}    {} 收藏 {} · 语言 {} 种 · 星标 {}喵~",
+        icons::REPO,
+        public,
+        private,
+        languages,
+        format::human_count(stars),
+        icons::STAR,
+        starred,
+        starred_languages,
+        format::human_count(starred_stars)
+    );
+    frame.render_widget(
+        Paragraph::new(format::truncate(&summary, inner.width as usize))
+            .style(Style::default().fg(theme.color("overlay0"))),
+        Rect::new(inner.x, inner.y + 2, inner.width, 1),
+    );
+
     let content = Rect::new(
         inner.x,
         inner.y + 3,
@@ -1432,6 +1452,18 @@ fn draw_account_profile(
         (icons::GLOBE, "位置喵~", user.location.clone()),
         (icons::NETWORK, "博客喵~", user.blog.clone()),
         (icons::INFO, "邮箱喵~", user.email.clone()),
+        (
+            icons::COMMENT,
+            "推特喵~",
+            user.twitter_username
+                .as_deref()
+                .map(|name| format!("@{name}")),
+        ),
+        (
+            icons::CODE,
+            "公开 Gist喵~",
+            Some(user.public_gists.to_string()),
+        ),
         (icons::CLOCK, "加入喵~", Some(user.joined_label())),
         (
             icons::STAR,
@@ -1463,17 +1495,17 @@ fn draw_account_profile(
         y += 1;
     }
 
-    let stats_y = inner.y + inner.height.saturating_sub(5);
-    let (public, private, _, _) = app.repo_stats();
+    let stats_y = inner.y + inner.height.saturating_sub(6);
+    let (public, private, languages, stars) = app.repo_stats();
+    let (starred, starred_languages, starred_stars) = app.starred_stats();
     let stats = format!(
-        "{} 公开 {}   私有 {}   {} 星标 {}   {} 关注 {}喵~",
+        "{} 公开 {}   私有 {}   语言 {} 种   {} 星标 {}喵~",
         icons::REPO,
         public,
         private,
+        languages,
         icons::STAR,
-        app.starred.len(),
-        icons::EYE,
-        user.followers
+        format::human_count(stars)
     );
     frame.render_widget(
         Paragraph::new(format::truncate(&stats, inner.width as usize))
@@ -1481,27 +1513,42 @@ fn draw_account_profile(
         Rect::new(inner.x, stats_y, inner.width, 1),
     );
     let follow = format!(
-        "{} 正在关注 {}   {} 公开仓库 {}喵~",
+        "{} 正在关注 {}   {} 粉丝 {}   {} 收藏 {}喵~",
         icons::USER,
         user.following,
-        icons::REPO,
-        user.public_repos
+        icons::EYE,
+        user.followers,
+        icons::STAR,
+        starred
     );
     frame.render_widget(
         Paragraph::new(format::truncate(&follow, inner.width as usize))
             .style(Style::default().fg(theme.color("subtext0"))),
         Rect::new(inner.x, stats_y + 1, inner.width, 1),
     );
+    let extra = format!(
+        "{} 收藏星标 {}   {} 收藏语言 {} 种   公开 Gist {}喵~",
+        icons::STAR,
+        format::human_count(starred_stars),
+        icons::CODE,
+        starred_languages,
+        user.public_gists
+    );
+    frame.render_widget(
+        Paragraph::new(format::truncate(&extra, inner.width as usize))
+            .style(Style::default().fg(theme.color("overlay0"))),
+        Rect::new(inner.x, stats_y + 2, inner.width, 1),
+    );
 
     let open = icons::label(icons::EXTERNAL, "打开主页喵~");
     let open_width = format::text_width(&open) as u16 + 4;
-    if stats_y + 3 < inner.y + inner.height {
+    if stats_y + 4 < inner.y + inner.height {
         draw_button(
             frame,
             app,
             theme,
             hits,
-            Rect::new(inner.x, stats_y + 3, open_width, 1),
+            Rect::new(inner.x, stats_y + 4, open_width, 1),
             &open,
             Action::OpenExternal(user.html_url.clone()),
             true,
@@ -6551,8 +6598,10 @@ fn draw_settings_page(
             Rect::new(inner.x, y, inner.width, 1),
         );
         frame.render_widget(
-            Paragraph::new("Catppuccin 四套配色，点一下就能换啦喵~")
-                .style(Style::default().fg(theme.color("overlay0"))),
+            Paragraph::new(
+                "Catppuccin 四套和自定义主题，点一下就能换喵~ 自定义放 ~/.config/gitx-tui/themes/",
+            )
+            .style(Style::default().fg(theme.color("overlay0"))),
             Rect::new(
                 inner.x + theme_offset,
                 y,
@@ -6561,21 +6610,25 @@ fn draw_settings_page(
             ),
         );
         y += 1;
+        let themes = app.themes.clone();
         let gap = 1_u16;
-        let card_width = (inner.width.saturating_sub(gap * 3)) / 4;
-        for (index, flavor) in FLAVORS.iter().enumerate() {
-            let rect = Rect::new(
-                inner.x + index as u16 * (card_width + gap),
-                y,
-                card_width,
-                4,
-            );
-            if rect.x + rect.width > inner.x + inner.width {
-                break;
+        let columns = 4_u16;
+        let card_width = (inner.width.saturating_sub(gap * (columns - 1))) / columns;
+        let mut index = 0;
+        while index < themes.len() && y + 4 <= actions_y && card_width >= 12 {
+            for column in 0..columns {
+                if index >= themes.len() {
+                    break;
+                }
+                let rect = Rect::new(inner.x + column * (card_width + gap), y, card_width, 4);
+                if rect.x + rect.width > inner.x + inner.width {
+                    break;
+                }
+                draw_theme_card(frame, app, theme, rect, &themes[index], hits);
+                index += 1;
             }
-            draw_theme_card(frame, app, theme, rect, flavor, hits);
+            y += 5;
         }
-        y += 5;
     }
 
     if y + 6 < actions_y {
@@ -6949,7 +7002,7 @@ fn draw_theme_card(
             })),
         area,
     );
-    let label = Theme::label(flavor);
+    let label = preview.display_name().to_string();
     frame.render_widget(
         Paragraph::new(label).style(
             Style::default()
@@ -7839,6 +7892,39 @@ mod tests {
             .map(|row| row.iter().map(|cell| cell.symbol()).collect::<String>())
             .collect::<Vec<_>>()
             .join("\n")
+    }
+
+    #[test]
+    fn account_page_renders_profile_and_stats() {
+        let dir = std::env::temp_dir().join(format!("gitx-account-ui-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        let paths = crate::config::Paths::for_test(dir.join("config"), dir.join("cache"));
+        let mut app = App::settings(paths, None);
+        app.settings_only = false;
+        app.page = Page::Account;
+        app.user = Some(crate::model::User {
+            login: "octocat".to_string(),
+            name: Some("The Octocat".to_string()),
+            public_repos: 2,
+            followers: 3,
+            following: 4,
+            public_gists: 5,
+            ..Default::default()
+        });
+        app.repos = vec![test_repo("octocat", "hello-world")];
+        app.starred = vec![test_repo("octocat", "spoon-knife")];
+        let mut terminal = ratatui::Terminal::new(ratatui::backend::TestBackend::new(120, 40))
+            .expect("test terminal");
+        terminal
+            .draw(|frame| draw(frame, &mut app))
+            .expect("render account");
+        let text = buffer_text(terminal.backend().buffer())
+            .split_whitespace()
+            .collect::<String>();
+        assert!(text.contains("公开Gist"));
+        assert!(text.contains("收藏星标"));
+        assert!(text.contains("正在关注"));
+        let _ = std::fs::remove_dir_all(dir);
     }
 
     #[test]

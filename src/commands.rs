@@ -5,7 +5,7 @@ use crate::config::{Config, Paths};
 use crate::format;
 use crate::local::LocalRepo;
 use crate::local_ops;
-use crate::theme::FLAVORS;
+use crate::theme::Theme;
 use std::path::Path;
 use std::process::Command;
 
@@ -96,7 +96,7 @@ pub fn config(action: ConfigAction) -> Result<(), String> {
             return Ok(());
         }
         ConfigAction::Set(key, value) => {
-            set_config_value(&mut config, &key, &value)?;
+            set_config_value(&mut config, &paths, &key, &value)?;
             config
                 .save(&paths)
                 .map_err(|err| format!("配置没存上喵~：{err}"))?;
@@ -130,7 +130,12 @@ fn config_value(config: &Config, key: &str) -> Result<String, String> {
     }
 }
 
-fn set_config_value(config: &mut Config, key: &str, value: &str) -> Result<(), String> {
+fn set_config_value(
+    config: &mut Config,
+    paths: &Paths,
+    key: &str,
+    value: &str,
+) -> Result<(), String> {
     let boolean = || match value.trim().to_ascii_lowercase().as_str() {
         "true" | "1" | "on" | "yes" => Ok(true),
         "false" | "0" | "off" | "no" => Ok(false),
@@ -145,8 +150,10 @@ fn set_config_value(config: &mut Config, key: &str, value: &str) -> Result<(), S
     match key {
         "theme" => {
             let theme = value.trim().to_ascii_lowercase();
-            if !FLAVORS.contains(&theme.as_str()) {
-                return Err(format!("主题只能是 {} 喵~", FLAVORS.join(" / ")));
+            if !Theme::exists(paths, &theme) {
+                return Err(format!(
+                    "主题 {theme} 还没装喵~把主题文件放到 ~/.config/gitx-tui/themes/{theme}.toml 再试喵~"
+                ));
             }
             config.theme = theme;
         }
@@ -311,13 +318,15 @@ mod tests {
     #[test]
     fn config_set_validates_values() {
         let mut config = Config::default();
-        set_config_value(&mut config, "commit_limit", "80").unwrap();
+        let root = std::env::temp_dir().join(format!("gitx-tui-cmd-{}", std::process::id()));
+        let paths = Paths::for_test(root.join("config"), root.join("cache"));
+        set_config_value(&mut config, &paths, "commit_limit", "80").unwrap();
         assert_eq!(config.commit_limit, 80);
-        assert!(set_config_value(&mut config, "commit_limit", "5").is_err());
-        set_config_value(&mut config, "show_readme", "on").unwrap();
+        assert!(set_config_value(&mut config, &paths, "commit_limit", "5").is_err());
+        set_config_value(&mut config, &paths, "show_readme", "on").unwrap();
         assert!(config.show_readme);
-        assert!(set_config_value(&mut config, "show_readme", "maybe").is_err());
-        assert!(set_config_value(&mut config, "theme", "neon").is_err());
-        assert!(set_config_value(&mut config, "nope", "1").is_err());
+        assert!(set_config_value(&mut config, &paths, "show_readme", "maybe").is_err());
+        assert!(set_config_value(&mut config, &paths, "theme", "neon").is_err());
+        assert!(set_config_value(&mut config, &paths, "nope", "1").is_err());
     }
 }

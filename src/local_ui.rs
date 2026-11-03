@@ -47,6 +47,7 @@ pub fn draw(frame: &mut Frame, app: &mut LocalApp) {
 
 fn draw_header(frame: &mut Frame, app: &mut LocalApp, theme: &Theme, area: Rect) {
     fill(frame, area, theme.color("mantle"));
+    let brand_hover = app.pointer.is_some_and(|(_, y)| y == area.y);
     let brand = Line::from(vec![
         Span::styled(
             format!("{} ", icons::TERMINAL),
@@ -70,55 +71,17 @@ fn draw_header(frame: &mut Frame, app: &mut LocalApp, theme: &Theme, area: Rect)
                     area.width.saturating_sub(24) as usize
                 )
             ),
-            Style::default().fg(theme.color("overlay0")),
+            Style::default().fg(if brand_hover {
+                theme.color("blue")
+            } else {
+                theme.color("overlay0")
+            }),
         ),
     ]);
     frame.render_widget(
         Paragraph::new(brand),
         Rect::new(area.x + 2, area.y, area.width.saturating_sub(4), 1),
     );
-
-    let tabs = [
-        (LocalPane::Status, "改动喵~"),
-        (LocalPane::Commits, "提交喵~"),
-        (LocalPane::Diff, "差异喵~"),
-        (LocalPane::Branches, "分支喵~"),
-        (LocalPane::Tags, "标签喵~"),
-        (LocalPane::Stashes, "stash喵~"),
-    ];
-    let mut x = area.x + 2;
-    for (pane, label) in tabs {
-        let width = format::text_width(label) as u16 + 3;
-        if x + width > area.x + area.width.saturating_sub(2) {
-            break;
-        }
-        let rect = Rect::new(x, area.y + 1, width, 1);
-        let selected = app.pane == pane;
-        let hovered = app.hover == Some(LocalAction::Focus(pane));
-        let bg = if selected {
-            theme.color("surface1")
-        } else if hovered {
-            theme.color("surface0")
-        } else {
-            theme.color("mantle")
-        };
-        fill(frame, rect, bg);
-        let style = if selected {
-            Style::default()
-                .fg(theme.color("blue"))
-                .add_modifier(Modifier::BOLD)
-        } else if hovered {
-            Style::default().fg(theme.color("text"))
-        } else {
-            Style::default().fg(theme.color("subtext0"))
-        };
-        frame.render_widget(
-            Paragraph::new(Line::from(Span::styled(label, style))).alignment(Alignment::Center),
-            rect,
-        );
-        app.hits.push((rect, LocalAction::Focus(pane)));
-        x += width + 1;
-    }
 
     let mut branch = vec![
         Span::styled(
@@ -157,19 +120,10 @@ fn draw_header(frame: &mut Frame, app: &mut LocalApp, theme: &Theme, area: Rect)
             Style::default().fg(theme.color("peach")),
         ));
     }
-    let width = branch
-        .iter()
-        .map(|span| format::text_width(&span.content) as u16)
-        .sum::<u16>();
-    if x + 6 + width < area.x + area.width.saturating_sub(2) {
-        let rect = Rect::new(
-            area.x + area.width.saturating_sub(width + 2),
-            area.y + 1,
-            width,
-            1,
-        );
-        frame.render_widget(Paragraph::new(Line::from(branch)), rect);
-    }
+    frame.render_widget(
+        Paragraph::new(Line::from(branch)),
+        Rect::new(area.x + 2, area.y + 1, area.width.saturating_sub(4), 1),
+    );
 
     fill(
         frame,
@@ -233,6 +187,7 @@ fn draw_sidebar(frame: &mut Frame, app: &mut LocalApp, theme: &Theme, area: Rect
     draw_stashes(frame, app, theme, rows[4]);
 }
 
+#[allow(clippy::too_many_arguments)]
 fn section(
     frame: &mut Frame,
     theme: &Theme,
@@ -241,12 +196,22 @@ fn section(
     title: &str,
     meta: &str,
     focused: bool,
+    hovered: bool,
 ) -> Rect {
     if area.width < 4 || area.height == 0 {
         return Rect::default();
     }
+    if hovered && !focused {
+        fill(
+            frame,
+            Rect::new(area.x, area.y, area.width, 1),
+            theme.color("surface0"),
+        );
+    }
     let accent = if focused {
         theme.color("blue")
+    } else if hovered {
+        theme.color("text")
     } else {
         theme.color("overlay0")
     };
@@ -258,6 +223,10 @@ fn section(
                 if focused {
                     Style::default()
                         .fg(theme.color("blue"))
+                        .add_modifier(Modifier::BOLD)
+                } else if hovered {
+                    Style::default()
+                        .fg(theme.color("text"))
                         .add_modifier(Modifier::BOLD)
                 } else {
                     Style::default().fg(theme.color("text"))
@@ -336,13 +305,23 @@ fn draw_branches(frame: &mut Frame, app: &mut LocalApp, theme: &Theme, area: Rec
         "分支喵~",
         &meta,
         app.pane == LocalPane::Branches,
+        app.hover_pane == Some(LocalPane::Branches),
     );
+    if area.width > 0 {
+        app.hits.push((
+            Rect::new(area.x, area.y, area.width, 1),
+            LocalAction::Focus(LocalPane::Branches),
+        ));
+    }
     app.layout.branches = body;
     app.branch_rows = body.height.max(1) as usize;
     if body.height == 0 {
         return;
     }
     if app.repo.branches.is_empty() {
+        if app.hover_pane == Some(LocalPane::Branches) {
+            fill(frame, body, theme.color("surface0"));
+        }
         draw_center(frame, theme, body, "还没有分支喵~", "先提交一次就有啦喵~");
         return;
     }
@@ -357,6 +336,8 @@ fn draw_branches(frame: &mut Frame, app: &mut LocalApp, theme: &Theme, area: Rec
         let branch = &app.repo.branches[index];
         let row = Rect::new(body.x, body.y + offset as u16, body.width, 1);
         if app.pane == LocalPane::Branches && index == selected {
+            fill(frame, row, theme.color("surface1"));
+        } else if app.hover_pane == Some(LocalPane::Branches) && app.hover_row == Some(index) {
             fill(frame, row, theme.color("surface0"));
         }
         let marker = if branch.current { "*" } else { " " };
@@ -394,13 +375,23 @@ fn draw_tags(frame: &mut Frame, app: &mut LocalApp, theme: &Theme, area: Rect) {
         "标签喵~",
         &meta,
         app.pane == LocalPane::Tags,
+        app.hover_pane == Some(LocalPane::Tags),
     );
+    if area.width > 0 {
+        app.hits.push((
+            Rect::new(area.x, area.y, area.width, 1),
+            LocalAction::Focus(LocalPane::Tags),
+        ));
+    }
     app.layout.tags = body;
     app.tag_rows = body.height.max(1) as usize;
     if body.height == 0 {
         return;
     }
     if app.repo.tags.is_empty() {
+        if app.hover_pane == Some(LocalPane::Tags) {
+            fill(frame, body, theme.color("surface0"));
+        }
         draw_center(frame, theme, body, "还没有标签喵~", "按 t 建一个试试嘛喵~");
         return;
     }
@@ -413,6 +404,8 @@ fn draw_tags(frame: &mut Frame, app: &mut LocalApp, theme: &Theme, area: Rect) {
         let tag = &app.repo.tags[index];
         let row = Rect::new(body.x, body.y + offset as u16, body.width, 1);
         if app.pane == LocalPane::Tags && index == selected {
+            fill(frame, row, theme.color("surface1"));
+        } else if app.hover_pane == Some(LocalPane::Tags) && app.hover_row == Some(index) {
             fill(frame, row, theme.color("surface0"));
         }
         let line = Line::from(vec![
@@ -447,13 +440,23 @@ fn draw_status(frame: &mut Frame, app: &mut LocalApp, theme: &Theme, area: Rect)
         "改动喵~",
         &meta,
         app.pane == LocalPane::Status,
+        app.hover_pane == Some(LocalPane::Status),
     );
+    if area.width > 0 {
+        app.hits.push((
+            Rect::new(area.x, area.y, area.width, 1),
+            LocalAction::Focus(LocalPane::Status),
+        ));
+    }
     app.layout.status = body;
     app.status_rows = body.height.max(1) as usize;
     if body.height == 0 {
         return;
     }
     if app.repo.files.is_empty() {
+        if app.hover_pane == Some(LocalPane::Status) {
+            fill(frame, body, theme.color("surface0"));
+        }
         draw_center(
             frame,
             theme,
@@ -474,6 +477,8 @@ fn draw_status(frame: &mut Frame, app: &mut LocalApp, theme: &Theme, area: Rect)
         let file = &app.repo.files[index];
         let row = Rect::new(body.x, body.y + offset as u16, body.width, 1);
         if app.pane == LocalPane::Status && index == selected {
+            fill(frame, row, theme.color("surface1"));
+        } else if app.hover_pane == Some(LocalPane::Status) && app.hover_row == Some(index) {
             fill(frame, row, theme.color("surface0"));
         }
         let (badge, color) = status_badge(file, theme);
@@ -506,7 +511,8 @@ fn status_badge(file: &StatusFile, theme: &Theme) -> (&'static str, Color) {
 }
 
 fn draw_diff(frame: &mut Frame, app: &mut LocalApp, theme: &Theme, area: Rect) {
-    let border = if app.pane == LocalPane::Diff {
+    let active = app.pane == LocalPane::Diff || app.hover_pane == Some(LocalPane::Diff);
+    let border = if active {
         theme.color("blue")
     } else {
         theme.color("surface0")
@@ -519,6 +525,9 @@ fn draw_diff(frame: &mut Frame, app: &mut LocalApp, theme: &Theme, area: Rect) {
         area,
     );
     app.layout.diff = area;
+    if area.width > 0 && area.height > 0 {
+        app.hits.push((area, LocalAction::Focus(LocalPane::Diff)));
+    }
     let inner = Rect::new(
         area.x + 2,
         area.y + 1,
@@ -547,7 +556,7 @@ fn draw_diff(frame: &mut Frame, app: &mut LocalApp, theme: &Theme, area: Rect) {
         ))
         .style(
             Style::default()
-                .fg(if app.pane == LocalPane::Diff {
+                .fg(if active {
                     theme.color("blue")
                 } else {
                     theme.color("text")
@@ -621,13 +630,23 @@ fn draw_commits(frame: &mut Frame, app: &mut LocalApp, theme: &Theme, area: Rect
         "提交喵~",
         &meta,
         app.pane == LocalPane::Commits,
+        app.hover_pane == Some(LocalPane::Commits),
     );
+    if area.width > 0 {
+        app.hits.push((
+            Rect::new(area.x, area.y, area.width, 1),
+            LocalAction::Focus(LocalPane::Commits),
+        ));
+    }
     app.layout.commits = body;
     app.commit_rows = (body.height / 2).max(1) as usize;
     if body.height == 0 {
         return;
     }
     if app.repo.commits.is_empty() {
+        if app.hover_pane == Some(LocalPane::Commits) {
+            fill(frame, body, theme.color("surface0"));
+        }
         draw_center(
             frame,
             theme,
@@ -651,6 +670,8 @@ fn draw_commits(frame: &mut Frame, app: &mut LocalApp, theme: &Theme, area: Rect
         }
         let row = Rect::new(body.x, y, body.width, 2);
         if app.pane == LocalPane::Commits && index == selected {
+            fill(frame, row, theme.color("surface1"));
+        } else if app.hover_pane == Some(LocalPane::Commits) && app.hover_row == Some(index) {
             fill(frame, row, theme.color("surface0"));
         }
         let line = Line::from(vec![
@@ -689,13 +710,23 @@ fn draw_stashes(frame: &mut Frame, app: &mut LocalApp, theme: &Theme, area: Rect
         "stash喵~",
         &meta,
         app.pane == LocalPane::Stashes,
+        app.hover_pane == Some(LocalPane::Stashes),
     );
+    if area.width > 0 {
+        app.hits.push((
+            Rect::new(area.x, area.y, area.width, 1),
+            LocalAction::Focus(LocalPane::Stashes),
+        ));
+    }
     app.layout.stashes = body;
     app.stash_rows = body.height.max(1) as usize;
     if body.height == 0 {
         return;
     }
     if app.repo.stashes.is_empty() {
+        if app.hover_pane == Some(LocalPane::Stashes) {
+            fill(frame, body, theme.color("surface0"));
+        }
         draw_center(
             frame,
             theme,
@@ -716,6 +747,8 @@ fn draw_stashes(frame: &mut Frame, app: &mut LocalApp, theme: &Theme, area: Rect
         let stash = &app.repo.stashes[index];
         let row = Rect::new(body.x, body.y + offset as u16, body.width, 1);
         if app.pane == LocalPane::Stashes && index == selected {
+            fill(frame, row, theme.color("surface1"));
+        } else if app.hover_pane == Some(LocalPane::Stashes) && app.hover_row == Some(index) {
             fill(frame, row, theme.color("surface0"));
         }
         let mut spans = vec![
@@ -820,16 +853,38 @@ fn draw_footer(frame: &mut Frame, app: &mut LocalApp, theme: &Theme, area: Rect)
     } else {
         format!("{icon}  {message}")
     };
+    let hint = if area.width >= 100 && app.busy.is_none() {
+        hover_hint(app)
+    } else {
+        None
+    };
+    let hint_width = hint
+        .as_deref()
+        .map(|text| format::text_width(text) as u16 + 2)
+        .unwrap_or(0);
+    let status_width = area.width.saturating_sub(4 + hint_width);
     frame.render_widget(
-        Paragraph::new(format::truncate(
-            &status,
-            area.width.saturating_sub(4) as usize,
-        ))
-        .style(Style::default().fg(color)),
-        Rect::new(area.x + 2, area.y, area.width.saturating_sub(4), 1),
+        Paragraph::new(format::truncate(&status, status_width as usize))
+            .style(Style::default().fg(color)),
+        Rect::new(area.x + 2, area.y, status_width, 1),
     );
+    if let Some(hint) = hint {
+        frame.render_widget(
+            Paragraph::new(hint)
+                .alignment(Alignment::Right)
+                .style(Style::default().fg(theme.color("overlay0"))),
+            Rect::new(area.x + 2, area.y, area.width.saturating_sub(4), 1),
+        );
+    }
     let mut x = area.x + 2;
     let end = area.x + area.width.saturating_sub(2);
+    let switch = "Tab 切面板  ";
+    let switch_width = format::text_width(switch) as u16;
+    frame.render_widget(
+        Paragraph::new(switch).style(Style::default().fg(theme.color("overlay0"))),
+        Rect::new(x, area.y + 1, switch_width, 1),
+    );
+    x += switch_width;
     for (action, key, label) in pane_hints(app.pane) {
         let hovered = app.hover == Some(*action);
         let text = format!(" {key} {label} ");
@@ -852,6 +907,47 @@ fn draw_footer(frame: &mut Frame, app: &mut LocalApp, theme: &Theme, area: Rect)
         app.hits.push((rect, *action));
         x += width;
     }
+}
+
+fn hover_hint(app: &LocalApp) -> Option<String> {
+    let row = app.hover_row?;
+    let text = match app.hover_pane? {
+        LocalPane::Status => {
+            let file = app.repo.files.get(row)?;
+            format!(
+                "{}  ·  s 暂存  u 取消  x 丢弃",
+                format::truncate(&format::clean_text(&file.path), 32)
+            )
+        }
+        LocalPane::Commits => {
+            let commit = app.repo.commits.get(row)?;
+            format!(
+                "{}  ·  {}",
+                commit.short,
+                format::truncate(&format::clean_text(&commit.summary), 36)
+            )
+        }
+        LocalPane::Branches => {
+            let branch = app.repo.branches.get(row)?;
+            format!(
+                "分支 {}  ·  Enter 切换  M 合并  R 变基  X 删除",
+                format::clean_text(&branch.name)
+            )
+        }
+        LocalPane::Tags => {
+            let tag = app.repo.tags.get(row)?;
+            format!("标签 {}  ·  P 推送标签", format::clean_text(&tag.name))
+        }
+        LocalPane::Stashes => {
+            let stash = app.repo.stashes.get(row)?;
+            format!(
+                "{}  ·  a 应用  D 删除",
+                format::truncate(&format::clean_text(&stash.subject), 36)
+            )
+        }
+        LocalPane::Diff => return None,
+    };
+    Some(format::truncate(&text, 72))
 }
 
 fn pane_hints(pane: LocalPane) -> &'static [(LocalAction, &'static str, &'static str)] {

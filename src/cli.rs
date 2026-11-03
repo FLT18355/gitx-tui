@@ -1,4 +1,4 @@
-use crate::theme::FLAVORS;
+use crate::theme::{FLAVORS, is_valid_name};
 use std::path::PathBuf;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -190,11 +190,11 @@ where
 
 fn validate_theme(value: String) -> Result<String, String> {
     let theme = value.trim().to_ascii_lowercase();
-    if FLAVORS.contains(&theme.as_str()) {
+    if FLAVORS.contains(&theme.as_str()) || is_valid_name(&theme) {
         Ok(theme)
     } else {
         Err(format!(
-            "不认识的喵主题：{value}喵~只能选 {} 喵~",
+            "主题名只能用字母、数字、- 和 _ 喵~内置主题：{}，自定义主题放到 ~/.config/gitx-tui/themes/<名字>.toml 喵~",
             FLAVORS.join(" / ")
         ))
     }
@@ -221,7 +221,7 @@ pub fn print_help() {
   gxt doctor                       环境自检喵~\n\n\
 选项：\n\
   -n, --limit <条数>                log 显示条数，默认 20 喵~\n\
-  --theme <主题>                   latte / frappe / macchiato / mocha 喵~\n\
+  --theme <主题>                   latte / frappe / macchiato / mocha 或自定义主题名喵~\n\
   -h, --help                       显示本帮助喵~\n\
   -V, --version                    显示版本喵~\n\n\
 配置文件：~/.config/gitx-tui/config.toml\n\
@@ -324,7 +324,7 @@ mod tests {
 
     #[test]
     fn rejects_bad_arguments() {
-        assert!(parse(args(&["--theme", "neon"])).is_err());
+        assert!(parse(args(&["--theme", "../bad"])).is_err());
         assert!(parse(args(&["settings", "extra"])).is_err());
         assert!(parse(args(&["a", "b"])).is_err());
         assert!(parse(args(&["--wat"])).is_err());
