@@ -53,7 +53,7 @@ cargo clippy --all-targets -- -D warnings
 | `src/cache.rs` | JSON 缓存 |
 | `src/local.rs` | 本地仓库数据读取与 porcelain 解析 |
 | `src/local_git.rs` | git 命令执行 |
-| `src/local_ops.rs` | diff、暂存、提交、分支、标签、push/pull/fetch |
+| `src/local_ops.rs` | diff、暂存、提交、分支、标签、merge/rebase、push/pull/fetch |
 | `src/local_app.rs` | 本地仓库 TUI 状态、按键与后台任务 |
 | `src/local_ui.rs` | 本地仓库 TUI 渲染 |
 | `src/theme.rs` | Catppuccin 主题加载 |

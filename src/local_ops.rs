@@ -103,6 +103,43 @@ pub fn create_tag(root: &Path, name: &str) -> Result<(), String> {
     git(root, &["tag", name]).map(|_| ())
 }
 
+pub fn merge(root: &Path, branch: &str) -> Result<String, String> {
+    let output = git(root, &["merge", "--no-edit", branch])?;
+    Ok(format!(
+        "把 {branch} 合并进来啦喵~{}",
+        if output.trim() == "Already up to date." {
+            "（本来就同步喵~）"
+        } else {
+            ""
+        }
+    ))
+}
+
+pub fn rebase(root: &Path, onto: &str) -> Result<String, String> {
+    git(root, &["rebase", onto])?;
+    Ok(format!("当前分支变基到 {onto} 上啦喵~"))
+}
+
+pub fn delete_branch(root: &Path, branch: &str) -> Result<(), String> {
+    git(root, &["branch", "-d", branch]).map(|_| ())
+}
+
+pub fn abort_in_progress(root: &Path) -> Result<String, String> {
+    let mut aborted = false;
+    let mut last_error = String::new();
+    for args in [["merge", "--abort"], ["rebase", "--abort"]] {
+        match git(root, &args) {
+            Ok(_) => aborted = true,
+            Err(error) => last_error = error,
+        }
+    }
+    if aborted {
+        Ok("进行中的合并或变基已经中止啦喵~".to_string())
+    } else {
+        Err(last_error)
+    }
+}
+
 pub fn file_diff(root: &Path, path: &str, staged: bool) -> Result<String, String> {
     let args = if staged {
         vec!["diff", "--no-color", "--cached", "--", path]
@@ -218,4 +255,56 @@ fn limit_lines(text: String, limit: usize) -> String {
         out.push('\n');
     }
     out
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::fs;
+    use std::time::{SystemTime, UNIX_EPOCH};
+
+    fn temp_repo() -> std::path::PathBuf {
+        let root = std::env::temp_dir().join(format!(
+            "gxt-local-ops-{}-{}",
+            std::process::id(),
+            SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        fs::create_dir_all(&root).unwrap();
+        git(&root, &["init", "-b", "main"]).unwrap();
+        git(&root, &["config", "user.email", "test@example.com"]).unwrap();
+        git(&root, &["config", "user.name", "gxt test"]).unwrap();
+        fs::write(root.join("a.txt"), "one\n").unwrap();
+        git(&root, &["add", "a.txt"]).unwrap();
+        git(&root, &["commit", "-m", "first"]).unwrap();
+        root
+    }
+
+    #[test]
+    fn merges_rebases_and_deletes_branches() {
+        let root = temp_repo();
+        git(&root, &["switch", "-c", "feature"]).unwrap();
+        fs::write(root.join("b.txt"), "two\n").unwrap();
+        git(&root, &["add", "b.txt"]).unwrap();
+        git(&root, &["commit", "-m", "feature"]).unwrap();
+        git(&root, &["switch", "main"]).unwrap();
+        assert!(merge(&root, "feature").is_ok());
+        assert!(root.join("b.txt").exists());
+        assert!(delete_branch(&root, "feature").is_ok());
+
+        git(&root, &["switch", "-c", "topic"]).unwrap();
+        fs::write(root.join("c.txt"), "three\n").unwrap();
+        git(&root, &["add", "c.txt"]).unwrap();
+        git(&root, &["commit", "-m", "topic"]).unwrap();
+        git(&root, &["switch", "main"]).unwrap();
+        fs::write(root.join("d.txt"), "four\n").unwrap();
+        git(&root, &["add", "d.txt"]).unwrap();
+        git(&root, &["commit", "-m", "main moves"]).unwrap();
+        git(&root, &["switch", "topic"]).unwrap();
+        assert!(rebase(&root, "main").is_ok());
+        assert!(abort_in_progress(&root).is_err());
+        let _ = fs::remove_dir_all(&root);
+    }
 }

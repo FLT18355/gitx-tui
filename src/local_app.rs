@@ -34,6 +34,24 @@ pub enum PromptKind {
     Branch,
     Discard,
     StashDrop,
+    Merge,
+    Rebase,
+    BranchDelete,
+    Abort,
+}
+
+impl PromptKind {
+    pub fn is_confirm(self) -> bool {
+        matches!(
+            self,
+            PromptKind::Discard
+                | PromptKind::StashDrop
+                | PromptKind::Merge
+                | PromptKind::Rebase
+                | PromptKind::BranchDelete
+                | PromptKind::Abort
+        )
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -41,10 +59,24 @@ pub enum LocalAction {
     Stage,
     Unstage,
     Commit,
+    Amend,
+    Discard,
+    Tag,
+    NewBranch,
     StashSave,
+    StashPop,
+    StashApply,
+    StashDrop,
     Push,
+    PushTags,
     Fetch,
     Pull,
+    Merge,
+    Rebase,
+    DeleteBranch,
+    Abort,
+    CheckoutBranch,
+    Focus(LocalPane),
     Refresh,
     Help,
     Quit,
@@ -249,7 +281,15 @@ impl LocalApp {
             },
             LocalPane::Branches => match self.selected_branch().cloned() {
                 Some(branch) => {
-                    self.diff_title = format!("分支记录喵~  {}", branch.name);
+                    self.diff_title = format!(
+                        "分支记录喵~  {}{}",
+                        branch.name,
+                        if branch.upstream.is_empty() {
+                            String::new()
+                        } else {
+                            format!(" · {}", branch.upstream)
+                        }
+                    );
                     local_ops::ref_log(&root, &branch.name)
                 }
                 None => {
@@ -269,7 +309,7 @@ impl LocalApp {
             },
             LocalPane::Stashes => match self.selected_stash().cloned() {
                 Some(stash) => {
-                    self.diff_title = format!("stash 内容喵~  {}", stash.name);
+                    self.diff_title = format!("stash 内容喵~  {} · {}", stash.name, stash.when);
                     local_ops::stash_diff(&root, &stash.name)
                 }
                 None => {
@@ -406,8 +446,8 @@ impl LocalApp {
     fn cycle_pane(&mut self, direction: i32) {
         let order = [
             LocalPane::Status,
-            LocalPane::Diff,
             LocalPane::Commits,
+            LocalPane::Diff,
             LocalPane::Branches,
             LocalPane::Tags,
             LocalPane::Stashes,
@@ -522,6 +562,69 @@ impl LocalApp {
         }
     }
 
+    fn branch_to_operate(&mut self) -> Option<String> {
+        let Some(branch) = self.selected_branch().cloned() else {
+            self.message = "先在分支面板选一条分支喵~".to_string();
+            self.message_error = true;
+            return None;
+        };
+        if branch.current {
+            self.message = "当前分支不能对自己做这个喵~".to_string();
+            self.message_error = true;
+            return None;
+        }
+        Some(branch.name)
+    }
+
+    fn begin_merge(&mut self) {
+        let Some(branch) = self.branch_to_operate() else {
+            return;
+        };
+        self.prompt = Some(Prompt {
+            kind: PromptKind::Merge,
+            input: TextInput::new(""),
+            target: Some(branch),
+        });
+        self.message = "Enter 合并，Esc 取消喵~".to_string();
+        self.message_error = false;
+    }
+
+    fn begin_rebase(&mut self) {
+        let Some(branch) = self.branch_to_operate() else {
+            return;
+        };
+        self.prompt = Some(Prompt {
+            kind: PromptKind::Rebase,
+            input: TextInput::new(""),
+            target: Some(branch),
+        });
+        self.message = "Enter 变基，Esc 取消喵~".to_string();
+        self.message_error = false;
+    }
+
+    fn begin_branch_delete(&mut self) {
+        let Some(branch) = self.branch_to_operate() else {
+            return;
+        };
+        self.prompt = Some(Prompt {
+            kind: PromptKind::BranchDelete,
+            input: TextInput::new(""),
+            target: Some(branch),
+        });
+        self.message = "分支会真实删除，Enter 确认，Esc 取消喵~".to_string();
+        self.message_error = false;
+    }
+
+    fn begin_abort(&mut self) {
+        self.prompt = Some(Prompt {
+            kind: PromptKind::Abort,
+            input: TextInput::new(""),
+            target: None,
+        });
+        self.message = "中止合并或变基，Enter 确认，Esc 取消喵~".to_string();
+        self.message_error = false;
+    }
+
     fn begin_commit(&mut self) {
         if self.repo.staged_count() == 0 {
             self.message = "先按 s 暂存一些改动，再写提交信息喵~".to_string();
@@ -594,12 +697,17 @@ impl LocalApp {
         let kind = prompt.kind;
         let target = prompt.target.clone();
         let value = prompt.input.value.trim().to_string();
-        if !matches!(kind, PromptKind::Discard | PromptKind::StashDrop) && value.is_empty() {
+        if !kind.is_confirm() && value.is_empty() {
             self.message = match kind {
                 PromptKind::Commit | PromptKind::Amend => "提交信息不能空着喵~".to_string(),
                 PromptKind::Tag => "标签名不能空着喵~".to_string(),
                 PromptKind::Branch => "分支名不能空着喵~".to_string(),
-                PromptKind::Discard | PromptKind::StashDrop => String::new(),
+                PromptKind::Discard
+                | PromptKind::StashDrop
+                | PromptKind::Merge
+                | PromptKind::Rebase
+                | PromptKind::BranchDelete
+                | PromptKind::Abort => String::new(),
             };
             self.message_error = true;
             return;
@@ -617,6 +725,19 @@ impl LocalApp {
                 Some(name) => local_ops::stash_drop(&self.repo.root, name).map(|_| ()),
                 None => Err("没有选中要删除的 stash 喵~".to_string()),
             },
+            PromptKind::Merge => match target.as_deref() {
+                Some(name) => local_ops::merge(&self.repo.root, name).map(|_| ()),
+                None => Err("没有选中要合并的分支喵~".to_string()),
+            },
+            PromptKind::Rebase => match target.as_deref() {
+                Some(name) => local_ops::rebase(&self.repo.root, name).map(|_| ()),
+                None => Err("没有选中要变基到的分支喵~".to_string()),
+            },
+            PromptKind::BranchDelete => match target.as_deref() {
+                Some(name) => local_ops::delete_branch(&self.repo.root, name),
+                None => Err("没有选中要删除的分支喵~".to_string()),
+            },
+            PromptKind::Abort => local_ops::abort_in_progress(&self.repo.root).map(|_| ()),
         };
         match result {
             Ok(()) => {
@@ -633,6 +754,16 @@ impl LocalApp {
                     PromptKind::StashDrop => {
                         format!("{} 删掉啦喵~", target.unwrap_or_default())
                     }
+                    PromptKind::Merge => {
+                        format!("{} 合并进来啦喵~", target.unwrap_or_default())
+                    }
+                    PromptKind::Rebase => {
+                        format!("当前分支变基到 {} 上啦喵~", target.unwrap_or_default())
+                    }
+                    PromptKind::BranchDelete => {
+                        format!("分支 {} 删掉啦喵~", target.unwrap_or_default())
+                    }
+                    PromptKind::Abort => "合并或变基中止啦喵~".to_string(),
                 };
                 self.message_error = false;
             }
@@ -819,6 +950,10 @@ impl LocalApp {
                     Some(PromptKind::Branch) => "取消创建分支啦喵~".to_string(),
                     Some(PromptKind::Discard) => "取消丢弃啦喵~".to_string(),
                     Some(PromptKind::StashDrop) => "取消删除 stash 啦喵~".to_string(),
+                    Some(PromptKind::Merge) => "取消合并啦喵~".to_string(),
+                    Some(PromptKind::Rebase) => "取消变基啦喵~".to_string(),
+                    Some(PromptKind::BranchDelete) => "取消删除分支啦喵~".to_string(),
+                    Some(PromptKind::Abort) => "取消中止操作啦喵~".to_string(),
                     None => String::new(),
                 };
                 self.message_error = false;
@@ -829,7 +964,7 @@ impl LocalApp {
         let Some(prompt) = self.prompt.as_mut() else {
             return;
         };
-        if matches!(prompt.kind, PromptKind::Discard | PromptKind::StashDrop) {
+        if prompt.kind.is_confirm() {
             return;
         }
         match key.code {
@@ -946,18 +1081,45 @@ impl LocalApp {
         })
     }
 
+    fn jump_pane(&mut self, pane: LocalPane) {
+        let previous = self.pane;
+        self.focus_pane(pane);
+        if pane != previous {
+            self.refresh_diff();
+        }
+    }
+
     fn run_action(&mut self, action: LocalAction) {
-        if self.busy.is_some() && !matches!(action, LocalAction::Help | LocalAction::Quit) {
+        if self.busy.is_some()
+            && !matches!(
+                action,
+                LocalAction::Help | LocalAction::Quit | LocalAction::Focus(_)
+            )
+        {
             return;
         }
         match action {
             LocalAction::Stage => self.stage_selected(),
             LocalAction::Unstage => self.unstage_selected(),
             LocalAction::Commit => self.begin_commit(),
+            LocalAction::Amend => self.begin_amend(),
+            LocalAction::Discard => self.begin_discard(),
+            LocalAction::Tag => self.begin_tag(),
+            LocalAction::NewBranch => self.begin_branch(),
             LocalAction::StashSave => self.stash_save(),
+            LocalAction::StashPop => self.stash_pop(),
+            LocalAction::StashApply => self.apply_selected_stash(),
+            LocalAction::StashDrop => self.begin_stash_drop(),
             LocalAction::Push => self.push(),
+            LocalAction::PushTags => self.push_tags(),
             LocalAction::Fetch => self.fetch(),
             LocalAction::Pull => self.pull(),
+            LocalAction::Merge => self.begin_merge(),
+            LocalAction::Rebase => self.begin_rebase(),
+            LocalAction::DeleteBranch => self.begin_branch_delete(),
+            LocalAction::Abort => self.begin_abort(),
+            LocalAction::CheckoutBranch => self.checkout_selected_branch(),
+            LocalAction::Focus(pane) => self.jump_pane(pane),
             LocalAction::Refresh => self.refresh(),
             LocalAction::Help => self.help = true,
             LocalAction::Quit => self.should_quit = true,
@@ -1041,6 +1203,12 @@ impl LocalApp {
             KeyCode::Char('q') | KeyCode::Esc => self.should_quit = true,
             KeyCode::Char('h') | KeyCode::Char('?') => self.help = true,
             KeyCode::Char('H') => self.show_file_history(),
+            KeyCode::Char('1') => self.jump_pane(LocalPane::Status),
+            KeyCode::Char('2') => self.jump_pane(LocalPane::Commits),
+            KeyCode::Char('3') => self.jump_pane(LocalPane::Diff),
+            KeyCode::Char('4') => self.jump_pane(LocalPane::Branches),
+            KeyCode::Char('5') => self.jump_pane(LocalPane::Tags),
+            KeyCode::Char('6') => self.jump_pane(LocalPane::Stashes),
             KeyCode::Tab | KeyCode::Right => self.cycle_pane(1),
             KeyCode::BackTab | KeyCode::Left => self.cycle_pane(-1),
             KeyCode::Up | KeyCode::Char('k') => self.move_selection(-1),
@@ -1063,6 +1231,10 @@ impl LocalApp {
             KeyCode::Char('Z') => self.stash_pop(),
             KeyCode::Char('a') if self.pane == LocalPane::Stashes => self.apply_selected_stash(),
             KeyCode::Char('D') if self.pane == LocalPane::Stashes => self.begin_stash_drop(),
+            KeyCode::Char('M') if self.pane == LocalPane::Branches => self.begin_merge(),
+            KeyCode::Char('R') if self.pane == LocalPane::Branches => self.begin_rebase(),
+            KeyCode::Char('X') if self.pane == LocalPane::Branches => self.begin_branch_delete(),
+            KeyCode::Char('Q') => self.begin_abort(),
             KeyCode::Char('p') => self.push(),
             KeyCode::Char('P') => self.push_tags(),
             KeyCode::Char('f') => self.fetch(),
