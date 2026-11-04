@@ -161,6 +161,42 @@ pub fn visible_text(value: &str, cursor: usize, max_width: usize) -> (String, u1
     (visible, cursor_column.min(max_width as u16))
 }
 
+pub fn multiline_layout(value: &str, cursor: usize, width: usize) -> (Vec<String>, usize, usize) {
+    let width = width.max(1);
+    let mut lines = vec![String::new()];
+    let mut row = 0_usize;
+    let mut column = 0_usize;
+    let mut index = 0_usize;
+    let mut position = if cursor == 0 { Some((0, 0)) } else { None };
+    for ch in value.chars() {
+        if ch == '\n' {
+            index += 1;
+            lines.push(String::new());
+            row += 1;
+            column = 0;
+            if cursor == index {
+                position = Some((row, column));
+            }
+            continue;
+        }
+        let mut buffer = [0_u8; 4];
+        let char_width = text_width(ch.encode_utf8(&mut buffer));
+        if column + char_width > width && column > 0 {
+            lines.push(String::new());
+            row += 1;
+            column = 0;
+        }
+        lines[row].push(ch);
+        column += char_width;
+        index += ch.len_utf8();
+        if cursor == index {
+            position = Some((row, column));
+        }
+    }
+    let (row, column) = position.unwrap_or((row, column));
+    (lines, row, column)
+}
+
 pub fn truncate(text: &str, width: usize) -> String {
     let text = text.replace(['\n', '\r'], " ");
     if width == 0 {

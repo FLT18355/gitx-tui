@@ -1,9 +1,9 @@
 use crate::format::base64_decode;
 use crate::model::{
-    Branch, Commit, Issue, IssueState, Notification, RateLimit, ReadmeContent, Release, Repo,
-    SearchOutcome, SearchResponse, SearchSort, StarredRepo, TreeResponse, TrendingPeriod, User,
-    Workflow, WorkflowJob, WorkflowJobsResponse, WorkflowListResponse, WorkflowRun,
-    WorkflowRunsResponse,
+    Branch, Commit, CommitDetail, Issue, IssueState, LanguageStat, Notification, RateLimit,
+    ReadmeContent, Release, Repo, SearchOutcome, SearchResponse, SearchSort, StarredRepo,
+    TreeResponse, TrendingPeriod, User, Workflow, WorkflowJob, WorkflowJobsResponse,
+    WorkflowListResponse, WorkflowRun, WorkflowRunsResponse,
 };
 use serde::de::DeserializeOwned;
 use std::fs;
@@ -13,7 +13,7 @@ use std::process::Command;
 use std::time::{Duration, Instant};
 
 const API: &str = "https://api.github.com";
-const USER_AGENT: &str = "gxt/0.3.0";
+const USER_AGENT: &str = "gxt/0.3.2";
 
 #[derive(Clone)]
 pub struct ApiClient {
@@ -250,6 +250,64 @@ impl ApiClient {
             "{API}/repos/{full_name}/issues?state={}&sort=updated&direction=desc&per_page=100",
             state.api_value()
         );
+        if private {
+            self.get_json(&url, true)
+        } else {
+            self.get_public_with_fallback(&url)
+        }
+    }
+
+    pub fn create_issue(&self, full_name: &str, title: &str, body: &str) -> Result<Issue, String> {
+        let Some(token) = self.token.as_deref() else {
+            return Err("还没有登录 GitHub，建不了议题哦喵~先运行 gh auth login 吧喵~".to_string());
+        };
+        let payload = serde_json::json!({ "title": title, "body": body });
+        let response = self
+            .agent
+            .post(&format!("{API}/repos/{full_name}/issues"))
+            .header("Accept", "application/vnd.github+json")
+            .header("X-GitHub-Api-Version", "2022-11-28")
+            .header("Authorization", format!("Bearer {token}"))
+            .send_json(&payload)
+            .map_err(|err| format_transport_error(&err))?;
+        let status = response.status().as_u16();
+        let mut response = response;
+        let body = response.body_mut().read_to_string().unwrap_or_default();
+        if (200..300).contains(&status) {
+            serde_json::from_str(&body)
+                .map_err(|err| format!("GitHub 建完议题送回来的数据人家看不懂：{err}喵~"))
+        } else {
+            Err(status_message(status, &body))
+        }
+    }
+
+    pub fn languages(&self, full_name: &str, private: bool) -> Result<Vec<LanguageStat>, String> {
+        let url = format!("{API}/repos/{full_name}/languages");
+        let raw: std::collections::HashMap<String, u64> = if private {
+            self.get_json(&url, true)
+        } else {
+            self.get_public_with_fallback(&url)
+        }?;
+        let mut languages: Vec<LanguageStat> = raw
+            .into_iter()
+            .map(|(name, bytes)| LanguageStat { name, bytes })
+            .collect();
+        languages.sort_by(|left, right| {
+            right
+                .bytes
+                .cmp(&left.bytes)
+                .then_with(|| left.name.cmp(&right.name))
+        });
+        Ok(languages)
+    }
+
+    pub fn commit_detail(
+        &self,
+        full_name: &str,
+        sha: &str,
+        private: bool,
+    ) -> Result<CommitDetail, String> {
+        let url = format!("{API}/repos/{full_name}/commits/{sha}");
         if private {
             self.get_json(&url, true)
         } else {

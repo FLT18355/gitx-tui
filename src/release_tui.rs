@@ -63,6 +63,7 @@ enum Field {
     Tag,
     Title,
     Target,
+    Assets,
     Notes,
     Draft,
     Prerelease,
@@ -77,7 +78,8 @@ impl Field {
             Self::Repos => Self::Tag,
             Self::Tag => Self::Title,
             Self::Title => Self::Target,
-            Self::Target => Self::Notes,
+            Self::Target => Self::Assets,
+            Self::Assets => Self::Notes,
             Self::Notes => Self::Draft,
             Self::Draft => Self::Prerelease,
             Self::Prerelease => Self::GenerateNotes,
@@ -93,7 +95,8 @@ impl Field {
             Self::Tag => Self::Repos,
             Self::Title => Self::Tag,
             Self::Target => Self::Title,
-            Self::Notes => Self::Target,
+            Self::Assets => Self::Target,
+            Self::Notes => Self::Assets,
             Self::Draft => Self::Notes,
             Self::Prerelease => Self::Draft,
             Self::GenerateNotes => Self::Prerelease,
@@ -107,6 +110,7 @@ struct Form {
     tag: TextInput,
     title: TextInput,
     target: TextInput,
+    assets: TextInput,
     notes: TextInput,
     draft: bool,
     prerelease: bool,
@@ -115,12 +119,30 @@ struct Form {
     field: Field,
 }
 
+impl Form {
+    fn assets_list(&self) -> Vec<String> {
+        // shortcut: comma separates paths; use a file picker if commas in filenames matter.
+        self.assets
+            .value
+            .split(',')
+            .map(|part| part.trim().trim_matches('"').trim_matches('\'').trim())
+            .filter(|part| !part.is_empty())
+            .map(|part| {
+                crate::config::expand_tilde(part)
+                    .to_string_lossy()
+                    .into_owned()
+            })
+            .collect()
+    }
+}
+
 impl Default for Form {
     fn default() -> Self {
         Self {
             tag: TextInput::new(""),
             title: TextInput::new(""),
             target: TextInput::new(""),
+            assets: TextInput::new(""),
             notes: TextInput::new(""),
             draft: false,
             prerelease: false,
@@ -315,6 +337,7 @@ fn release_args(repo: &str, form: &Form) -> Vec<String> {
     if form.latest {
         args.push("--latest".to_string());
     }
+    args.extend(form.assets_list());
     args
 }
 
@@ -770,7 +793,17 @@ fn draw_form(frame: &mut Frame, app: &mut ReleaseApp, area: Rect) {
         "目标分支喵~",
         "默认分支喵~",
     );
-    y += 2;
+    y += 1;
+    draw_field(
+        frame,
+        app,
+        Rect::new(content.x, y, content.width, 1),
+        Field::Assets,
+        icons::FILE,
+        "附件喵~",
+        "可选，逗号分隔多个本地文件喵~",
+    );
+    y += 1;
     let reserved = 2 + 2 + 5 + 2;
     let notes_height = content
         .bottom()
@@ -814,6 +847,7 @@ fn draw_field(
         Field::Tag => &app.form.tag,
         Field::Title => &app.form.title,
         Field::Target => &app.form.target,
+        Field::Assets => &app.form.assets,
         _ => return,
     };
     if focused || hovered {
@@ -858,42 +892,6 @@ fn draw_field(
         ));
     }
     register(&mut app.hits, rect, Action::Focus(field));
-}
-
-fn notes_layout(value: &str, cursor: usize, width: usize) -> (Vec<String>, usize, usize) {
-    let width = width.max(1);
-    let mut lines = vec![String::new()];
-    let mut row = 0_usize;
-    let mut column = 0_usize;
-    let mut index = 0_usize;
-    let mut position = if cursor == 0 { Some((0, 0)) } else { None };
-    for ch in value.chars() {
-        if ch == '\n' {
-            index += 1;
-            lines.push(String::new());
-            row += 1;
-            column = 0;
-            if cursor == index {
-                position = Some((row, column));
-            }
-            continue;
-        }
-        let mut buffer = [0_u8; 4];
-        let char_width = format::text_width(ch.encode_utf8(&mut buffer));
-        if column + char_width > width && column > 0 {
-            lines.push(String::new());
-            row += 1;
-            column = 0;
-        }
-        lines[row].push(ch);
-        column += char_width;
-        index += ch.len_utf8();
-        if cursor == index {
-            position = Some((row, column));
-        }
-    }
-    let (row, column) = position.unwrap_or((row, column));
-    (lines, row, column)
 }
 
 fn draw_notes(frame: &mut Frame, app: &mut ReleaseApp, area: Rect) {
@@ -943,7 +941,7 @@ fn draw_notes(frame: &mut Frame, app: &mut ReleaseApp, area: Rect) {
     let width = inner.width.max(1) as usize;
     let height = inner.height as usize;
     let (all_lines, cursor_row, cursor_column) =
-        notes_layout(&app.form.notes.value, app.form.notes.cursor, width);
+        format::multiline_layout(&app.form.notes.value, app.form.notes.cursor, width);
     let start = if focused {
         cursor_row.saturating_sub(height.saturating_sub(1))
     } else {
@@ -1185,12 +1183,21 @@ fn draw_confirm(frame: &mut Frame, app: &mut ReleaseApp, area: Rect) {
             ),
             Style::default().fg(theme.color("subtext0")),
         )),
+    ];
+    let assets = app.form.assets_list();
+    if !assets.is_empty() {
+        lines.push(Line::from(Span::styled(
+            format!("{} 个附件会一起上传喵~", assets.len()),
+            Style::default().fg(theme.color("peach")),
+        )));
+    }
+    lines.extend([
         Line::default(),
         Line::from(Span::styled(
             "Enter 确认发布    Esc 取消喵~",
             Style::default().fg(theme.color("overlay0")),
         )),
-    ];
+    ]);
     lines.truncate(rect.height.saturating_sub(2) as usize);
     frame.render_widget(
         Paragraph::new(lines).alignment(Alignment::Center),
@@ -1259,8 +1266,9 @@ fn draw_help(frame: &mut Frame, app: &mut ReleaseApp, area: Rect) {
         Line::from("j/k 或 ↑/↓   仓库列表选择"),
         Line::from("g/G          仓库列表首尾"),
         Line::from("r            重新读取 gh 仓库列表"),
-        Line::from("Tab/BackTab  切换仓库、标签、标题、目标、说明、开关"),
+        Line::from("Tab/BackTab  切换仓库、标签、标题、目标、附件、说明、开关"),
         Line::from("Enter        文本字段下一项；说明里换行；开关切换"),
+        Line::from("附件         逗号分隔的本地文件路径，发布时一起上传"),
         Line::from("Ctrl+S       提交发布（会再确认一次）"),
         Line::from("鼠标         点仓库/字段/开关/按钮，悬停高亮"),
         Line::from("Esc          关闭帮助、取消确认或退出"),
@@ -1348,12 +1356,19 @@ impl ReleaseApp {
             self.publishing = false;
             match result {
                 Ok(output) => {
+                    let attachments = self.form.assets_list().len();
                     self.clear_form();
                     self.form.field = Field::Tag;
                     let text = if output.is_empty() {
-                        "发行版发布好啦喵~".to_string()
-                    } else {
+                        if attachments == 0 {
+                            "发行版发布好啦喵~".to_string()
+                        } else {
+                            format!("发行版发布好啦，{attachments} 个附件也传上去啦喵~")
+                        }
+                    } else if attachments == 0 {
                         format!("发行版发布好啦喵~ {output}")
+                    } else {
+                        format!("发行版发布好啦，{attachments} 个附件也传上去啦喵~ {output}")
                     };
                     self.set_status(StatusKind::Ok, &text);
                 }
@@ -1378,6 +1393,7 @@ impl ReleaseApp {
             Field::Tag => Some(&mut self.form.tag),
             Field::Title => Some(&mut self.form.title),
             Field::Target => Some(&mut self.form.target),
+            Field::Assets => Some(&mut self.form.assets),
             Field::Notes => Some(&mut self.form.notes),
             _ => None,
         }
@@ -1471,6 +1487,7 @@ impl ReleaseApp {
                     Field::Tag => self.form.tag.end(),
                     Field::Title => self.form.title.end(),
                     Field::Target => self.form.target.end(),
+                    Field::Assets => self.form.assets.end(),
                     Field::Notes => self.form.notes.end(),
                     _ => {}
                 }
@@ -1646,6 +1663,16 @@ impl ReleaseApp {
             self.set_status(StatusKind::Error, "说明空着时要打开「自动生成说明」喵~");
             return;
         }
+        for asset in self.form.assets_list() {
+            if !std::path::Path::new(&asset).is_file() {
+                self.form.field = Field::Assets;
+                self.set_status(
+                    StatusKind::Error,
+                    &format!("附件找不到喵~：{asset}（要写本地文件路径哦）"),
+                );
+                return;
+            }
+        }
         self.confirming = true;
         self.hover = None;
         self.set_status(
@@ -1692,14 +1719,14 @@ mod tests {
 
     #[test]
     fn notes_cursor_tracks_newlines_and_wrap() {
-        let (lines, row, column) = notes_layout("abc\ndef", 4, 10);
+        let (lines, row, column) = format::multiline_layout("abc\ndef", 4, 10);
         assert_eq!(lines, vec!["abc".to_string(), "def".to_string()]);
         assert_eq!((row, column), (1, 0));
-        let (_, row, column) = notes_layout("abc\ndef", 8, 10);
+        let (_, row, column) = format::multiline_layout("abc\ndef", 8, 10);
         assert_eq!((row, column), (1, 3));
-        let (_, row, column) = notes_layout("abcd", 4, 3);
+        let (_, row, column) = format::multiline_layout("abcd", 4, 3);
         assert_eq!((row, column), (1, 1));
-        let (_, row, column) = notes_layout("中文", 6, 10);
+        let (_, row, column) = format::multiline_layout("中文", 6, 10);
         assert_eq!((row, column), (0, 4));
     }
 
@@ -1709,6 +1736,7 @@ mod tests {
             tag: TextInput::new("v0.3.0"),
             title: TextInput::new("Release 0.3.0"),
             target: TextInput::new("main"),
+            assets: TextInput::new("dist/a.zip, \"dist/b b.zip\""),
             draft: true,
             prerelease: true,
             generate_notes: false,
@@ -1728,6 +1756,9 @@ mod tests {
         assert!(args.contains(&"--draft".to_string()));
         assert!(args.contains(&"--prerelease".to_string()));
         assert!(args.contains(&"--latest".to_string()));
+        assert!(args.contains(&"dist/a.zip".to_string()));
+        assert!(args.contains(&"dist/b b.zip".to_string()));
+        assert_eq!(form.assets_list().len(), 2);
         let empty = Form {
             tag: TextInput::new("v1"),
             ..Form::default()
@@ -1750,5 +1781,68 @@ mod tests {
         assert_eq!(repos[0].stargazer_count, 5);
         assert_eq!(Field::Repos.next(), Field::Tag);
         assert_eq!(Field::Repos.prev(), Field::Submit);
+    }
+
+    #[test]
+    fn form_renders_attachment_field_and_preview() {
+        let dir = std::env::temp_dir().join(format!("gitx-release-ui-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        let paths = Paths::for_test(dir.join("config"), dir.join("cache"));
+        let (tx, rx) = mpsc::channel();
+        let (repo_tx, repo_rx) = mpsc::channel();
+        let mut app = ReleaseApp {
+            repos: vec![GhRepo {
+                name_with_owner: "me/demo".to_string(),
+                description: Some("demo".to_string()),
+                is_private: false,
+                stargazer_count: 1,
+                fork_count: 0,
+                updated_at: "2026-01-01T00:00:00Z".to_string(),
+            }],
+            selected: 0,
+            offset: 0,
+            form: Form {
+                tag: TextInput::new("v0.3.2"),
+                assets: TextInput::new("dist/a.zip"),
+                field: Field::Assets,
+                ..Form::default()
+            },
+            theme: Theme::load(&paths, "mocha"),
+            status: String::new(),
+            status_kind: StatusKind::Info,
+            publishing: false,
+            repos_loading: false,
+            confirming: false,
+            show_help: false,
+            should_quit: false,
+            started: Instant::now(),
+            hits: Vec::new(),
+            hover: None,
+            list_rect: Rect::default(),
+            overlay_rect: Rect::default(),
+            tx,
+            rx,
+            repo_tx,
+            repo_rx,
+        };
+        let mut terminal = ratatui::Terminal::new(ratatui::backend::TestBackend::new(120, 40))
+            .expect("test terminal");
+        terminal
+            .draw(|frame| draw(frame, &mut app))
+            .expect("render release form");
+        let text = terminal
+            .backend()
+            .buffer()
+            .content()
+            .chunks(120)
+            .map(|row| row.iter().map(|cell| cell.symbol()).collect::<String>())
+            .collect::<Vec<_>>()
+            .join("\n")
+            .split_whitespace()
+            .collect::<String>();
+        assert!(text.contains("附件喵"));
+        assert!(text.contains("dist/a.zip"));
+        assert!(text.contains("ghreleasecreatev0.3.2"));
+        let _ = std::fs::remove_dir_all(dir);
     }
 }

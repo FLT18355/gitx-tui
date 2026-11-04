@@ -60,6 +60,10 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
     match app.overlay {
         Some(Overlay::Help) => draw_help(frame, app, &theme, area, &mut hits),
         Some(Overlay::Languages) => draw_languages_overlay(frame, app, &theme, area, &mut hits),
+        Some(Overlay::RepoLanguages) => {
+            draw_repo_languages_overlay(frame, app, &theme, area, &mut hits)
+        }
+        Some(Overlay::NewIssue) => draw_new_issue_overlay(frame, app, &theme, area, &mut hits),
         Some(Overlay::EditRepo) => draw_repo_edit_overlay(frame, app, &theme, area, &mut hits),
         Some(Overlay::Cache) => draw_cache_overlay(frame, app, &theme, area, &mut hits),
         Some(Overlay::RunWorkflow) => draw_workflow_overlay(frame, app, &theme, area, &mut hits),
@@ -283,13 +287,15 @@ fn hints_for(app: &App) -> &'static str {
         }
         Page::Settings => "j/k 选    h/l 调    Enter 操作    Ctrl+S 保存    Esc 离开喵~",
         Page::Repo => {
-            "Esc 返回  Tab 换面板  b 分支  C 提交  F 全屏 README  a 工作流  i 议题  Y Fork  D 删除  o 主页喵~"
+            "Esc 返回  Tab 换面板  b 分支  C 提交  F README  L 语言  a 工作流  i 议题  Y Fork  D 删除喵~"
         }
         Page::Actions => {
             "j/k 挑运行  Enter 去浏览器  R/x 运行工作流  PgUp/PgDn 滚任务  r 刷新  Esc 返回喵~"
         }
-        Page::Issues => "j/k 挑  Enter 打开  v 换类型  s 换状态  r 刷新  Esc 返回喵~",
-        Page::Commits => "j/k 挑提交  Enter/o 浏览器打开  b 切分支  r 刷新  Esc 返回仓库喵~",
+        Page::Issues => "j/k 挑  Enter 打开  n 新建议题  v 换类型  s 换状态  r 刷新  Esc 返回喵~",
+        Page::Commits => {
+            "j/k 挑提交  Enter/o 浏览器打开  右侧看改动文件  b 切分支  r 刷新  Esc 返回喵~"
+        }
         Page::ReleaseDetail => "j/k 挑文件  Enter 下载  o 去 GitHub  PgUp/PgDn 滚说明  Esc 返回喵~",
     }
 }
@@ -2111,6 +2117,7 @@ fn draw_search_history(
     }
 }
 
+#[allow(clippy::too_many_arguments)]
 fn draw_repo_card(
     frame: &mut Frame,
     theme: &Theme,
@@ -2883,6 +2890,11 @@ fn draw_repo_page(
         (
             icons::label(icons::COMMIT, "提交喵~"),
             Action::OpenCommits,
+            false,
+        ),
+        (
+            icons::label(icons::CODE, "语言喵~"),
+            Action::OpenRepoLanguages,
             false,
         ),
         (
@@ -3701,12 +3713,27 @@ fn draw_issues_page(
         Action::Refresh,
         false,
     );
+    let new_label = icons::label(icons::COMMENT, "新建议题喵~");
+    let new_width = format::text_width(&new_label) as u16 + 4;
+    let new_x = refresh_x.saturating_sub(new_width + 1);
+    if new_x > inner.x + back_width {
+        draw_button(
+            frame,
+            app,
+            theme,
+            hits,
+            Rect::new(new_x, inner.y, new_width, 1),
+            &new_label,
+            Action::StartNewIssue,
+            true,
+        );
+    }
     let title = format!(
         "{} 议题与合并请求喵~  {}",
         icons::ISSUE,
         app.issue_repo_label()
     );
-    let title_width = refresh_x.saturating_sub(inner.x + back_width + 2);
+    let title_width = new_x.saturating_sub(inner.x + back_width + 2);
     frame.render_widget(
         Paragraph::new(format::truncate(&title, title_width as usize)).style(
             Style::default()
@@ -4293,14 +4320,125 @@ fn draw_commit_detail(
         Rect::new(inner.x, y, inner.width, 1),
     );
     y += 2;
-    let budget = (inner.y + inner.height).saturating_sub(y + 3) as usize;
+    let button_y = inner.y + inner.height.saturating_sub(1);
+    let room = button_y.saturating_sub(y) as usize;
+    let detail = app
+        .commit_detail
+        .as_ref()
+        .filter(|detail| detail.sha == commit.sha || detail.sha.is_empty());
+    let loading = app
+        .commit_detail_loading
+        .as_deref()
+        .is_some_and(|sha| sha == commit.sha);
+    let reserve = usize::from(room > 1 && (detail.is_some() || loading));
+    let message_budget = if detail.is_some() || loading {
+        room.saturating_sub(reserve).min(4)
+    } else {
+        room
+    };
     let message = format::clean_text(&commit.commit.message);
-    for line in format::wrap_text(&message, inner.width as usize, budget.max(1)) {
+    for line in format::wrap_text(&message, inner.width as usize, message_budget) {
         frame.render_widget(
             Paragraph::new(line).style(Style::default().fg(theme.color("text"))),
             Rect::new(inner.x, y, inner.width, 1),
         );
         y += 1;
+    }
+    if y < button_y {
+        if let Some(detail) = detail {
+            let additions = detail
+                .stats
+                .as_ref()
+                .map(|stats| stats.additions)
+                .unwrap_or_else(|| detail.files.iter().map(|file| file.additions).sum());
+            let deletions = detail
+                .stats
+                .as_ref()
+                .map(|stats| stats.deletions)
+                .unwrap_or_else(|| detail.files.iter().map(|file| file.deletions).sum());
+            frame.render_widget(
+                Paragraph::new(Line::from(vec![
+                    Span::styled(
+                        format!("{} 个文件 ", detail.files.len()),
+                        Style::default().fg(theme.color("subtext0")),
+                    ),
+                    Span::styled(
+                        format!("+{additions}"),
+                        Style::default().fg(theme.color("green")),
+                    ),
+                    Span::raw(" "),
+                    Span::styled(
+                        format!("-{deletions}"),
+                        Style::default().fg(theme.color("red")),
+                    ),
+                ])),
+                Rect::new(inner.x, y, inner.width, 1),
+            );
+            y += 1;
+            if detail.files.is_empty() && y < button_y {
+                frame.render_widget(
+                    Paragraph::new("没有文件改动喵~")
+                        .style(Style::default().fg(theme.color("overlay0"))),
+                    Rect::new(inner.x, y, inner.width, 1),
+                );
+                y += 1;
+            }
+            let rows = button_y.saturating_sub(y) as usize;
+            let mut shown = 0;
+            for file in detail.files.iter().take(rows) {
+                let (marker, color) = match file.status.as_str() {
+                    "added" => ("A", "green"),
+                    "removed" => ("D", "red"),
+                    "renamed" => ("R", "blue"),
+                    _ => ("M", "peach"),
+                };
+                let diff = format!("+{} -{}", file.additions, file.deletions);
+                let diff_width = format::text_width(&diff) as u16;
+                let name_width = inner.width.saturating_sub(diff_width + 3);
+                frame.render_widget(
+                    Paragraph::new(Line::from(vec![
+                        Span::styled(
+                            format!("{marker} "),
+                            Style::default()
+                                .fg(theme.color(color))
+                                .add_modifier(Modifier::BOLD),
+                        ),
+                        Span::styled(
+                            format::truncate(
+                                &format::clean_text(&file.filename),
+                                name_width as usize,
+                            ),
+                            Style::default().fg(theme.color("subtext1")),
+                        ),
+                    ])),
+                    Rect::new(inner.x, y, name_width, 1),
+                );
+                frame.render_widget(
+                    Paragraph::new(diff)
+                        .alignment(Alignment::Right)
+                        .style(Style::default().fg(theme.color("overlay0"))),
+                    Rect::new(inner.x, y, inner.width, 1),
+                );
+                y += 1;
+                shown += 1;
+            }
+            if shown < detail.files.len() && y < button_y {
+                frame.render_widget(
+                    Paragraph::new(format!(
+                        "还有 {} 个文件，o 去 GitHub 看全部喵~",
+                        detail.files.len() - shown
+                    ))
+                    .style(Style::default().fg(theme.color("overlay0"))),
+                    Rect::new(inner.x, y, inner.width, 1),
+                );
+            }
+        } else if loading {
+            frame.render_widget(
+                Paragraph::new(format!("{} 正在读改动文件喵~...", app.spinner()))
+                    .style(Style::default().fg(theme.color("peach"))),
+                Rect::new(inner.x, y, inner.width, 1),
+            );
+        }
     }
     let open = icons::label(icons::EXTERNAL, "去 GitHub 看喵~");
     let open_width = format::text_width(&open) as u16 + 4;
@@ -7268,6 +7406,388 @@ fn draw_center_message(frame: &mut Frame, theme: &Theme, area: Rect, title: &str
     );
 }
 
+fn draw_repo_languages_overlay(
+    frame: &mut Frame,
+    app: &mut App,
+    theme: &Theme,
+    area: Rect,
+    hits: &mut Vec<HitBox>,
+) {
+    let width = area.width.saturating_sub(12).min(64);
+    let height = area.height.saturating_sub(8).clamp(10, 24);
+    let rect = Rect::new(
+        area.x + (area.width.saturating_sub(width)) / 2,
+        area.y + (area.height.saturating_sub(height)) / 2,
+        width,
+        height,
+    );
+    app.layout.overlay = rect;
+    frame.render_widget(Clear, rect);
+    fill(frame, rect, theme.color("mantle"));
+    frame.render_widget(
+        Block::new()
+            .borders(Borders::ALL)
+            .border_style(Style::default().fg(theme.color("blue"))),
+        rect,
+    );
+    let inner = Rect::new(
+        rect.x + 2,
+        rect.y + 1,
+        rect.width.saturating_sub(4),
+        rect.height.saturating_sub(2),
+    );
+    frame.render_widget(
+        Paragraph::new(icons::label(icons::CODE, "语言统计喵~")).style(
+            Style::default()
+                .fg(theme.color("text"))
+                .add_modifier(Modifier::BOLD),
+        ),
+        Rect::new(inner.x, inner.y, inner.width.saturating_sub(10), 1),
+    );
+    let close = Rect::new(inner.x + inner.width.saturating_sub(9), inner.y, 9, 1);
+    draw_button(
+        frame,
+        app,
+        theme,
+        hits,
+        close,
+        "关掉喵~",
+        Action::CloseOverlay,
+        false,
+    );
+    let total: u64 = app
+        .repo_languages
+        .iter()
+        .map(|language| language.bytes)
+        .sum();
+    let subtitle = if app.repo_languages_loading.is_some() {
+        format!(
+            "{} 正在读语言数据喵~...",
+            format::spinner(app.started_at.elapsed().as_millis() as u64 / 120)
+        )
+    } else {
+        format!(
+            "{} 种语言 · {} 喵~",
+            app.repo_languages.len(),
+            format::format_size(total)
+        )
+    };
+    frame.render_widget(
+        Paragraph::new(format::truncate(&subtitle, inner.width as usize))
+            .style(Style::default().fg(theme.color("overlay0"))),
+        Rect::new(inner.x, inner.y + 1, inner.width, 1),
+    );
+    let list = Rect::new(
+        inner.x,
+        inner.y + 3,
+        inner.width,
+        inner.height.saturating_sub(4),
+    );
+    app.repo_language_viewport = list.height as usize;
+    if app.repo_languages.is_empty() {
+        draw_center_message(
+            frame,
+            theme,
+            list,
+            if app.repo_languages_loading.is_some() {
+                "语言还没到喵~"
+            } else {
+                "没有语言数据喵~"
+            },
+            if app.repo_languages_loading.is_some() {
+                "等一下下，人家正在问 GitHub 喵~"
+            } else {
+                "按 r 再读一次嘛喵~"
+            },
+        );
+    } else {
+        let max_offset = app
+            .repo_languages
+            .len()
+            .saturating_sub(app.repo_language_viewport.max(1));
+        app.repo_language_offset = app.repo_language_offset.min(max_offset);
+        for (row, language) in app
+            .repo_languages
+            .iter()
+            .skip(app.repo_language_offset)
+            .take(app.repo_language_viewport)
+            .enumerate()
+        {
+            let row_rect = Rect::new(list.x, list.y + row as u16, list.width, 1);
+            let percent = if total == 0 {
+                0.0
+            } else {
+                language.bytes as f64 * 100.0 / total as f64
+            };
+            let bar_width = 8_usize;
+            let filled = ((percent / 100.0) * bar_width as f64)
+                .round()
+                .clamp(0.0, bar_width as f64) as usize;
+            let bar = format!(
+                "{}{}",
+                "█".repeat(filled),
+                "░".repeat(bar_width.saturating_sub(filled))
+            );
+            let right = format!(
+                "{:>5.1}%  {}  {}",
+                percent,
+                bar,
+                format::format_size(language.bytes)
+            );
+            let right_width = format::text_width(&right) as u16;
+            let name_width = row_rect.width.saturating_sub(right_width + 2);
+            frame.render_widget(
+                Paragraph::new(Line::from(vec![
+                    Span::styled(
+                        "● ",
+                        Style::default().fg(language_color(theme, &language.name)),
+                    ),
+                    Span::styled(
+                        format::truncate(&language.name, name_width as usize),
+                        Style::default().fg(theme.color("subtext1")),
+                    ),
+                ])),
+                Rect::new(row_rect.x, row_rect.y, name_width, 1),
+            );
+            frame.render_widget(
+                Paragraph::new(right)
+                    .alignment(Alignment::Right)
+                    .style(Style::default().fg(theme.color("overlay0"))),
+                row_rect,
+            );
+        }
+    }
+    frame.render_widget(
+        Paragraph::new("j/k 滚动   r 刷新   Esc 关掉喵~")
+            .alignment(Alignment::Center)
+            .style(Style::default().fg(theme.color("overlay0"))),
+        Rect::new(
+            inner.x,
+            inner.y + inner.height.saturating_sub(1),
+            inner.width,
+            1,
+        ),
+    );
+}
+
+fn draw_new_issue_overlay(
+    frame: &mut Frame,
+    app: &mut App,
+    theme: &Theme,
+    area: Rect,
+    hits: &mut Vec<HitBox>,
+) {
+    let width = area.width.saturating_sub(8).min(78);
+    let height = area.height.saturating_sub(6).min(20);
+    let rect = Rect::new(
+        area.x + (area.width.saturating_sub(width)) / 2,
+        area.y + (area.height.saturating_sub(height)) / 2,
+        width,
+        height,
+    );
+    app.layout.overlay = rect;
+    frame.render_widget(Clear, rect);
+    fill(frame, rect, theme.color("mantle"));
+    frame.render_widget(
+        Block::new()
+            .borders(Borders::ALL)
+            .border_style(Style::default().fg(theme.color("blue"))),
+        rect,
+    );
+    let inner = Rect::new(
+        rect.x + 2,
+        rect.y + 1,
+        rect.width.saturating_sub(4),
+        rect.height.saturating_sub(2),
+    );
+    frame.render_widget(
+        Paragraph::new(icons::label(icons::COMMENT, "新建议题喵~")).style(
+            Style::default()
+                .fg(theme.color("text"))
+                .add_modifier(Modifier::BOLD),
+        ),
+        Rect::new(inner.x, inner.y, inner.width.saturating_sub(24), 1),
+    );
+    frame.render_widget(
+        Paragraph::new(format::truncate(&app.issue_repo_label(), 30))
+            .alignment(Alignment::Right)
+            .style(Style::default().fg(theme.color("blue"))),
+        Rect::new(inner.x, inner.y, inner.width, 1),
+    );
+    frame.render_widget(
+        Paragraph::new("Tab 换栏   Ctrl+S 提交   Esc 关闭喵~")
+            .style(Style::default().fg(theme.color("overlay0"))),
+        Rect::new(inner.x, inner.y + 1, inner.width, 1),
+    );
+    let title_y = inner.y + 3;
+    let title_hover = app.hover.as_ref() == Some(&Action::FocusNewIssue(false));
+    if !app.new_issue_body_focus || title_hover {
+        fill(
+            frame,
+            Rect::new(inner.x, title_y, inner.width, 1),
+            if app.new_issue_body_focus {
+                theme.color("surface1")
+            } else {
+                theme.color("surface0")
+            },
+        );
+    }
+    frame.render_widget(
+        Paragraph::new("标题喵~").style(Style::default().fg(if app.new_issue_body_focus {
+            theme.color("overlay0")
+        } else {
+            theme.color("blue")
+        })),
+        Rect::new(inner.x + 1, title_y, 8, 1),
+    );
+    let value_width = inner.width.saturating_sub(10);
+    let (visible, cursor) = if app.new_issue_title.is_empty() {
+        (
+            format::truncate("给议题起个标题喵~", value_width.saturating_sub(1) as usize),
+            0,
+        )
+    } else {
+        format::visible_text(
+            &app.new_issue_title.value,
+            app.new_issue_title.cursor,
+            value_width as usize,
+        )
+    };
+    frame.render_widget(
+        Paragraph::new(visible).style(Style::default().fg(if app.new_issue_title.is_empty() {
+            theme.color("overlay0")
+        } else {
+            theme.color("text")
+        })),
+        Rect::new(inner.x + 9, title_y, value_width, 1),
+    );
+    if !app.new_issue_body_focus && !app.new_issue_saving {
+        frame.set_cursor_position(ratatui::layout::Position::new(
+            (inner.x + 9 + cursor).min(inner.x + 8 + value_width),
+            title_y,
+        ));
+    }
+    register(
+        hits,
+        Rect::new(inner.x, title_y, inner.width, 1),
+        Action::FocusNewIssue(false),
+    );
+
+    let body_label_y = title_y + 2;
+    let buttons_y = inner.y + inner.height.saturating_sub(1);
+    let error_y = buttons_y.saturating_sub(1);
+    frame.render_widget(
+        Paragraph::new("正文喵~（可留空）").style(Style::default().fg(
+            if app.new_issue_body_focus {
+                theme.color("blue")
+            } else {
+                theme.color("overlay0")
+            },
+        )),
+        Rect::new(inner.x, body_label_y, inner.width, 1),
+    );
+    let body_outer = Rect::new(
+        inner.x,
+        body_label_y + 1,
+        inner.width,
+        error_y.saturating_sub(body_label_y + 1),
+    );
+    let body_focused = app.new_issue_body_focus;
+    let body_hover = app.hover.as_ref() == Some(&Action::FocusNewIssue(true));
+    let block = Block::new()
+        .borders(Borders::ALL)
+        .border_style(Style::default().fg(if body_focused {
+            theme.color("blue")
+        } else if body_hover {
+            theme.color("surface2")
+        } else {
+            theme.color("surface1")
+        }));
+    let body_inner = block.inner(body_outer);
+    frame.render_widget(block, body_outer);
+    let width = body_inner.width.max(1) as usize;
+    let height = body_inner.height as usize;
+    let (all_lines, cursor_row, cursor_column) =
+        format::multiline_layout(&app.new_issue_body.value, app.new_issue_body.cursor, width);
+    let start = if body_focused {
+        cursor_row.saturating_sub(height.saturating_sub(1))
+    } else {
+        0
+    };
+    let lines: Vec<Line> = if app.new_issue_body.is_empty() {
+        vec![Line::from(Span::styled(
+            "写点正文喵~",
+            Style::default().fg(theme.color("overlay0")),
+        ))]
+    } else {
+        all_lines
+            .iter()
+            .skip(start)
+            .take(height)
+            .map(|line| {
+                Line::from(Span::styled(
+                    line.clone(),
+                    Style::default().fg(theme.color("text")),
+                ))
+            })
+            .collect()
+    };
+    frame.render_widget(Paragraph::new(lines), body_inner);
+    if body_focused && !app.new_issue_saving && height > 0 {
+        let row = cursor_row.saturating_sub(start).min(height - 1);
+        let column = cursor_column.min(width.saturating_sub(1));
+        frame.set_cursor_position(ratatui::layout::Position::new(
+            body_inner.x + column as u16,
+            body_inner.y + row as u16,
+        ));
+    }
+    register(hits, body_outer, Action::FocusNewIssue(true));
+
+    if let Some(error) = app.new_issue_error.as_ref() {
+        frame.render_widget(
+            Paragraph::new(format::truncate(error, inner.width as usize))
+                .style(Style::default().fg(theme.color("red"))),
+            Rect::new(inner.x, error_y, inner.width, 1),
+        );
+    }
+    let cancel = icons::label(icons::BACK, "取消喵~");
+    let cancel_width = format::text_width(&cancel) as u16 + 4;
+    draw_button(
+        frame,
+        app,
+        theme,
+        hits,
+        Rect::new(inner.x, buttons_y, cancel_width, 1),
+        &cancel,
+        Action::CloseOverlay,
+        false,
+    );
+    let submit = if app.new_issue_saving {
+        format!(
+            "{} 提交中喵~",
+            format::spinner(app.started_at.elapsed().as_millis() as u64 / 120)
+        )
+    } else {
+        icons::label(icons::COMMENT, "提交议题喵~")
+    };
+    let submit_width = format::text_width(&submit) as u16 + 6;
+    draw_button(
+        frame,
+        app,
+        theme,
+        hits,
+        Rect::new(
+            inner.x + inner.width.saturating_sub(submit_width),
+            buttons_y,
+            submit_width,
+            1,
+        ),
+        &submit,
+        Action::SubmitNewIssue,
+        true,
+    );
+}
+
 fn draw_repo_edit_overlay(
     frame: &mut Frame,
     app: &mut App,
@@ -7676,11 +8196,11 @@ fn draw_help(frame: &mut Frame, app: &mut App, theme: &Theme, area: Rect, hits: 
         ("热门喵~", "6 看热门仓库，p 换今日/本周/本月，/ 筛选喵~"),
         (
             "看说明喵~",
-            "仓库页按 F 全屏看 README，TAB 切面板，j/k 滚动喵~",
+            "仓库页按 F 全屏看 README，L 看语言统计，TAB 切面板，j/k 滚动喵~",
         ),
         (
             "提交喵~",
-            "仓库页按 C 看提交，j/k 挑，Enter 去 GitHub，b 换分支喵~",
+            "仓库页按 C 看提交和改动文件，j/k 挑，Enter 去 GitHub，b 换分支喵~",
         ),
         (
             "分支喵~",
@@ -7693,7 +8213,7 @@ fn draw_help(frame: &mut Frame, app: &mut App, theme: &Theme, area: Rect, hits: 
         ),
         (
             "议题喵~",
-            "仓库页按 i 看议题和合并请求，v 换类型，s 换状态喵~",
+            "仓库页按 i 看议题，v 换类型，s 换状态，n 新建一条喵~",
         ),
         ("发行版喵~", "仓库页点发行版按钮进详情，再挑文件下载喵~"),
         ("通知喵~", "5 看通知，m 已读，M 全部已读，u 切未读/全部喵~"),
@@ -8059,6 +8579,144 @@ mod tests {
                 .iter()
                 .any(|hit| hit.action == Action::ConfirmDeleteRepo)
         );
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn repo_languages_overlay_renders_percentages() {
+        let dir = std::env::temp_dir().join(format!("gitx-lang-ui-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        let paths = crate::config::Paths::for_test(dir.join("config"), dir.join("cache"));
+        let mut app = App::settings(paths, None);
+        app.settings_only = false;
+        let repo = test_repo("octocat", "hello-world");
+        app.page = Page::Repo;
+        app.return_page = Page::Repositories;
+        app.page_repo = Some(repo.clone());
+        app.detail = Some(repo);
+        app.overlay = Some(Overlay::RepoLanguages);
+        app.repo_languages = vec![
+            crate::model::LanguageStat {
+                name: "Rust".to_string(),
+                bytes: 750,
+            },
+            crate::model::LanguageStat {
+                name: "Shell".to_string(),
+                bytes: 250,
+            },
+        ];
+        let mut terminal = ratatui::Terminal::new(ratatui::backend::TestBackend::new(120, 40))
+            .expect("test terminal");
+        terminal
+            .draw(|frame| draw(frame, &mut app))
+            .expect("render languages overlay");
+        let text = buffer_text(terminal.backend().buffer())
+            .split_whitespace()
+            .collect::<String>();
+        assert!(text.contains("语言统计"));
+        assert!(text.contains("Rust"));
+        assert!(text.contains("75.0%"));
+        assert!(text.contains("Shell"));
+        assert!(
+            app.hitboxes
+                .iter()
+                .any(|hit| hit.action == Action::CloseOverlay)
+        );
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn new_issue_overlay_exposes_fields_and_submit() {
+        let dir = std::env::temp_dir().join(format!("gitx-issue-ui-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        let paths = crate::config::Paths::for_test(dir.join("config"), dir.join("cache"));
+        let mut app = App::settings(paths, None);
+        app.settings_only = false;
+        let repo = test_repo("octocat", "hello-world");
+        app.page = Page::Issues;
+        app.return_page = Page::Repositories;
+        app.issue_repo = Some(repo);
+        app.overlay = Some(Overlay::NewIssue);
+        app.new_issue_title = TextInput::new("新的喵");
+        app.new_issue_body = TextInput::new("正文");
+        let mut terminal = ratatui::Terminal::new(ratatui::backend::TestBackend::new(120, 40))
+            .expect("test terminal");
+        terminal
+            .draw(|frame| draw(frame, &mut app))
+            .expect("render new issue overlay");
+        let text = buffer_text(terminal.backend().buffer())
+            .split_whitespace()
+            .collect::<String>();
+        assert!(text.contains("新建议题"));
+        assert!(text.contains("正文喵"));
+        assert!(text.contains("提交议题"));
+        assert!(
+            app.hitboxes
+                .iter()
+                .any(|hit| hit.action == Action::SubmitNewIssue)
+        );
+        assert!(
+            app.hitboxes
+                .iter()
+                .any(|hit| matches!(&hit.action, Action::FocusNewIssue(body) if !body))
+        );
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn commit_detail_lists_changed_files() {
+        let dir = std::env::temp_dir().join(format!("gitx-commit-ui-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        let paths = crate::config::Paths::for_test(dir.join("config"), dir.join("cache"));
+        let mut app = App::settings(paths, None);
+        app.settings_only = false;
+        let repo = test_repo("octocat", "hello-world");
+        let sha = "abcdef1234567890".to_string();
+        app.page = Page::Commits;
+        app.return_page = Page::Repo;
+        app.page_repo = Some(repo.clone());
+        app.commit_repo = Some(repo);
+        app.commits = vec![crate::model::Commit {
+            sha: sha.clone(),
+            html_url: "https://github.com/octocat/hello-world/commit/abcdef1".to_string(),
+            commit: crate::model::CommitInfo {
+                message: "fix: 文件喵".to_string(),
+                author: crate::model::CommitAuthor {
+                    name: "octocat".to_string(),
+                    date: "2026-01-01T00:00:00Z".to_string(),
+                },
+            },
+            ..Default::default()
+        }];
+        app.commit_detail = Some(crate::model::CommitDetail {
+            sha: sha.clone(),
+            stats: Some(crate::model::CommitStats {
+                additions: 12,
+                deletions: 3,
+                total: 15,
+            }),
+            files: vec![crate::model::CommitFile {
+                filename: "src/main.rs".to_string(),
+                status: "modified".to_string(),
+                additions: 12,
+                deletions: 3,
+                changes: 15,
+                patch: None,
+            }],
+            ..Default::default()
+        });
+        app.commit_detail_for = Some(sha);
+        let mut terminal = ratatui::Terminal::new(ratatui::backend::TestBackend::new(120, 40))
+            .expect("test terminal");
+        terminal
+            .draw(|frame| draw(frame, &mut app))
+            .expect("render commit detail");
+        let text = buffer_text(terminal.backend().buffer())
+            .split_whitespace()
+            .collect::<String>();
+        assert!(text.contains("src/main.rs"));
+        assert!(text.contains("+12"));
+        assert!(text.contains("-3"));
         let _ = std::fs::remove_dir_all(dir);
     }
 }

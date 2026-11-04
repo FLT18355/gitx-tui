@@ -329,6 +329,54 @@ impl Release {
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct LanguageStat {
+    #[serde(default)]
+    pub name: String,
+    #[serde(default)]
+    pub bytes: u64,
+}
+
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct CommitStats {
+    #[serde(default)]
+    pub additions: u64,
+    #[serde(default)]
+    pub deletions: u64,
+    #[serde(default)]
+    pub total: u64,
+}
+
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct CommitFile {
+    #[serde(default)]
+    pub filename: String,
+    #[serde(default)]
+    pub status: String,
+    #[serde(default)]
+    pub additions: u64,
+    #[serde(default)]
+    pub deletions: u64,
+    #[serde(default)]
+    pub changes: u64,
+    #[serde(default)]
+    pub patch: Option<String>,
+}
+
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct CommitDetail {
+    #[serde(default)]
+    pub sha: String,
+    #[serde(default)]
+    pub commit: CommitInfo,
+    #[serde(default)]
+    pub author: Option<Owner>,
+    #[serde(default)]
+    pub stats: Option<CommitStats>,
+    #[serde(default)]
+    pub files: Vec<CommitFile>,
+}
+
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct StarredRepo {
     #[serde(default)]
     pub starred_at: String,
@@ -1185,5 +1233,26 @@ mod tests {
         assert_eq!(issue.body_text(), "正文");
         assert_eq!(IssueState::Closed.next(), IssueState::All);
         assert_eq!(IssueState::All.next(), IssueState::Open);
+    }
+
+    #[test]
+    fn parses_commit_files_and_language_stats() {
+        let raw = r#"{
+            "sha": "abc123",
+            "commit": {"message": "feat: 喵", "author": {"name": "Meow", "date": "2026-01-01T00:00:00Z"}},
+            "stats": {"additions": 12, "deletions": 3, "total": 15},
+            "files": [
+                {"filename": "src/main.rs", "status": "modified", "additions": 12, "deletions": 3, "changes": 15}
+            ]
+        }"#;
+        let detail: CommitDetail = serde_json::from_str(raw).unwrap();
+        assert_eq!(detail.sha, "abc123");
+        assert_eq!(detail.stats.as_ref().unwrap().total, 15);
+        assert_eq!(detail.files[0].filename, "src/main.rs");
+        assert_eq!(detail.files[0].status, "modified");
+
+        let languages: std::collections::HashMap<String, u64> =
+            serde_json::from_str(r#"{"Rust": 2048, "Shell": 128}"#).unwrap();
+        assert_eq!(languages["Rust"], 2048);
     }
 }

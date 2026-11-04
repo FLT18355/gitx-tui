@@ -4,9 +4,9 @@ use crate::config::{Config, Paths};
 use crate::format::{self, base64};
 use crate::icons;
 use crate::model::{
-    Branch, Commit, Issue, IssueState, Notification, RateLimit, ReadmeContent, Release, Repo,
-    RepoSort, SearchResponse, SearchSort, StarSort, TreeResponse, TrendingPeriod, User, Workflow,
-    key_part,
+    Branch, Commit, CommitDetail, Issue, IssueState, LanguageStat, Notification, RateLimit,
+    ReadmeContent, Release, Repo, RepoSort, SearchResponse, SearchSort, StarSort, TreeResponse,
+    TrendingPeriod, User, Workflow, key_part,
 };
 use crate::theme::Theme;
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers, MouseButton, MouseEvent, MouseEventKind};
@@ -92,12 +92,14 @@ impl Page {
 pub enum Overlay {
     Help,
     Languages,
+    RepoLanguages,
     EditRepo,
     Cache,
     RunWorkflow,
     Branches,
     ForkRepo,
     DeleteRepo,
+    NewIssue,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -221,6 +223,10 @@ pub enum Action {
     ClearCacheGroup(usize),
     SelectCacheRow(usize),
     OpenCacheDir,
+    OpenRepoLanguages,
+    StartNewIssue,
+    FocusNewIssue(bool),
+    SubmitNewIssue,
     OpenWorkflowRunner,
     SelectWorkflow(usize),
     EditWorkflowRef,
@@ -344,6 +350,13 @@ struct PendingDetail {
     at: Instant,
 }
 
+struct PendingCommitDetail {
+    repo: String,
+    sha: String,
+    private: bool,
+    at: Instant,
+}
+
 #[derive(Clone, Copy)]
 pub struct CacheGroup {
     pub label: &'static str,
@@ -366,7 +379,14 @@ pub fn cache_groups() -> Vec<CacheGroup> {
         },
         CacheGroup {
             label: "仓库详情",
-            prefixes: &["repo_", "releases_", "tree_", "readme_"],
+            prefixes: &[
+                "repo_",
+                "releases_",
+                "tree_",
+                "readme_",
+                "languages_",
+                "commit_",
+            ],
         },
         CacheGroup {
             label: "工作流",
@@ -562,6 +582,19 @@ enum Msg {
         state: IssueState,
         result: Result<Vec<Issue>, String>,
     },
+    IssueCreated {
+        name: String,
+        result: Result<Issue, String>,
+    },
+    RepoLanguages {
+        name: String,
+        result: Result<Vec<LanguageStat>, String>,
+    },
+    CommitDetail {
+        repo: String,
+        sha: String,
+        result: Result<CommitDetail, String>,
+    },
     Notifications {
         all: bool,
         result: Result<Vec<Notification>, String>,
@@ -622,6 +655,11 @@ pub struct App {
     pub issue_selected: usize,
     pub issue_kind: IssueKind,
     pub issue_state: IssueState,
+    pub new_issue_title: TextInput,
+    pub new_issue_body: TextInput,
+    pub new_issue_body_focus: bool,
+    pub new_issue_saving: bool,
+    pub new_issue_error: Option<String>,
     pub profile_login: Option<String>,
     pub profile_user: Option<User>,
     pub profile_user_loading: bool,
@@ -715,6 +753,10 @@ pub struct App {
     pub commit_branch: String,
     pub commit_selected: usize,
     pub commit_scroll: u16,
+    pub commit_detail: Option<CommitDetail>,
+    pub commit_detail_for: Option<String>,
+    pub commit_detail_loading: Option<String>,
+    pending_commit_detail: Option<PendingCommitDetail>,
 
     pub repo_edit: Option<RepoEdit>,
     pub settings_row: usize,
@@ -729,6 +771,11 @@ pub struct App {
     pub language_selected: usize,
     pub language_offset: usize,
     pub language_viewport: usize,
+    pub repo_languages: Vec<LanguageStat>,
+    pub repo_languages_loading: Option<String>,
+    pub repo_languages_fetched_at: Option<i64>,
+    pub repo_language_offset: usize,
+    pub repo_language_viewport: usize,
 
     pub user_loading: bool,
     pub repos_loading: bool,
@@ -826,6 +873,11 @@ impl App {
             issue_selected: 0,
             issue_kind: IssueKind::All,
             issue_state: IssueState::Open,
+            new_issue_title: TextInput::new(""),
+            new_issue_body: TextInput::new(""),
+            new_issue_body_focus: false,
+            new_issue_saving: false,
+            new_issue_error: None,
             profile_login: None,
             profile_user: None,
             profile_user_loading: false,
@@ -922,6 +974,10 @@ impl App {
             commit_branch: String::new(),
             commit_selected: 0,
             commit_scroll: 0,
+            commit_detail: None,
+            commit_detail_for: None,
+            commit_detail_loading: None,
+            pending_commit_detail: None,
             repo_edit: None,
             settings_row: 0,
             editing_proxy: false,
@@ -935,6 +991,11 @@ impl App {
             language_selected: 0,
             language_offset: 0,
             language_viewport: 12,
+            repo_languages: Vec::new(),
+            repo_languages_loading: None,
+            repo_languages_fetched_at: None,
+            repo_language_offset: 0,
+            repo_language_viewport: 12,
             user_loading: false,
             repos_loading: false,
             starred_loading: false,
@@ -1226,6 +1287,7 @@ impl App {
                         self.commit_scroll = 0;
                         self.refresh_cache_stats();
                         if self.page == Page::Commits {
+                            self.schedule_commit_detail(false);
                             self.set_status(
                                 StatusKind::Ok,
                                 &format!("{} 个提交已经摆好啦喵~", self.commits.len()),
@@ -1665,6 +1727,106 @@ impl App {
                     }
                     Err(error) => {
                         if self.page == Page::Issues {
+                            self.set_status(StatusKind::Error, &error);
+                        }
+                    }
+                }
+            }
+            Msg::IssueCreated { name, result } => {
+                self.new_issue_saving = false;
+                let current = self
+                    .issue_repo
+                    .as_ref()
+                    .map(|repo| repo.display_full_name());
+                if current.as_deref() != Some(name.as_str()) {
+                    return;
+                }
+                match result {
+                    Ok(issue) => {
+                        self.overlay = None;
+                        self.new_issue_title = TextInput::new("");
+                        self.new_issue_body = TextInput::new("");
+                        self.new_issue_error = None;
+                        if self.issue_state != IssueState::Open {
+                            self.issue_state = IssueState::Open;
+                            self.issues.clear();
+                            self.issues_fetched_at = None;
+                            self.issue_selected = 0;
+                        }
+                        if self.issue_kind == IssueKind::PullRequests {
+                            self.issue_kind = IssueKind::All;
+                        }
+                        if self.issue_state == IssueState::Open
+                            && self.issue_kind.matches(&issue)
+                            && !self.issues.iter().any(|item| item.id == issue.id)
+                        {
+                            self.issues.insert(0, issue.clone());
+                            let _ = self
+                                .cache
+                                .save(&issues_cache_key(&name, IssueState::Open), &self.issues);
+                            self.clamp_issue_selection();
+                        }
+                        self.set_status(
+                            StatusKind::Ok,
+                            &format!("议题 #{} 建好啦喵~", issue.number),
+                        );
+                        self.fetch_issues(true);
+                    }
+                    Err(error) => {
+                        self.new_issue_error = Some(error.clone());
+                        self.set_status(StatusKind::Error, &error);
+                    }
+                }
+            }
+            Msg::RepoLanguages { name, result } => {
+                if self.repo_languages_loading.as_deref() == Some(name.as_str()) {
+                    self.repo_languages_loading = None;
+                }
+                let current = self.context_repo().map(|repo| repo.display_full_name());
+                if current.as_deref() != Some(name.as_str()) {
+                    return;
+                }
+                match result {
+                    Ok(languages) => {
+                        let _ = self.cache.save(&languages_cache_key(&name), &languages);
+                        self.repo_languages = languages;
+                        self.repo_languages_fetched_at = Some(now_epoch());
+                        self.repo_language_offset = 0;
+                        self.refresh_cache_stats();
+                    }
+                    Err(error) => {
+                        if self.overlay == Some(Overlay::RepoLanguages) {
+                            self.set_status(StatusKind::Error, &error);
+                        }
+                    }
+                }
+            }
+            Msg::CommitDetail { repo, sha, result } => {
+                if self.commit_detail_loading.as_deref() == Some(sha.as_str()) {
+                    self.commit_detail_loading = None;
+                }
+                let current_repo = self.commit_repo.as_ref().map(Repo::display_full_name);
+                let current_sha = self.selected_commit().map(|commit| commit.sha);
+                if current_repo.as_deref() != Some(repo.as_str())
+                    || current_sha.as_deref() != Some(sha.as_str())
+                {
+                    return;
+                }
+                match result {
+                    Ok(detail) => {
+                        let _ = self
+                            .cache
+                            .save(&commit_detail_cache_key(&repo, &sha), &detail);
+                        self.commit_detail = Some(detail);
+                        self.commit_detail_for = Some(sha);
+                        self.refresh_cache_stats();
+                    }
+                    Err(error) => {
+                        if self.commit_detail_for.as_deref() != Some(sha.as_str()) {
+                            self.commit_detail = None;
+                            self.commit_detail_for = None;
+                        }
+                        if self.page == Page::Commits {
                             self.set_status(StatusKind::Error, &error);
                         }
                     }
@@ -2695,6 +2857,196 @@ impl App {
         );
     }
 
+    pub fn open_new_issue(&mut self) {
+        if self.issue_repo.is_none() {
+            self.set_status(StatusKind::Info, "先打开一个仓库的议题页嘛喵~");
+            return;
+        }
+        self.overlay = Some(Overlay::NewIssue);
+        self.new_issue_title = TextInput::new("");
+        self.new_issue_body = TextInput::new("");
+        self.new_issue_body_focus = false;
+        self.new_issue_saving = false;
+        self.new_issue_error = None;
+    }
+
+    fn active_new_issue_input(&mut self) -> &mut TextInput {
+        if self.new_issue_body_focus {
+            &mut self.new_issue_body
+        } else {
+            &mut self.new_issue_title
+        }
+    }
+
+    fn handle_new_issue_key(&mut self, key: KeyEvent) {
+        if self.new_issue_saving {
+            return;
+        }
+        match key.code {
+            KeyCode::Esc => {
+                self.overlay = None;
+                self.new_issue_error = None;
+            }
+            KeyCode::Tab | KeyCode::BackTab => {
+                self.new_issue_body_focus = !self.new_issue_body_focus;
+            }
+            KeyCode::Enter => {
+                if self.new_issue_body_focus {
+                    self.new_issue_body.insert('\n');
+                } else {
+                    self.new_issue_body_focus = true;
+                }
+            }
+            KeyCode::Backspace => self.active_new_issue_input().backspace(),
+            KeyCode::Delete => self.active_new_issue_input().delete(),
+            KeyCode::Left => self.active_new_issue_input().left(),
+            KeyCode::Right => self.active_new_issue_input().right(),
+            KeyCode::Home => self.active_new_issue_input().home(),
+            KeyCode::End => self.active_new_issue_input().end(),
+            KeyCode::Char(ch) if !ch.is_control() => self.active_new_issue_input().insert(ch),
+            _ => {}
+        }
+    }
+
+    fn submit_new_issue(&mut self) {
+        if self.new_issue_saving {
+            return;
+        }
+        let Some(repo) = self.issue_repo.clone() else {
+            self.set_status(StatusKind::Info, "先打开一个仓库的议题页嘛喵~");
+            return;
+        };
+        let title = self.new_issue_title.value.trim().to_string();
+        if title.is_empty() {
+            self.new_issue_body_focus = false;
+            self.new_issue_error = Some("标题不能空着喵~".to_string());
+            return;
+        }
+        let body = self.new_issue_body.value.clone();
+        let name = repo.display_full_name();
+        self.new_issue_saving = true;
+        self.new_issue_error = None;
+        self.set_status(StatusKind::Info, "正在把新议题送去 GitHub 喵~...");
+        let tx = self.tx.clone();
+        let client = self.client.clone();
+        std::thread::spawn(move || {
+            let result = client.create_issue(&name, &title, &body);
+            let _ = tx.send(Msg::IssueCreated { name, result });
+        });
+    }
+
+    pub fn open_repo_languages(&mut self) {
+        let Some(repo) = self.context_repo() else {
+            self.set_status(StatusKind::Info, "先挑一个仓库嘛喵~");
+            return;
+        };
+        let name = repo.display_full_name();
+        self.overlay = Some(Overlay::RepoLanguages);
+        self.repo_language_offset = 0;
+        match self
+            .cache
+            .load::<Vec<LanguageStat>>(&languages_cache_key(&name))
+        {
+            Some(cached) => {
+                self.repo_languages = cached.data;
+                self.repo_languages_fetched_at = Some(cached.fetched_at);
+            }
+            None => {
+                self.repo_languages.clear();
+                self.repo_languages_fetched_at = None;
+            }
+        }
+        self.fetch_repo_languages(false);
+    }
+
+    fn fetch_repo_languages(&mut self, force: bool) {
+        let Some(repo) = self.context_repo() else {
+            return;
+        };
+        let name = repo.display_full_name();
+        if self.repo_languages_loading.as_deref() == Some(name.as_str()) {
+            return;
+        }
+        let fresh = self
+            .repo_languages_fetched_at
+            .map(|at| now_epoch() - at <= self.config.detail_ttl_secs as i64)
+            .unwrap_or(false);
+        if !force && fresh {
+            return;
+        }
+        self.repo_languages_loading = Some(name.clone());
+        let tx = self.tx.clone();
+        let client = self.client.clone();
+        let private = repo.private;
+        std::thread::spawn(move || {
+            let result = client.languages(&name, private);
+            let _ = tx.send(Msg::RepoLanguages { name, result });
+        });
+    }
+
+    fn schedule_commit_detail(&mut self, force: bool) {
+        let (Some(repo), Some(commit)) = (self.commit_repo.clone(), self.selected_commit()) else {
+            self.commit_detail = None;
+            self.commit_detail_for = None;
+            self.commit_detail_loading = None;
+            self.pending_commit_detail = None;
+            return;
+        };
+        let sha = commit.sha.clone();
+        if sha.is_empty() {
+            return;
+        }
+        let name = repo.display_full_name();
+        if self.commit_detail_for.as_deref() != Some(sha.as_str()) {
+            self.commit_detail = None;
+            self.commit_detail_for = None;
+        }
+        let key = commit_detail_cache_key(&name, &sha);
+        if let Some(cached) = self.cache.load::<CommitDetail>(&key) {
+            let fresh = cached.is_fresh(self.config.detail_ttl_secs);
+            if self.commit_detail_for.as_deref() != Some(sha.as_str()) {
+                self.commit_detail = Some(cached.data);
+                self.commit_detail_for = Some(sha.clone());
+            }
+            if !force && fresh {
+                return;
+            }
+        }
+        if self.commit_detail_loading.as_deref() == Some(sha.as_str()) {
+            return;
+        }
+        self.pending_commit_detail = Some(PendingCommitDetail {
+            repo: name,
+            sha,
+            private: repo.private,
+            at: Instant::now(),
+        });
+    }
+
+    fn fetch_pending_commit_detail(&mut self, pending: PendingCommitDetail) {
+        let current_repo = self.commit_repo.as_ref().map(Repo::display_full_name);
+        let current_sha = self.selected_commit().map(|commit| commit.sha);
+        if current_repo.as_deref() != Some(pending.repo.as_str())
+            || current_sha.as_deref() != Some(pending.sha.as_str())
+        {
+            return;
+        }
+        if self.commit_detail_loading.as_deref() == Some(pending.sha.as_str()) {
+            return;
+        }
+        self.commit_detail_loading = Some(pending.sha.clone());
+        let tx = self.tx.clone();
+        let client = self.client.clone();
+        std::thread::spawn(move || {
+            let result = client.commit_detail(&pending.repo, &pending.sha, pending.private);
+            let _ = tx.send(Msg::CommitDetail {
+                repo: pending.repo,
+                sha: pending.sha,
+                result,
+            });
+        });
+    }
+
     pub fn open_account(&mut self) {
         self.navigate(Page::Account);
         self.fetch_rate_limit(false);
@@ -2920,6 +3272,13 @@ impl App {
                 self.fetch_detail_if_needed(pending.repo, false);
             } else {
                 self.pending_detail = Some(pending);
+            }
+        }
+        if let Some(pending) = self.pending_commit_detail.take() {
+            if pending.at.elapsed() >= Duration::from_millis(220) {
+                self.fetch_pending_commit_detail(pending);
+            } else {
+                self.pending_commit_detail = Some(pending);
             }
         }
     }
@@ -3952,6 +4311,10 @@ impl App {
         self.commits_fetched_at = None;
         self.commits_loading = None;
         self.commit_selected = 0;
+        self.commit_detail = None;
+        self.commit_detail_for = None;
+        self.commit_detail_loading = None;
+        self.pending_commit_detail = None;
         self.tree_scroll = 0;
         self.readme_scroll = 0;
         self.commit_scroll = 0;
@@ -3981,6 +4344,10 @@ impl App {
             self.commits_fetched_at = None;
             self.commit_selected = 0;
             self.commit_scroll = 0;
+            self.commit_detail = None;
+            self.commit_detail_for = None;
+            self.commit_detail_loading = None;
+            self.pending_commit_detail = None;
             self.commit_repo = Some(repo);
             self.commit_branch = branch.clone();
             if let Some(cached) = self
@@ -3994,6 +4361,7 @@ impl App {
         self.return_page = return_page_when_opening(self.page, self.return_page);
         self.page = Page::Commits;
         self.clamp_commit_selection();
+        self.schedule_commit_detail(false);
         self.fetch_commits(false);
     }
 
@@ -4057,6 +4425,7 @@ impl App {
         self.commit_selected =
             (self.commit_selected as i32 + delta).clamp(0, self.commits.len() as i32 - 1) as usize;
         self.commit_scroll = 0;
+        self.schedule_commit_detail(false);
     }
 
     pub fn select_commit(&mut self, index: usize) {
@@ -4065,6 +4434,7 @@ impl App {
         }
         self.commit_selected = index.min(self.commits.len() - 1);
         self.commit_scroll = 0;
+        self.schedule_commit_detail(false);
     }
 
     pub fn open_selected_commit(&mut self) {
@@ -4112,7 +4482,10 @@ impl App {
                 self.schedule_action_jobs(true);
             }
             Page::Issues => self.fetch_issues(true),
-            Page::Commits => self.fetch_commits(true),
+            Page::Commits => {
+                self.fetch_commits(true);
+                self.schedule_commit_detail(true);
+            }
             Page::ReleaseDetail => {
                 if let Some(repo) = self.page_repo.clone() {
                     self.schedule_repo_extras(&repo, true);
@@ -4225,6 +4598,10 @@ impl App {
         self.commit_repo = None;
         self.commit_selected = 0;
         self.commit_scroll = 0;
+        self.commit_detail = None;
+        self.commit_detail_for = None;
+        self.commit_detail_loading = None;
+        self.pending_commit_detail = None;
         self.branches.clear();
         self.branches_fetched_at = None;
         self.branches_loading = None;
@@ -4933,6 +5310,13 @@ impl App {
     }
 
     pub fn scroll(&mut self, x: u16, y: u16, delta: i32) {
+        if self.overlay == Some(Overlay::RepoLanguages) {
+            let viewport = self.repo_language_viewport.max(1);
+            let max = self.repo_languages.len().saturating_sub(viewport);
+            let next = self.repo_language_offset as i32 + delta;
+            self.repo_language_offset = next.clamp(0, max as i32) as usize;
+            return;
+        }
         if self.overlay == Some(Overlay::Languages) {
             let choices = self.language_choices().len();
             let viewport = self.language_viewport.max(1);
@@ -5029,8 +5413,12 @@ impl App {
         if key.modifiers.contains(KeyModifiers::CONTROL)
             && matches!(key.code, KeyCode::Char('s') | KeyCode::Char('S'))
         {
-            if self.overlay == Some(Overlay::EditRepo) {
+            if self.overlay == Some(Overlay::NewIssue) {
+                self.submit_new_issue();
+            } else if self.overlay == Some(Overlay::EditRepo) {
                 self.save_repo_edit();
+            } else if self.overlay == Some(Overlay::RepoLanguages) {
+                return;
             } else {
                 if self.editing_proxy {
                     self.commit_proxy_edit();
@@ -5039,6 +5427,35 @@ impl App {
                     self.commit_download_dir_edit();
                 }
                 self.save_config(true);
+            }
+            return;
+        }
+        if self.overlay == Some(Overlay::NewIssue) {
+            self.handle_new_issue_key(key);
+            return;
+        }
+        if self.overlay == Some(Overlay::RepoLanguages) {
+            match key.code {
+                KeyCode::Esc | KeyCode::Char('?') | KeyCode::Char('q') => self.overlay = None,
+                KeyCode::Up | KeyCode::Char('k') => {
+                    self.repo_language_offset = self.repo_language_offset.saturating_sub(1);
+                }
+                KeyCode::Down | KeyCode::Char('j') => {
+                    let max = self
+                        .repo_languages
+                        .len()
+                        .saturating_sub(self.repo_language_viewport.max(1));
+                    self.repo_language_offset = (self.repo_language_offset + 1).min(max);
+                }
+                KeyCode::Char('g') | KeyCode::Home => self.repo_language_offset = 0,
+                KeyCode::Char('G') | KeyCode::End => {
+                    self.repo_language_offset = self
+                        .repo_languages
+                        .len()
+                        .saturating_sub(self.repo_language_viewport.max(1));
+                }
+                KeyCode::Char('r') => self.fetch_repo_languages(true),
+                _ => {}
             }
             return;
         }
@@ -5311,6 +5728,10 @@ impl App {
         }
         if self.page == Page::Issues {
             match key.code {
+                KeyCode::Char('n') => {
+                    self.open_new_issue();
+                    return;
+                }
                 KeyCode::Char('v') => {
                     self.cycle_issue_kind();
                     return;
@@ -5386,6 +5807,7 @@ impl App {
             KeyCode::Char('b') if self.page.is_repo_page() => self.open_branches(),
             KeyCode::Char('C') if self.page.is_repo_page() => self.open_commits(),
             KeyCode::Char('a') => self.open_actions(),
+            KeyCode::Char('L') if self.page.is_repo_page() => self.open_repo_languages(),
             KeyCode::Char('i') => self.open_issues(IssueKind::All),
             KeyCode::Char('Y') if self.page == Page::Repo => self.open_fork_repo(),
             KeyCode::Char('D') if self.page == Page::Repo => self.open_delete_repo(),
@@ -5904,6 +6326,24 @@ impl App {
                 return;
             }
         }
+        if self.overlay == Some(Overlay::NewIssue) {
+            if !self.new_issue_saving {
+                let multiline = self.new_issue_body_focus;
+                let input = self.active_new_issue_input();
+                for ch in text.chars() {
+                    if ch == '\r' {
+                        continue;
+                    }
+                    if ch == '\n' && !multiline {
+                        continue;
+                    }
+                    if !ch.is_control() {
+                        input.insert(ch);
+                    }
+                }
+            }
+            return;
+        }
         if self.overlay.is_some() {
             return;
         }
@@ -6054,6 +6494,9 @@ impl App {
             Action::ConfirmDeleteRepo => self.confirm_delete_repo(),
             Action::ToggleStar => self.toggle_current_star(),
             Action::CloseOverlay => {
+                if self.overlay == Some(Overlay::NewIssue) && self.new_issue_saving {
+                    return;
+                }
                 self.overlay = None;
                 self.repo_edit = None;
                 self.fork_repo = None;
@@ -6126,6 +6569,10 @@ impl App {
                 self.cache_row = index.min(last);
             }
             Action::OpenCacheDir => self.open_cache_dir(),
+            Action::OpenRepoLanguages => self.open_repo_languages(),
+            Action::StartNewIssue => self.open_new_issue(),
+            Action::FocusNewIssue(body) => self.new_issue_body_focus = body,
+            Action::SubmitNewIssue => self.submit_new_issue(),
             Action::OpenWorkflowRunner => self.open_workflow_runner(),
             Action::SelectWorkflow(index) => {
                 let last = self.action_workflows.len().saturating_sub(1);
@@ -6214,6 +6661,14 @@ fn action_jobs_cache_key(run_id: u64) -> String {
 
 fn workflows_cache_key(name: &str) -> String {
     format!("actions_workflows_{}", key_part(name))
+}
+
+fn languages_cache_key(name: &str) -> String {
+    format!("languages_{}", key_part(name))
+}
+
+fn commit_detail_cache_key(name: &str, sha: &str) -> String {
+    format!("commit_{}_{}", key_part(name), key_part(sha))
 }
 
 fn issues_cache_key(name: &str, state: IssueState) -> String {
