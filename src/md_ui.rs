@@ -49,7 +49,8 @@ pub fn draw(frame: &mut Frame, app: &mut MdApp) {
         } else {
             draw_files(frame, app, &theme, columns[0]);
         }
-        fill(frame, columns[1], theme.color("surface0"));
+        let left_focused = app.focus != Tab::Preview;
+        draw_divider(frame, &theme, columns[1], left_focused);
         draw_preview(frame, app, &theme, columns[2]);
     }
 
@@ -166,8 +167,10 @@ fn draw_footer(frame: &mut Frame, app: &MdApp, theme: &Theme, area: Rect) {
 
     let hints = hints_for(app);
     let right = format!(
-        "{} 文件 · {} 主题 · gxt {}",
+        "{} {} 文件 · {} {} · gxt {}",
+        icons::BOOK,
         app.visible.len(),
+        icons::PALETTE,
         app.theme.display_name(),
         env!("CARGO_PKG_VERSION")
     );
@@ -214,10 +217,28 @@ fn hints_for(app: &MdApp) -> &'static str {
     }
 }
 
+fn draw_divider(frame: &mut Frame, theme: &Theme, area: Rect, left_focused: bool) {
+    fill(frame, area, theme.color("base"));
+    let color = if left_focused {
+        theme.color("surface2")
+    } else {
+        theme.color("surface1")
+    };
+    let mut row = 0;
+    while row < area.height {
+        frame.render_widget(
+            Paragraph::new(Span::styled("┆", Style::default().fg(color))),
+            Rect::new(area.x, area.y + row, 1, 1),
+        );
+        row += 2;
+    }
+}
+
 fn draw_pane_tabs(frame: &mut Frame, app: &mut MdApp, theme: &Theme, area: Rect, active: Tab) {
-    let files_label = format!("文件 {}", app.visible.len());
+    let files_label = format!("{} 文件 {}", icons::FILE, app.visible.len());
     let outline_label = format!(
-        "大纲 {}",
+        "{} 大纲 {}",
+        icons::BOOK,
         app.doc.as_ref().map(|doc| doc.headings.len()).unwrap_or(0)
     );
     let mut x = area.x;
@@ -328,12 +349,23 @@ fn draw_files(frame: &mut Frame, app: &mut MdApp, theme: &Theme, area: Rect) {
                     Rect::new(area.x, y, area.width, 1),
                     theme.color(if selected { "surface1" } else { "surface0" }),
                 );
+            } else if index % 2 == 1 {
+                fill(
+                    frame,
+                    Rect::new(area.x, y, area.width, 1),
+                    theme.color("base"),
+                );
             }
             let icon = if current { icons::BOOK } else { icons::FILE };
             let icon_color = if current {
                 theme.color("blue")
             } else {
                 theme.color("overlay0")
+            };
+            let rail = if current {
+                Span::styled("▌", Style::default().fg(theme.color("blue")))
+            } else {
+                Span::raw(" ")
             };
             let size = format::format_size(file.size);
             let room = body.width.saturating_sub(size.len() as u16 + 4) as usize;
@@ -348,6 +380,7 @@ fn draw_files(frame: &mut Frame, app: &mut MdApp, theme: &Theme, area: Rect) {
             };
             frame.render_widget(
                 Paragraph::new(Line::from(vec![
+                    rail,
                     Span::styled(format!("{icon} "), Style::default().fg(icon_color)),
                     Span::styled(rel, text_style),
                     Span::raw(" ".repeat(pad)),
@@ -541,12 +574,52 @@ fn draw_preview(frame: &mut Frame, app: &mut MdApp, theme: &Theme, area: Rect) {
         .map(|meta| format::text_width(meta) + 2)
         .unwrap_or(0);
     let title_room = inner_width.saturating_sub(meta_room);
+    let title_line = match app.doc.as_ref() {
+        Some(doc) => {
+            let (dir, name) = doc
+                .rel
+                .rsplit_once('/')
+                .map(|(dir, name)| (format!("{dir}/"), name))
+                .unwrap_or((String::new(), doc.rel.as_str()));
+            let name_width = format::text_width(name);
+            let available = title_room.saturating_sub(2);
+            let mut spans = vec![Span::styled(
+                format!("{} ", icons::BOOK),
+                Style::default().fg(theme.color("blue")),
+            )];
+            if name_width >= available {
+                spans.push(Span::styled(
+                    format::truncate(name, available.max(4)),
+                    Style::default()
+                        .fg(theme.color("blue"))
+                        .add_modifier(Modifier::BOLD),
+                ));
+            } else {
+                let dir_room = available.saturating_sub(name_width);
+                let dir_text = if format::text_width(&dir) > dir_room {
+                    format::truncate(&dir, dir_room)
+                } else {
+                    dir.clone()
+                };
+                if !dir_text.is_empty() {
+                    spans.push(Span::styled(
+                        dir_text,
+                        Style::default().fg(theme.color("overlay0")),
+                    ));
+                }
+                spans.push(Span::styled(
+                    name.to_string(),
+                    Style::default()
+                        .fg(theme.color("blue"))
+                        .add_modifier(Modifier::BOLD),
+                ));
+            }
+            Line::from(spans)
+        }
+        None => Line::from(format::truncate(&title, title_room.max(8))),
+    };
     frame.render_widget(
-        Paragraph::new(format::truncate(&title, title_room.max(8))).style(
-            Style::default()
-                .fg(theme.color("blue"))
-                .add_modifier(Modifier::BOLD),
-        ),
+        Paragraph::new(title_line),
         Rect::new(area.x + 1, area.y, area.width.saturating_sub(2), 1),
     );
 
@@ -786,6 +859,7 @@ fn draw_help(frame: &mut Frame, app: &mut MdApp, theme: &Theme, area: Rect) {
     frame.render_widget(
         Block::new()
             .borders(Borders::ALL)
+            .border_type(ratatui::widgets::BorderType::Rounded)
             .border_style(Style::default().fg(theme.color("blue"))),
         rect,
     );

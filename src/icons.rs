@@ -40,6 +40,7 @@ pub fn label(icon: &str, text: &str) -> String {
 pub const FILE: &str = "\u{f15b}";
 pub const FOLDER_OPEN: &str = "\u{f07c}";
 pub const BOOK: &str = "\u{f02d}";
+pub const IMAGE: &str = "\u{f03e}";
 pub const CHECK_SQUARE: &str = "\u{f14a}";
 pub const SQUARE: &str = "\u{f096}";
 pub const STAR_EMPTY: &str = "\u{f006}";

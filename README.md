@@ -20,7 +20,7 @@
 ## 📸 预览
 
 <div align="center">
-  <img src="./assets/preview.png" alt="gitx-tui preview" width="100%" style="border-radius: 8px;">
+  <img src="./assets/images/preview.png" alt="gitx-tui preview" width="100%" style="border-radius: 8px;">
 </div>
 
 ---
@@ -72,7 +72,7 @@ GitHub 侧覆盖仓库、收藏、搜索、账号额度、仓库详情和 Action
 
 - **扫描目录**：`gxt md [目录或文件]` 递归读取当前目录和子目录里的 `.md` / `.markdown` / `.mdx`，自动跳过 `.git`、`target`、`node_modules` 等目录。
 - **实时预览**：左侧挑文件，右侧直接渲染标题、列表、代码块、表格和引用；`Enter` 打开并进入预览。
-- **富文本渲染**：粗体 / 斜体 / 行内代码 / 链接 / 删除线、任务清单勾选框、`[!NOTE]` 等提示块、带边框和基础语法高亮的代码块、表格表头高亮。
+- **富文本渲染**：渐变标题、粗体 / 斜体 / 行内代码 / 链接 / 删除线、任务清单勾选框和完成进度条、`[!NOTE]` 等提示块、带语言标签和语法高亮的全宽代码卡片、表格表头高亮与斑马纹；图片显示为带图标的 `图片 路径` 标签，shields 徽章自动隐藏。
 - **文档搜索**：`Ctrl+F` 搜当前文档，`Enter` 确认，`n` / `N` 跳下一处 / 上一处，命中文字高亮，`Esc` 清掉搜索。
 - **大纲跳转**：`Tab` 切到大纲，按标题层级挑，`Enter` 跳到对应段落。
 - **阅读增强**：`m` 切源码，`F` 全屏，`g/G` 首尾，`PgUp/PgDn` 翻页，标题栏显示阅读进度。

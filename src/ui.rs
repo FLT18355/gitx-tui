@@ -6176,19 +6176,26 @@ fn inline_segments(text: &str, base: Style, theme: &Theme) -> Vec<(String, Style
         }
         if ch == '!'
             && chars.get(index + 1) == Some(&'[')
-            && let Some((_, _, next)) = parse_link(&chars, index + 1)
+            && let Some((alt, url, next)) = parse_link(&chars, index + 1)
         {
+            flush_plain(&mut out, &mut plain, base);
+            push_image_chip(&mut out, &alt, &url, base, theme);
             index = next;
             continue;
         }
         if ch == '['
-            && let Some((label, _url, next)) = parse_link(&chars, index)
+            && let Some((label, url, next)) = parse_link(&chars, index)
         {
             flush_plain(&mut out, &mut plain, base);
             let style = base
                 .fg(theme.color("blue"))
                 .add_modifier(Modifier::UNDERLINED);
-            out.extend(inline_segments(&label, style, theme));
+            let inner = inline_segments(&label, style, theme);
+            let has_text = inner.iter().any(|(text, _)| !text.trim().is_empty());
+            out.extend(inner);
+            if has_text && (url.starts_with("http://") || url.starts_with("https://")) {
+                out.push((" ↗".to_string(), base.fg(theme.color("blue"))));
+            }
             index = next;
             continue;
         }
@@ -6200,7 +6207,7 @@ fn inline_segments(text: &str, base: Style, theme: &Theme) -> Vec<(String, Style
             flush_plain(&mut out, &mut plain, base);
             if !code.is_empty() {
                 out.push((
-                    code,
+                    format!(" {code} "),
                     base.fg(theme.color("green")).bg(theme.color("surface0")),
                 ));
             }
@@ -6222,6 +6229,8 @@ fn inline_segments(text: &str, base: Style, theme: &Theme) -> Vec<(String, Style
                     base.fg(theme.color("blue"))
                         .add_modifier(Modifier::UNDERLINED),
                 ));
+            } else if let Some(src) = html_image_source(&inner) {
+                push_image_chip(&mut out, "", &src, base, theme);
             }
             index = end + 1;
             continue;
@@ -6283,6 +6292,73 @@ fn inline_segments(text: &str, base: Style, theme: &Theme) -> Vec<(String, Style
     }
     flush_plain(&mut out, &mut plain, base);
     out
+}
+
+fn push_image_chip(
+    out: &mut Vec<(String, Style)>,
+    alt: &str,
+    url: &str,
+    base: Style,
+    theme: &Theme,
+) {
+    if is_badge_url(url) {
+        return;
+    }
+    let label = alt.trim();
+    let text = if label.is_empty() {
+        if url.starts_with("http") {
+            "图片".to_string()
+        } else {
+            format!("图片 {url}")
+        }
+    } else {
+        format!("图片 {label}")
+    };
+    out.push((
+        format!(" {} {text} ", icons::IMAGE),
+        base.fg(theme.color("mauve")).bg(theme.color("surface0")),
+    ));
+}
+
+fn is_badge_url(url: &str) -> bool {
+    let lower = url.to_ascii_lowercase();
+    [
+        "img.shields.io",
+        "shields.io",
+        "badgen.net",
+        "badge",
+        "travis-ci",
+        "codecov",
+        "coveralls",
+        "cirrus-ci",
+    ]
+    .iter()
+    .any(|marker| lower.contains(marker))
+}
+
+fn html_image_source(tag: &str) -> Option<String> {
+    let lower = tag.to_ascii_lowercase();
+    if !lower.trim_start().starts_with("img") {
+        return None;
+    }
+    let start = lower.find("src")?;
+    let rest = tag.get(start + 3..)?;
+    let equal = rest.find('=')?;
+    let value = rest.get(equal + 1..)?.trim_start();
+    let quote = value.chars().next()?;
+    if quote == '"' || quote == '\'' {
+        let end = value.get(1..)?.find(quote)?;
+        Some(value.get(1..1 + end)?.to_string())
+    } else {
+        Some(
+            value
+                .split_whitespace()
+                .next()
+                .unwrap_or_default()
+                .trim_end_matches('>')
+                .to_string(),
+        )
+    }
 }
 
 fn flush_plain(out: &mut Vec<(String, Style)>, plain: &mut String, style: Style) {
@@ -6362,6 +6438,82 @@ fn parse_link(chars: &[char], start: usize) -> Option<(String, String, usize)> {
         return None;
     }
     Some((label, url, cursor + 1))
+}
+
+fn color_mix(start: Color, end: Color, t: f32) -> Color {
+    let (Color::Rgb(sr, sg, sb), Color::Rgb(er, eg, eb)) = (start, end) else {
+        return start;
+    };
+    let mix = |a: u8, b: u8| (a as f32 + (b as f32 - a as f32) * t) as u8;
+    Color::Rgb(mix(sr, er), mix(sg, eg), mix(sb, eb))
+}
+
+fn gradient_chars(count: usize, glyph: &str, start: Color, end: Color) -> Vec<Span<'static>> {
+    if count == 0 {
+        return Vec::new();
+    }
+    let denominator = count.saturating_sub(1).max(1) as f32;
+    (0..count)
+        .map(|index| {
+            let t = index as f32 / denominator;
+            Span::styled(
+                glyph.to_string(),
+                Style::default().fg(color_mix(start, end, t)),
+            )
+        })
+        .collect()
+}
+
+fn gradient_line(count: usize, glyph: &str, start: Color, end: Color) -> Line<'static> {
+    Line::from(gradient_chars(count.max(1), glyph, start, end))
+}
+
+fn gradient_segments(
+    segments: &[(String, Style)],
+    start: Color,
+    end: Color,
+) -> Vec<(String, Style)> {
+    let total = segments
+        .iter()
+        .map(|(text, _)| text.chars().count())
+        .sum::<usize>()
+        .max(1);
+    let mut out = Vec::new();
+    let mut index = 0;
+    for (text, style) in segments {
+        for ch in text.chars() {
+            let t = if total > 1 {
+                index as f32 / (total - 1) as f32
+            } else {
+                0.0
+            };
+            out.push((ch.to_string(), style.fg(color_mix(start, end, t))));
+            index += 1;
+        }
+    }
+    out
+}
+
+fn horizontal_rule(width: usize, theme: &Theme) -> Line<'static> {
+    if width < 12 {
+        return gradient_line(width, "─", theme.color("overlay0"), theme.color("surface2"));
+    }
+    let left = (width - 3) / 2;
+    let right = width - 3 - left;
+    let mut spans = gradient_chars(left, "─", theme.color("overlay0"), theme.color("surface2"));
+    spans.push(Span::styled(
+        " ◆ ",
+        Style::default()
+            .fg(theme.color("pink"))
+            .add_modifier(Modifier::BOLD),
+    ));
+    spans.extend(gradient_chars(
+        right,
+        "─",
+        theme.color("surface2"),
+        theme.color("overlay0"),
+    ));
+    Line::from(spans)
 }
 
 fn wrap_styled(
@@ -6564,6 +6716,82 @@ fn code_segments(line: &str, lang: &str, theme: &Theme) -> Vec<(String, Style)> 
     out
 }
 
+fn task_check(line: &str) -> Option<bool> {
+    let line = line.trim_start();
+    for (prefix, done) in [
+        ("- [x] ", true),
+        ("* [x] ", true),
+        ("- [X] ", true),
+        ("* [X] ", true),
+        ("- [ ] ", false),
+        ("* [ ] ", false),
+    ] {
+        if line.starts_with(prefix) {
+            return Some(done);
+        }
+    }
+    None
+}
+
+fn task_progress_line(done: usize, total: usize, width: usize, theme: &Theme) -> Line<'static> {
+    if width < 24 {
+        return Line::from(vec![
+            Span::styled(
+                format!("{} ", icons::CHECK_SQUARE),
+                Style::default().fg(theme.color("green")),
+            ),
+            Span::styled(
+                format!("任务 {done}/{total}"),
+                Style::default().fg(theme.color("subtext0")),
+            ),
+        ]);
+    }
+    let bar = width.saturating_sub(22).clamp(4, 20);
+    let filled = (done * bar).checked_div(total).unwrap_or(0);
+    let mut spans = vec![
+        Span::styled(
+            format!("{} ", icons::CHECK_SQUARE),
+            Style::default().fg(theme.color("green")),
+        ),
+        Span::styled("任务 ", Style::default().fg(theme.color("subtext0"))),
+        Span::styled(
+            format!("{done}/{total} "),
+            Style::default()
+                .fg(theme.color("text"))
+                .add_modifier(Modifier::BOLD),
+        ),
+    ];
+    spans.extend(gradient_chars(
+        filled,
+        "█",
+        theme.color("green"),
+        theme.color("teal"),
+    ));
+    spans.push(Span::styled(
+        "░".repeat(bar - filled),
+        Style::default().fg(theme.color("surface2")),
+    ));
+    let percent = (done * 100).checked_div(total).unwrap_or(0);
+    spans.push(Span::styled(
+        format!(" {percent}%"),
+        Style::default().fg(theme.color("overlay0")),
+    ));
+    Line::from(spans)
+}
+
+fn code_accent(lang: &str, theme: &Theme) -> Color {
+    match lang.to_ascii_lowercase().as_str() {
+        "rust" => theme.color("peach"),
+        "py" | "python" => theme.color("blue"),
+        "js" | "javascript" | "ts" | "typescript" => theme.color("yellow"),
+        "sh" | "bash" | "zsh" | "console" => theme.color("green"),
+        "json" | "toml" | "yaml" | "yml" => theme.color("lavender"),
+        "sql" => theme.color("mauve"),
+        "html" | "css" => theme.color("sapphire"),
+        _ => theme.color("blue"),
+    }
+}
+
 fn is_code_keyword(word: &str) -> bool {
     matches!(
         word,
@@ -6675,6 +6903,15 @@ pub(crate) fn markdown_lines(text: &str, width: usize, theme: &Theme) -> Vec<Lin
     let width = width.max(10);
     let mut out: Vec<Line<'static>> = Vec::new();
     let lines: Vec<&str> = text.lines().collect();
+    let mut done = 0;
+    let mut total = 0;
+    for line in &lines {
+        if let Some(state) = task_check(line) {
+            total += 1;
+            done += usize::from(state);
+        }
+    }
+    let mut task_banner = false;
     let mut index = 0;
     while index < lines.len() && out.len() < 4000 {
         let raw = lines[index].trim_end();
@@ -6704,39 +6941,53 @@ pub(crate) fn markdown_lines(text: &str, width: usize, theme: &Theme) -> Vec<Lin
         };
         if let Some(fence) = fence {
             let lang = trimmed.trim_start_matches(['`', '~']).trim().to_string();
+            let accent = code_accent(&lang, theme);
             let label = if lang.is_empty() {
                 " code ".to_string()
             } else {
                 format!(" {lang} ")
             };
+            let label = format::truncate(&label, width.saturating_sub(2));
             let label_width = format::text_width(&label);
-            out.push(Line::from(vec![
-                Span::styled("╭─", Style::default().fg(theme.color("surface2"))),
-                Span::styled(
-                    label,
-                    Style::default()
-                        .fg(theme.color("blue"))
-                        .add_modifier(Modifier::BOLD),
-                ),
-                Span::styled(
-                    "─".repeat(width.saturating_sub(label_width + 3)),
-                    Style::default().fg(theme.color("surface2")),
-                ),
-            ]));
+            let card_bg = Style::default().bg(theme.color("surface0"));
+            let mut top = vec![
+                Span::styled("╭", Style::default().fg(theme.color("surface2"))),
+                Span::styled(label, card_bg.fg(accent).add_modifier(Modifier::BOLD)),
+            ];
+            top.extend(gradient_chars(
+                width.saturating_sub(label_width + 2),
+                "─",
+                accent,
+                theme.color("mauve"),
+            ));
+            top.push(Span::styled(
+                "╮",
+                Style::default().fg(theme.color("surface2")),
+            ));
+            out.push(Line::from(top));
             index += 1;
             let mut count = 0;
             while index < lines.len() && !lines[index].trim_start().starts_with(fence) {
                 let source = lines[index].replace('\t', "    ");
-                let segments = code_segments(&source, &lang, theme);
-                for (row, chunk) in wrap_styled(&segments, width.saturating_sub(2), 40)
-                    .into_iter()
-                    .enumerate()
-                {
-                    let mut spans = vec![Span::styled(
-                        if row == 0 { "│ " } else { "  " },
-                        Style::default().fg(theme.color("surface2")),
-                    )];
-                    spans.extend(chunk);
+                let mut segments = code_segments(&source, &lang, theme);
+                for (_, style) in segments.iter_mut() {
+                    *style = style.bg(theme.color("surface0"));
+                }
+                for chunk in wrap_styled(&segments, width.saturating_sub(3), 40) {
+                    let mut spans = vec![
+                        Span::styled("│", card_bg.fg(accent)),
+                        Span::styled(" ", card_bg),
+                    ];
+                    let mut used = 2usize;
+                    for span in chunk {
+                        used += format::text_width(&span.content);
+                        spans.push(span);
+                    }
+                    spans.push(Span::styled(
+                        " ".repeat(width.saturating_sub(used + 1)),
+                        card_bg,
+                    ));
+                    spans.push(Span::styled("│", card_bg.fg(theme.color("surface2"))));
                     out.push(Line::from(spans));
                 }
                 index += 1;
@@ -6748,10 +6999,21 @@ pub(crate) fn markdown_lines(text: &str, width: usize, theme: &Theme) -> Vec<Lin
             if index < lines.len() && lines[index].trim_start().starts_with(fence) {
                 index += 1;
             }
-            out.push(Line::from(Span::styled(
-                format!("╰{}", "─".repeat(width.saturating_sub(1))),
+            let mut bottom = vec![Span::styled(
+                "╰",
                 Style::default().fg(theme.color("surface2")),
-            )));
+            )];
+            bottom.extend(gradient_chars(
+                width.saturating_sub(2),
+                "─",
+                accent,
+                theme.color("mauve"),
+            ));
+            bottom.push(Span::styled(
+                "╯",
+                Style::default().fg(theme.color("surface2")),
+            ));
+            out.push(Line::from(bottom));
             out.push(Line::default());
             continue;
         }
@@ -6773,10 +7035,7 @@ pub(crate) fn markdown_lines(text: &str, width: usize, theme: &Theme) -> Vec<Lin
             continue;
         }
         if is_horizontal_rule(trimmed) {
-            out.push(Line::from(Span::styled(
-                "─".repeat(width),
-                Style::default().fg(theme.color("surface1")),
-            )));
+            out.push(horizontal_rule(width, theme));
             index += 1;
             continue;
         }
@@ -6849,27 +7108,30 @@ pub(crate) fn markdown_lines(text: &str, width: usize, theme: &Theme) -> Vec<Lin
         }
         if let Some(level) = heading_level(trimmed) {
             let text = trimmed[level..].trim().trim_end_matches('#').trim_end();
-            let (color, prefix, rule) = match level {
+            let (start, end, prefix, rule) = match level {
                 1 => (
                     theme.color("blue"),
+                    theme.color("mauve"),
                     vec![Span::styled(
                         "▌ ",
                         Style::default()
                             .fg(theme.color("blue"))
                             .add_modifier(Modifier::BOLD),
                     )],
-                    Some(("━", theme.color("blue"), width.min(80))),
+                    Some(("━", width.min(90), true)),
                 ),
                 2 => (
                     theme.color("lavender"),
+                    theme.color("teal"),
                     vec![Span::styled(
                         "▎ ",
                         Style::default().fg(theme.color("mauve")),
                     )],
-                    Some(("─", theme.color("surface2"), width.min(60))),
+                    Some(("─", width.min(60), false)),
                 ),
                 3 => (
                     theme.color("peach"),
+                    theme.color("yellow"),
                     vec![Span::styled(
                         "▍ ",
                         Style::default().fg(theme.color("peach")),
@@ -6878,6 +7140,7 @@ pub(crate) fn markdown_lines(text: &str, width: usize, theme: &Theme) -> Vec<Lin
                 ),
                 _ => (
                     theme.color("subtext0"),
+                    theme.color("overlay1"),
                     vec![
                         Span::raw("  "),
                         Span::styled("· ", Style::default().fg(theme.color("overlay0"))),
@@ -6885,18 +7148,27 @@ pub(crate) fn markdown_lines(text: &str, width: usize, theme: &Theme) -> Vec<Lin
                     None,
                 ),
             };
-            let style = Style::default().fg(color).add_modifier(if level <= 3 {
+            let style = Style::default().fg(start).add_modifier(if level <= 3 {
                 Modifier::BOLD
             } else {
                 Modifier::empty()
             });
-            let segments = inline_segments(text, style, theme);
+            let mut segments = inline_segments(text, style, theme);
+            if level <= 3 {
+                segments = gradient_segments(&segments, start, end);
+            }
             out.extend(prefixed_lines(&prefix, &segments, width, 8));
-            if let Some((ch, rule_color, rule_width)) = rule {
-                out.push(Line::from(Span::styled(
-                    ch.repeat(rule_width),
-                    Style::default().fg(rule_color),
-                )));
+            if let Some((glyph, rule_width, strong)) = rule {
+                if strong {
+                    out.push(gradient_line(rule_width, glyph, start, end));
+                } else {
+                    out.push(gradient_line(
+                        rule_width,
+                        glyph,
+                        theme.color("surface2"),
+                        theme.color("overlay0"),
+                    ));
+                }
             } else {
                 out.push(Line::default());
             }
@@ -6909,6 +7181,10 @@ pub(crate) fn markdown_lines(text: &str, width: usize, theme: &Theme) -> Vec<Lin
             let marker_text = marker.trim();
             let task = marker_text == "[ ]" || marker_text == "[x]";
             let text_style = if task {
+                if !task_banner {
+                    out.push(task_progress_line(done, total, width, theme));
+                    task_banner = true;
+                }
                 let done = marker_text == "[x]";
                 prefix.push(Span::styled(
                     format!(
@@ -6939,10 +7215,23 @@ pub(crate) fn markdown_lines(text: &str, width: usize, theme: &Theme) -> Vec<Lin
                     3 => theme.color("peach"),
                     _ => theme.color("overlay1"),
                 };
-                prefix.push(Span::styled(
-                    marker,
-                    Style::default().fg(color).add_modifier(Modifier::BOLD),
-                ));
+                if marker_text == "•" {
+                    let glyph = match level {
+                        0 => "●",
+                        1 => "○",
+                        2 => "▪",
+                        _ => "·",
+                    };
+                    prefix.push(Span::styled(
+                        format!("{glyph} "),
+                        Style::default().fg(color).add_modifier(Modifier::BOLD),
+                    ));
+                } else {
+                    prefix.push(Span::styled(
+                        marker,
+                        Style::default().fg(color).add_modifier(Modifier::BOLD),
+                    ));
+                }
                 Style::default().fg(theme.color("subtext0"))
             };
             let segments = inline_segments(rest, text_style, theme);
@@ -7210,8 +7499,13 @@ fn render_markdown_table(rows: &[&str], width: usize, theme: &Theme) -> Vec<Line
     let header_align = aligns.clone();
     out.extend(render_row(&header, &header_align, header_style));
     out.push(border("├", "┼", "┤"));
-    for row in &body {
-        out.extend(render_row(row, &aligns, cell_style));
+    for (index, row) in body.iter().enumerate() {
+        let style = if index % 2 == 1 {
+            cell_style.bg(theme.color("surface0"))
+        } else {
+            cell_style
+        };
+        out.extend(render_row(row, &aligns, style));
     }
     out.push(border("╰", "┴", "╯"));
     out
@@ -9029,6 +9323,20 @@ mod tests {
         assert!(spans.iter().any(|span| text(span).contains("TIP")));
         assert!(spans.iter().any(|span| text(span).contains("rust")));
         assert!(spans.iter().any(|span| text(span) == "main"));
+        assert!(lines.iter().all(|line| line.width() <= 80));
+        let tasks = markdown_lines("- [x] 完成\n- [ ] 未完成\n", 60, &theme);
+        let task_text: String = tasks
+            .iter()
+            .map(|line| {
+                line.spans
+                    .iter()
+                    .map(|span| span.content.as_ref())
+                    .collect::<String>()
+            })
+            .collect::<Vec<_>>()
+            .join(" ");
+        assert!(task_text.contains("任务 1/2"));
+        assert!(task_text.contains('█'));
         let code_span = spans
             .iter()
             .find(|span| span.content.contains("代码"))
@@ -9055,6 +9363,27 @@ mod tests {
         assert!(text.iter().filter(|line| line.starts_with("▎ ")).count() >= 2);
         assert!(text.iter().any(|line| line.contains(icons::CHECK_SQUARE)));
         assert!(text.iter().any(|line| line.contains(icons::SQUARE)));
+    }
+
+    #[test]
+    fn shows_markdown_image_chips_but_hides_badges() {
+        let paths = crate::config::Paths::for_test("missing".into(), "missing".into());
+        let theme = Theme::load(&paths, "mocha");
+        let markdown = "![预览](./assets/images/preview.png)\n\n[![badge](https://img.shields.io/x)](https://example.com)\n\n<img src=\"./assets/images/preview.png\" alt=\"x\">\n";
+        let lines = markdown_lines(markdown, 80, &theme);
+        let text = lines
+            .iter()
+            .map(|line| {
+                line.spans
+                    .iter()
+                    .map(|span| span.content.as_ref())
+                    .collect::<String>()
+            })
+            .collect::<Vec<_>>()
+            .join(" ");
+        assert!(text.contains("图片 预览"));
+        assert!(text.contains("图片 ./assets/images/preview.png"));
+        assert!(!text.contains("badge"));
     }
 
     #[test]
