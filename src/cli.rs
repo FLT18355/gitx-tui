@@ -21,6 +21,10 @@ pub enum Command {
         theme: Option<String>,
     },
     Release,
+    Md {
+        path: PathBuf,
+        theme: Option<String>,
+    },
     Settings {
         theme: Option<String>,
     },
@@ -106,6 +110,15 @@ where
         [] => Ok(Command::Github { theme }),
         [one] if one == "settings" => Ok(Command::Settings { theme }),
         [one] if one == "release" => Ok(Command::Release),
+        [one] if one == "md" => Ok(Command::Md {
+            path: path("."),
+            theme,
+        }),
+        [one, two] if one == "md" => Ok(Command::Md {
+            path: path(two),
+            theme,
+        }),
+        [one, ..] if one == "md" => Err("md 后面最多带一个目录或文件喵~".to_string()),
         [one, ..] if one == "settings" => Err("settings 后面不用带参数喵~".to_string()),
         [one, ..] if one == "release" => Err("release 后面不用带参数喵~".to_string()),
         [one] if one == "status" => Ok(Command::Status { path: path(".") }),
@@ -209,6 +222,7 @@ pub fn print_help() {
   gxt <路径> [--theme <主题>]      打开本地仓库 TUI喵~\n\
   gxt settings [--theme <主题>]    打开全局设置 TUI喵~\n\
   gxt release                      打开个人发行版发布 TUI喵~\n\
+  gxt md [目录或文件]              打开 Markdown 预览器喵~\n\
   gxt status [路径]                打印本地仓库状态喵~\n\
   gxt log [路径] [-n <条数>]       打印最近提交喵~\n\
   gxt tags [路径]                  打印标签喵~\n\
@@ -264,6 +278,15 @@ mod tests {
         assert!(matches!(
             parse(args(&["release"])).unwrap(),
             Command::Release
+        ));
+        assert!(matches!(
+            parse(args(&["md"])).unwrap(),
+            Command::Md { path, theme: None } if path == std::path::Path::new(".")
+        ));
+        assert!(matches!(
+            parse(args(&["md", "docs", "--theme", "latte"])).unwrap(),
+            Command::Md { path, theme: Some(theme) }
+                if path == std::path::Path::new("docs") && theme == "latte"
         ));
     }
 

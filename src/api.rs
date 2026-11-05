@@ -13,7 +13,7 @@ use std::process::Command;
 use std::time::{Duration, Instant};
 
 const API: &str = "https://api.github.com";
-const USER_AGENT: &str = "gxt/0.3.2";
+const USER_AGENT: &str = concat!("gxt/", env!("CARGO_PKG_VERSION"));
 
 #[derive(Clone)]
 pub struct ApiClient {

@@ -29,6 +29,14 @@ cargo build --release
 cargo install --path .
 ```
 
+仓库根目录带 `justfile`：
+
+```bash
+just            # 列出命令
+just check      # fmt-check + clippy + test
+just md ~/notes # 打开 Markdown 预览器
+```
+
 ## 测试
 
 ```bash
@@ -46,6 +54,8 @@ cargo clippy --all-targets -- -D warnings
 | `src/commands.rs` | status/log/tags/push/config/cache/doctor 一次性命令 |
 | `src/app.rs` | GitHub 页面状态、设置模式、Actions、议题、通知、缓存和键鼠事件 |
 | `src/release_tui.rs` | 独立的个人发行版发布 TUI |
+| `src/md_app.rs` | Markdown 预览器的扫描、筛选、大纲、按键与编辑器切换 |
+| `src/md_ui.rs` | Markdown 预览器渲染，复用 README 的 Markdown 渲染器 |
 | `src/ui.rs` | GitHub 工作台、议题/通知页与设置 TUI 渲染 |
 | `src/api.rs` | GitHub API、gh 凭据、代理、下载与工作流触发 |
 | `src/model.rs` | GitHub serde 数据结构 |

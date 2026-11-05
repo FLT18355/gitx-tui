@@ -6162,7 +6162,7 @@ fn file_icon(name: &str) -> &'static str {
     }
 }
 
-fn markdown_lines(text: &str, width: usize, theme: &Theme) -> Vec<Line<'static>> {
+pub(crate) fn markdown_lines(text: &str, width: usize, theme: &Theme) -> Vec<Line<'static>> {
     let width = width.max(10);
     let mut out: Vec<Line<'static>> = Vec::new();
     let lines: Vec<&str> = text.lines().collect();
@@ -6327,7 +6327,7 @@ fn markdown_lines(text: &str, width: usize, theme: &Theme) -> Vec<Line<'static>>
         }
     }
     if out.is_empty() {
-        out.push(Line::from("这个 README 空空的，人家什么也没读到喵~"));
+        out.push(Line::from("这里空空的，人家什么也没读到喵~"));
     }
     out
 }
@@ -6616,7 +6616,7 @@ fn strip_markdown_images(text: &str) -> String {
     out
 }
 
-fn strip_markdown_inline(text: &str) -> String {
+pub(crate) fn strip_markdown_inline(text: &str) -> String {
     let text = strip_markdown_images(text);
     let mut out = String::new();
     let mut chars = text.chars().peekable();

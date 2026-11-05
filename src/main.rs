@@ -11,6 +11,8 @@ mod local_app;
 mod local_git;
 mod local_ops;
 mod local_ui;
+mod md_app;
+mod md_ui;
 mod model;
 mod release_tui;
 mod theme;
@@ -62,6 +64,7 @@ fn main() -> Result<()> {
         Command::Doctor => return finish(commands::doctor()),
         command @ (Command::Github { .. }
         | Command::Release
+        | Command::Md { .. }
         | Command::Settings { .. }
         | Command::Local { .. }) => command,
     };
@@ -77,6 +80,7 @@ fn main() -> Result<()> {
             run(&mut terminal, &mut app)
         }
         Command::Release => release_tui::run(&mut terminal),
+        Command::Md { path, theme } => md_app::run(&mut terminal, &path, theme),
         Command::Settings { theme } => {
             let mut app = App::settings(paths, theme);
             run(&mut terminal, &mut app)
