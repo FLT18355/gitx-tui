@@ -6162,12 +6162,521 @@ fn file_icon(name: &str) -> &'static str {
     }
 }
 
+fn inline_segments(text: &str, base: Style, theme: &Theme) -> Vec<(String, Style)> {
+    let chars: Vec<char> = text.chars().collect();
+    let mut out: Vec<(String, Style)> = Vec::new();
+    let mut plain = String::new();
+    let mut index = 0;
+    while index < chars.len() {
+        let ch = chars[index];
+        if ch == '\\' && index + 1 < chars.len() {
+            plain.push(chars[index + 1]);
+            index += 2;
+            continue;
+        }
+        if ch == '!'
+            && chars.get(index + 1) == Some(&'[')
+            && let Some((_, _, next)) = parse_link(&chars, index + 1)
+        {
+            index = next;
+            continue;
+        }
+        if ch == '['
+            && let Some((label, _url, next)) = parse_link(&chars, index)
+        {
+            flush_plain(&mut out, &mut plain, base);
+            let style = base
+                .fg(theme.color("blue"))
+                .add_modifier(Modifier::UNDERLINED);
+            out.extend(inline_segments(&label, style, theme));
+            index = next;
+            continue;
+        }
+        if ch == '`'
+            && let Some(end) = chars[index + 1..].iter().position(|item| *item == '`')
+        {
+            let end = index + 1 + end;
+            let code: String = chars[index + 1..end].iter().collect();
+            flush_plain(&mut out, &mut plain, base);
+            if !code.is_empty() {
+                out.push((
+                    code,
+                    base.fg(theme.color("green")).bg(theme.color("surface0")),
+                ));
+            }
+            index = end + 1;
+            continue;
+        }
+        if ch == '<'
+            && let Some(end) = chars[index + 1..].iter().position(|item| *item == '>')
+        {
+            let end = index + 1 + end;
+            let inner: String = chars[index + 1..end].iter().collect();
+            flush_plain(&mut out, &mut plain, base);
+            if inner.starts_with("http://")
+                || inner.starts_with("https://")
+                || inner.starts_with("mailto:")
+            {
+                out.push((
+                    inner,
+                    base.fg(theme.color("blue"))
+                        .add_modifier(Modifier::UNDERLINED),
+                ));
+            }
+            index = end + 1;
+            continue;
+        }
+        if ch == '*' || ch == '_' {
+            let double = chars.get(index + 1) == Some(&ch);
+            let marker_len = if double { 2 } else { 1 };
+            let after_word = index > 0 && chars[index - 1].is_alphanumeric();
+            if !(ch == '_' && after_word)
+                && let Some(end) = find_marker(&chars, index + marker_len, marker_len, ch)
+                && end > index + marker_len
+            {
+                let inner: String = chars[index + marker_len..end].iter().collect();
+                flush_plain(&mut out, &mut plain, base);
+                let style = base.add_modifier(if double {
+                    Modifier::BOLD
+                } else {
+                    Modifier::ITALIC
+                });
+                out.extend(inline_segments(&inner, style, theme));
+                index = end + marker_len;
+                continue;
+            }
+        }
+        if ch == '~'
+            && chars.get(index + 1) == Some(&'~')
+            && let Some(end) = find_marker(&chars, index + 2, 2, '~')
+            && end > index + 2
+        {
+            let inner: String = chars[index + 2..end].iter().collect();
+            flush_plain(&mut out, &mut plain, base);
+            out.extend(inline_segments(
+                &inner,
+                base.add_modifier(Modifier::CROSSED_OUT),
+                theme,
+            ));
+            index = end + 2;
+            continue;
+        }
+        if ch == 'h'
+            && (starts_with(&chars, index, "https://") || starts_with(&chars, index, "http://"))
+        {
+            let mut end = index;
+            while end < chars.len() && !chars[end].is_whitespace() {
+                end += 1;
+            }
+            flush_plain(&mut out, &mut plain, base);
+            let url: String = chars[index..end].iter().collect();
+            out.push((
+                url,
+                base.fg(theme.color("blue"))
+                    .add_modifier(Modifier::UNDERLINED),
+            ));
+            index = end;
+            continue;
+        }
+        plain.push(if ch == '\t' { ' ' } else { ch });
+        index += 1;
+    }
+    flush_plain(&mut out, &mut plain, base);
+    out
+}
+
+fn flush_plain(out: &mut Vec<(String, Style)>, plain: &mut String, style: Style) {
+    if !plain.is_empty() {
+        out.push((std::mem::take(plain), style));
+    }
+}
+
+fn starts_with(chars: &[char], index: usize, needle: &str) -> bool {
+    needle
+        .chars()
+        .enumerate()
+        .all(|(offset, ch)| chars.get(index + offset) == Some(&ch))
+}
+
+fn find_marker(chars: &[char], from: usize, len: usize, mark: char) -> Option<usize> {
+    let mut index = from;
+    while index + len <= chars.len() {
+        if chars[index..index + len].iter().all(|ch| *ch == mark) {
+            return Some(index);
+        }
+        index += 1;
+    }
+    None
+}
+
+fn parse_link(chars: &[char], start: usize) -> Option<(String, String, usize)> {
+    if chars.get(start) != Some(&'[') {
+        return None;
+    }
+    let mut label = String::new();
+    let mut depth = 0usize;
+    let mut index = start;
+    while index < chars.len() {
+        match chars[index] {
+            '[' => {
+                depth += 1;
+                if depth > 1 {
+                    label.push('[');
+                }
+            }
+            ']' => {
+                depth -= 1;
+                if depth == 0 {
+                    break;
+                }
+                label.push(']');
+            }
+            _ => label.push(chars[index]),
+        }
+        index += 1;
+    }
+    if depth != 0 || chars.get(index + 1) != Some(&'(') {
+        return None;
+    }
+    let mut url = String::new();
+    let mut paren = 1usize;
+    let mut cursor = index + 2;
+    while cursor < chars.len() {
+        match chars[cursor] {
+            '(' => {
+                paren += 1;
+                url.push('(');
+            }
+            ')' => {
+                paren -= 1;
+                if paren == 0 {
+                    break;
+                }
+                url.push(')');
+            }
+            _ => url.push(chars[cursor]),
+        }
+        cursor += 1;
+    }
+    if paren != 0 {
+        return None;
+    }
+    Some((label, url, cursor + 1))
+}
+
+fn wrap_styled(
+    segments: &[(String, Style)],
+    width: usize,
+    max_lines: usize,
+) -> Vec<Vec<Span<'static>>> {
+    let width = width.max(4);
+    let mut lines: Vec<Vec<Span<'static>>> = vec![Vec::new()];
+    let mut used = 0usize;
+    for (text, style) in segments {
+        let mut chunk = String::new();
+        let mut space: Option<bool> = None;
+        for ch in text.chars() {
+            let is_space = ch == ' ' || ch == '\t';
+            if space.is_some_and(|state| state != is_space) {
+                emit_chunk(
+                    &mut lines,
+                    &mut used,
+                    &mut chunk,
+                    space == Some(true),
+                    *style,
+                    width,
+                );
+            }
+            if chunk.is_empty() {
+                space = Some(is_space);
+            }
+            chunk.push(ch);
+        }
+        if !chunk.is_empty() {
+            emit_chunk(
+                &mut lines,
+                &mut used,
+                &mut chunk,
+                space == Some(true),
+                *style,
+                width,
+            );
+        }
+    }
+    lines.truncate(max_lines.max(1));
+    lines
+}
+
+fn emit_chunk(
+    lines: &mut Vec<Vec<Span<'static>>>,
+    used: &mut usize,
+    chunk: &mut String,
+    is_space: bool,
+    style: Style,
+    width: usize,
+) {
+    let text = std::mem::take(chunk);
+    let chunk_width = format::text_width(&text);
+    if is_space {
+        if *used == 0 || *used + chunk_width > width {
+            return;
+        }
+        lines.last_mut().unwrap().push(Span::styled(text, style));
+        *used += chunk_width;
+        return;
+    }
+    if *used > 0 && *used + chunk_width > width {
+        lines.push(Vec::new());
+        *used = 0;
+    }
+    if chunk_width > width {
+        for ch in text.chars() {
+            let char_width = format::text_width(&ch.to_string());
+            if *used + char_width > width && *used > 0 {
+                lines.push(Vec::new());
+                *used = 0;
+            }
+            lines
+                .last_mut()
+                .unwrap()
+                .push(Span::styled(ch.to_string(), style));
+            *used += char_width;
+        }
+        return;
+    }
+    lines.last_mut().unwrap().push(Span::styled(text, style));
+    *used += chunk_width;
+}
+
+fn prefixed_lines(
+    prefix: &[Span<'static>],
+    segments: &[(String, Style)],
+    width: usize,
+    max_lines: usize,
+) -> Vec<Line<'static>> {
+    let prefix_width = prefix
+        .iter()
+        .map(|span| format::text_width(&span.content))
+        .sum::<usize>();
+    let body_width = width.saturating_sub(prefix_width).max(4);
+    let wrapped = wrap_styled(segments, body_width, max_lines);
+    let indent = " ".repeat(prefix_width);
+    wrapped
+        .into_iter()
+        .enumerate()
+        .map(|(row, spans)| {
+            let mut line = if row == 0 {
+                prefix.to_vec()
+            } else {
+                vec![Span::raw(indent.clone())]
+            };
+            line.extend(spans);
+            Line::from(line)
+        })
+        .collect()
+}
+
+fn code_segments(line: &str, lang: &str, theme: &Theme) -> Vec<(String, Style)> {
+    let lang = lang.to_ascii_lowercase();
+    let comment = match lang.as_str() {
+        "sh" | "bash" | "zsh" | "py" | "python" | "toml" | "yaml" | "yml" | "ruby" => "#",
+        "sql" | "lua" | "haskell" => "--",
+        _ => "//",
+    };
+    let base = Style::default().fg(theme.color("subtext1"));
+    let comment_style = base
+        .fg(theme.color("overlay0"))
+        .add_modifier(Modifier::ITALIC);
+    let string_style = base.fg(theme.color("green"));
+    let number_style = base.fg(theme.color("peach"));
+    let keyword_style = base.fg(theme.color("mauve")).add_modifier(Modifier::BOLD);
+    let chars: Vec<char> = line.chars().collect();
+    let mut out: Vec<(String, Style)> = Vec::new();
+    let mut plain = String::new();
+    let mut index = 0;
+    while index < chars.len() {
+        if starts_with(&chars, index, comment) {
+            flush_plain(&mut out, &mut plain, base);
+            let rest: String = chars[index..].iter().collect();
+            out.push((rest, comment_style));
+            break;
+        }
+        let ch = chars[index];
+        if ch == '"' || ch == '\'' || ch == '`' {
+            flush_plain(&mut out, &mut plain, base);
+            let mut cursor = index + 1;
+            let mut text = String::new();
+            text.push(ch);
+            while cursor < chars.len() {
+                text.push(chars[cursor]);
+                if chars[cursor] == '\\' && cursor + 1 < chars.len() {
+                    cursor += 1;
+                    text.push(chars[cursor]);
+                } else if chars[cursor] == ch {
+                    cursor += 1;
+                    break;
+                }
+                cursor += 1;
+            }
+            out.push((text, string_style));
+            index = cursor;
+            continue;
+        }
+        if ch.is_ascii_digit() && (index == 0 || !chars[index - 1].is_alphanumeric()) {
+            flush_plain(&mut out, &mut plain, base);
+            let mut cursor = index;
+            let mut text = String::new();
+            while cursor < chars.len()
+                && (chars[cursor].is_ascii_alphanumeric() || matches!(chars[cursor], '.' | '_'))
+            {
+                text.push(chars[cursor]);
+                cursor += 1;
+            }
+            out.push((text, number_style));
+            index = cursor;
+            continue;
+        }
+        if ch.is_alphabetic() || ch == '_' {
+            flush_plain(&mut out, &mut plain, base);
+            let mut cursor = index;
+            let mut word = String::new();
+            while cursor < chars.len() && (chars[cursor].is_alphanumeric() || chars[cursor] == '_')
+            {
+                word.push(chars[cursor]);
+                cursor += 1;
+            }
+            let style = if is_code_keyword(&word.to_ascii_lowercase()) {
+                keyword_style
+            } else {
+                base
+            };
+            out.push((word, style));
+            index = cursor;
+            continue;
+        }
+        plain.push(ch);
+        index += 1;
+    }
+    flush_plain(&mut out, &mut plain, base);
+    if out.is_empty() {
+        out.push((String::new(), base));
+    }
+    out
+}
+
+fn is_code_keyword(word: &str) -> bool {
+    matches!(
+        word,
+        "fn" | "let"
+            | "mut"
+            | "pub"
+            | "use"
+            | "mod"
+            | "struct"
+            | "enum"
+            | "impl"
+            | "trait"
+            | "for"
+            | "while"
+            | "loop"
+            | "if"
+            | "else"
+            | "match"
+            | "return"
+            | "self"
+            | "async"
+            | "await"
+            | "move"
+            | "where"
+            | "const"
+            | "static"
+            | "type"
+            | "def"
+            | "class"
+            | "import"
+            | "from"
+            | "as"
+            | "try"
+            | "except"
+            | "finally"
+            | "with"
+            | "lambda"
+            | "pass"
+            | "raise"
+            | "in"
+            | "is"
+            | "not"
+            | "and"
+            | "or"
+            | "none"
+            | "true"
+            | "false"
+            | "null"
+            | "nil"
+            | "function"
+            | "var"
+            | "new"
+            | "this"
+            | "throw"
+            | "catch"
+            | "export"
+            | "default"
+            | "interface"
+            | "extends"
+            | "package"
+            | "func"
+            | "go"
+            | "defer"
+            | "select"
+            | "case"
+            | "switch"
+            | "break"
+            | "continue"
+            | "echo"
+            | "cd"
+            | "local"
+            | "then"
+            | "fi"
+            | "done"
+            | "do"
+            | "esac"
+            | "insert"
+            | "update"
+            | "delete"
+    )
+}
+
+fn heading_level(line: &str) -> Option<usize> {
+    let level = line.chars().take_while(|ch| *ch == '#').count();
+    ((1..=6).contains(&level) && line[level..].starts_with(' ')).then_some(level)
+}
+
+fn is_table_start(lines: &[&str], index: usize) -> bool {
+    lines[index].contains('|')
+        && lines
+            .get(index + 1)
+            .is_some_and(|next| is_table_separator(next))
+}
+
+fn is_block_start(lines: &[&str], index: usize) -> bool {
+    let candidate = lines[index].trim();
+    candidate.is_empty()
+        || candidate.starts_with("<!--")
+        || candidate.starts_with('>')
+        || heading_level(candidate).is_some()
+        || candidate.starts_with("```")
+        || candidate.starts_with("~~~")
+        || is_horizontal_rule(candidate)
+        || list_marker(candidate).is_some()
+        || is_table_start(lines, index)
+}
+
 pub(crate) fn markdown_lines(text: &str, width: usize, theme: &Theme) -> Vec<Line<'static>> {
     let width = width.max(10);
     let mut out: Vec<Line<'static>> = Vec::new();
     let lines: Vec<&str> = text.lines().collect();
     let mut index = 0;
-    while index < lines.len() && out.len() < 2000 {
+    while index < lines.len() && out.len() < 4000 {
         let raw = lines[index].trim_end();
         let trimmed = raw.trim_start();
         let indent = raw.len().saturating_sub(trimmed.len());
@@ -6194,23 +6703,55 @@ pub(crate) fn markdown_lines(text: &str, width: usize, theme: &Theme) -> Vec<Lin
             None
         };
         if let Some(fence) = fence {
+            let lang = trimmed.trim_start_matches(['`', '~']).trim().to_string();
+            let label = if lang.is_empty() {
+                " code ".to_string()
+            } else {
+                format!(" {lang} ")
+            };
+            let label_width = format::text_width(&label);
+            out.push(Line::from(vec![
+                Span::styled("╭─", Style::default().fg(theme.color("surface2"))),
+                Span::styled(
+                    label,
+                    Style::default()
+                        .fg(theme.color("blue"))
+                        .add_modifier(Modifier::BOLD),
+                ),
+                Span::styled(
+                    "─".repeat(width.saturating_sub(label_width + 3)),
+                    Style::default().fg(theme.color("surface2")),
+                ),
+            ]));
             index += 1;
+            let mut count = 0;
             while index < lines.len() && !lines[index].trim_start().starts_with(fence) {
-                let code = format::clean_text(lines[index].trim_end());
-                let chunks = if code.is_empty() {
-                    vec![String::new()]
-                } else {
-                    format::wrap_text(&code, width.saturating_sub(2), 40)
-                };
-                for chunk in chunks {
-                    out.push(Line::from(vec![
-                        Span::styled("│ ", Style::default().fg(theme.color("surface2"))),
-                        Span::styled(chunk, Style::default().fg(theme.color("overlay1"))),
-                    ]));
+                let source = lines[index].replace('\t', "    ");
+                let segments = code_segments(&source, &lang, theme);
+                for (row, chunk) in wrap_styled(&segments, width.saturating_sub(2), 40)
+                    .into_iter()
+                    .enumerate()
+                {
+                    let mut spans = vec![Span::styled(
+                        if row == 0 { "│ " } else { "  " },
+                        Style::default().fg(theme.color("surface2")),
+                    )];
+                    spans.extend(chunk);
+                    out.push(Line::from(spans));
                 }
                 index += 1;
+                count += 1;
+                if count >= 300 || out.len() >= 4000 {
+                    break;
+                }
             }
-            index += 1;
+            if index < lines.len() && lines[index].trim_start().starts_with(fence) {
+                index += 1;
+            }
+            out.push(Line::from(Span::styled(
+                format!("╰{}", "─".repeat(width.saturating_sub(1))),
+                Style::default().fg(theme.color("surface2")),
+            )));
             out.push(Line::default());
             continue;
         }
@@ -6239,37 +6780,122 @@ pub(crate) fn markdown_lines(text: &str, width: usize, theme: &Theme) -> Vec<Lin
             index += 1;
             continue;
         }
-        if let Some(quote) = trimmed.strip_prefix('>') {
-            let text = strip_markdown_inline(quote.trim_start());
-            for chunk in wrap_prefixed("│ ", &text, width, 30) {
-                out.push(Line::from(Span::styled(
-                    chunk,
-                    Style::default()
-                        .fg(theme.color("overlay1"))
-                        .add_modifier(Modifier::ITALIC),
-                )));
+        if trimmed.starts_with('>') {
+            let mut quote = Vec::new();
+            while index < lines.len() && lines[index].trim_start().starts_with('>') {
+                let content = lines[index]
+                    .trim_start()
+                    .trim_start_matches('>')
+                    .trim_start()
+                    .to_string();
+                quote.push(content);
+                index += 1;
             }
-            index += 1;
+            let first = quote.first().cloned().unwrap_or_default();
+            let callout = if first.starts_with("[!") && first.contains(']') {
+                let end = first.find(']').unwrap_or(2);
+                let label = first[2..end].to_ascii_uppercase();
+                let rest = first[end + 1..].trim().to_string();
+                Some((label, rest))
+            } else {
+                None
+            };
+            let style = Style::default()
+                .fg(theme.color("overlay1"))
+                .add_modifier(Modifier::ITALIC);
+            let (prefix, body) = if let Some((label, rest)) = callout {
+                let (icon, color) = match label.as_str() {
+                    "NOTE" => (icons::INFO, theme.color("blue")),
+                    "TIP" => (icons::FLAME, theme.color("green")),
+                    "IMPORTANT" => (icons::WARNING, theme.color("mauve")),
+                    "WARNING" => (icons::WARNING, theme.color("yellow")),
+                    _ => (icons::WARNING, theme.color("red")),
+                };
+                let prefix = vec![Span::styled(
+                    "┃ ",
+                    Style::default().fg(color).add_modifier(Modifier::BOLD),
+                )];
+                out.push(Line::from(vec![
+                    prefix[0].clone(),
+                    Span::styled(
+                        format!(" {icon} {label} "),
+                        Style::default()
+                            .fg(theme.color("base"))
+                            .bg(color)
+                            .add_modifier(Modifier::BOLD),
+                    ),
+                ]));
+                if !rest.is_empty() {
+                    let segments = inline_segments(&rest, style, theme);
+                    out.extend(prefixed_lines(&prefix, &segments, width, 10));
+                }
+                quote.remove(0);
+                (prefix, quote)
+            } else {
+                (
+                    vec![Span::styled(
+                        "▎ ",
+                        Style::default().fg(theme.color("overlay0")),
+                    )],
+                    quote,
+                )
+            };
+            for line in body.iter().filter(|line| !line.is_empty()) {
+                let segments = inline_segments(line, style, theme);
+                out.extend(prefixed_lines(&prefix, &segments, width, 30));
+            }
+            out.push(Line::default());
             continue;
         }
-        let heading_level = trimmed.chars().take_while(|ch| *ch == '#').count();
-        if (1..=6).contains(&heading_level) && trimmed[heading_level..].starts_with(' ') {
-            let text = strip_markdown_inline(trimmed[heading_level..].trim());
-            let prefix = if heading_level == 1 { "▌ " } else { "" };
-            let style = Style::default()
-                .fg(if heading_level <= 2 {
-                    theme.color("blue")
-                } else {
-                    theme.color("peach")
-                })
-                .add_modifier(Modifier::BOLD);
-            for chunk in wrap_prefixed(prefix, &text, width, 6) {
-                out.push(Line::from(Span::styled(chunk, style)));
-            }
-            if heading_level <= 2 {
+        if let Some(level) = heading_level(trimmed) {
+            let text = trimmed[level..].trim().trim_end_matches('#').trim_end();
+            let (color, prefix, rule) = match level {
+                1 => (
+                    theme.color("blue"),
+                    vec![Span::styled(
+                        "▌ ",
+                        Style::default()
+                            .fg(theme.color("blue"))
+                            .add_modifier(Modifier::BOLD),
+                    )],
+                    Some(("━", theme.color("blue"), width.min(80))),
+                ),
+                2 => (
+                    theme.color("lavender"),
+                    vec![Span::styled(
+                        "▎ ",
+                        Style::default().fg(theme.color("mauve")),
+                    )],
+                    Some(("─", theme.color("surface2"), width.min(60))),
+                ),
+                3 => (
+                    theme.color("peach"),
+                    vec![Span::styled(
+                        "▍ ",
+                        Style::default().fg(theme.color("peach")),
+                    )],
+                    None,
+                ),
+                _ => (
+                    theme.color("subtext0"),
+                    vec![
+                        Span::raw("  "),
+                        Span::styled("· ", Style::default().fg(theme.color("overlay0"))),
+                    ],
+                    None,
+                ),
+            };
+            let style = Style::default().fg(color).add_modifier(if level <= 3 {
+                Modifier::BOLD
+            } else {
+                Modifier::empty()
+            });
+            let segments = inline_segments(text, style, theme);
+            out.extend(prefixed_lines(&prefix, &segments, width, 8));
+            if let Some((ch, rule_color, rule_width)) = rule {
                 out.push(Line::from(Span::styled(
-                    "─".repeat(width.min(40)),
-                    Style::default().fg(theme.color("surface1")),
+                    ch.repeat(rule_width),
+                    Style::default().fg(rule_color),
                 )));
             } else {
                 out.push(Line::default());
@@ -6279,77 +6905,88 @@ pub(crate) fn markdown_lines(text: &str, width: usize, theme: &Theme) -> Vec<Lin
         }
         if let Some((marker, rest)) = list_marker(trimmed) {
             let level = (indent / 2).min(6);
-            let pad = "  ".repeat(level);
-            let text = strip_markdown_inline(rest);
-            let prefix = format!("{pad}{marker}");
-            for chunk in wrap_prefixed(&prefix, &text, width, 20) {
-                out.push(Line::from(Span::styled(
-                    chunk,
-                    Style::default().fg(theme.color("subtext0")),
-                )));
-            }
+            let mut prefix = vec![Span::raw("  ".repeat(level))];
+            let marker_text = marker.trim();
+            let task = marker_text == "[ ]" || marker_text == "[x]";
+            let text_style = if task {
+                let done = marker_text == "[x]";
+                prefix.push(Span::styled(
+                    format!(
+                        "{} ",
+                        if done {
+                            icons::CHECK_SQUARE
+                        } else {
+                            icons::SQUARE
+                        }
+                    ),
+                    Style::default().fg(if done {
+                        theme.color("green")
+                    } else {
+                        theme.color("overlay0")
+                    }),
+                ));
+                if done {
+                    Style::default()
+                        .fg(theme.color("overlay0"))
+                        .add_modifier(Modifier::CROSSED_OUT)
+                } else {
+                    Style::default().fg(theme.color("subtext0"))
+                }
+            } else {
+                let color = match level + 1 {
+                    1 => theme.color("blue"),
+                    2 => theme.color("mauve"),
+                    3 => theme.color("peach"),
+                    _ => theme.color("overlay1"),
+                };
+                prefix.push(Span::styled(
+                    marker,
+                    Style::default().fg(color).add_modifier(Modifier::BOLD),
+                ));
+                Style::default().fg(theme.color("subtext0"))
+            };
+            let segments = inline_segments(rest, text_style, theme);
+            out.extend(prefixed_lines(&prefix, &segments, width, 40));
             index += 1;
             continue;
         }
 
         let mut paragraph = String::new();
         while index < lines.len() {
-            let candidate = lines[index].trim();
             let first = paragraph.is_empty();
-            if !first
-                && (candidate.is_empty()
-                    || candidate.starts_with("<!--")
-                    || candidate.starts_with('>')
-                    || candidate.starts_with('#')
-                    || candidate.starts_with("```")
-                    || candidate.starts_with("~~~")
-                    || candidate.contains('|')
-                    || is_horizontal_rule(candidate)
-                    || list_marker(candidate).is_some())
-            {
+            if !first && is_block_start(&lines, index) {
                 break;
             }
+            let candidate = lines[index].trim();
             if !first {
                 paragraph.push(' ');
             }
             paragraph.push_str(candidate);
             index += 1;
         }
-        let clean = strip_markdown_inline(&paragraph);
-        if clean.is_empty() {
+        let segments = inline_segments(
+            &paragraph,
+            Style::default().fg(theme.color("subtext0")),
+            theme,
+        );
+        if segments.iter().all(|(text, _)| text.trim().is_empty()) {
             continue;
         }
-        for chunk in format::wrap_text(&clean, width, 60) {
-            out.push(Line::from(Span::styled(
-                chunk,
-                Style::default().fg(theme.color("subtext0")),
-            )));
-        }
+        out.extend(prefixed_lines(&[], &segments, width, 60));
+    }
+    if out.len() >= 4000 && index < lines.len() {
+        out.push(Line::default());
+        out.push(Line::from(Span::styled(
+            "…… 内容太长啦，后面省略喵~",
+            Style::default()
+                .fg(theme.color("overlay0"))
+                .add_modifier(Modifier::ITALIC),
+        )));
     }
     if out.is_empty() {
         out.push(Line::from("这里空空的，人家什么也没读到喵~"));
     }
     out
-}
-
-fn wrap_prefixed(prefix: &str, text: &str, width: usize, max_lines: usize) -> Vec<String> {
-    let prefix_width = format::text_width(prefix);
-    let body_width = width.saturating_sub(prefix_width).max(4);
-    let chunks = format::wrap_text(text, body_width, max_lines);
-    if chunks.is_empty() {
-        return vec![prefix.to_string()];
-    }
-    chunks
-        .into_iter()
-        .enumerate()
-        .map(|(line, chunk)| {
-            if line == 0 {
-                format!("{prefix}{chunk}")
-            } else {
-                format!("{}{chunk}", " ".repeat(prefix_width))
-            }
-        })
-        .collect()
 }
 
 fn list_marker(line: &str) -> Option<(String, &str)> {
@@ -6524,6 +7161,7 @@ fn render_markdown_table(rows: &[&str], width: usize, theme: &Theme) -> Vec<Line
     let border_style = Style::default().fg(theme.color("overlay0"));
     let header_style = Style::default()
         .fg(theme.color("blue"))
+        .bg(theme.color("surface0"))
         .add_modifier(Modifier::BOLD);
     let cell_style = Style::default().fg(theme.color("subtext0"));
     let border = |left: &str, middle: &str, right: &str| {
@@ -6569,7 +7207,7 @@ fn render_markdown_table(rows: &[&str], width: usize, theme: &Theme) -> Vec<Line
     };
 
     let mut out = vec![border("╭", "┬", "╮")];
-    let header_align = vec![Alignment::Left; columns];
+    let header_align = aligns.clone();
     out.extend(render_row(&header, &header_align, header_style));
     out.push(border("├", "┼", "┤"));
     for row in &body {
@@ -8370,6 +9008,53 @@ mod tests {
             strip_markdown_inline("**bold** and `code`"),
             "bold and code"
         );
+    }
+
+    #[test]
+    fn renders_rich_inline_and_code_fences() {
+        let paths = crate::config::Paths::for_test("missing".into(), "missing".into());
+        let theme = Theme::load(&paths, "mocha");
+        let markdown = "**粗体** 和 *斜体* 和 `代码` 和 ~~删掉~~\n\n> [!TIP]\n> 先看这里\n\n```rust\nfn main() { let x = 1; }\n```\n";
+        let lines = markdown_lines(markdown, 80, &theme);
+        let spans: Vec<&Span> = lines.iter().flat_map(|line| line.spans.iter()).collect();
+        let text = |span: &Span| span.content.to_string();
+        assert!(spans.iter().any(|span| text(span).contains("粗体")));
+        assert!(
+            lines
+                .iter()
+                .flat_map(|line| line.spans.iter())
+                .any(|span| span.content.contains("粗体")
+                    && span.style.add_modifier.contains(Modifier::BOLD))
+        );
+        assert!(spans.iter().any(|span| text(span).contains("TIP")));
+        assert!(spans.iter().any(|span| text(span).contains("rust")));
+        assert!(spans.iter().any(|span| text(span) == "main"));
+        let code_span = spans
+            .iter()
+            .find(|span| span.content.contains("代码"))
+            .unwrap();
+        assert_eq!(code_span.style.bg, Some(theme.color("surface0")));
+    }
+
+    #[test]
+    fn keeps_pipe_text_and_groups_blockquotes() {
+        let paths = crate::config::Paths::for_test("missing".into(), "missing".into());
+        let theme = Theme::load(&paths, "mocha");
+        let markdown = "a | b\n继续写\n\n> 第一行\n> 第二行\n\n- [x] 完成\n- [ ] 未完成\n";
+        let lines = markdown_lines(markdown, 80, &theme);
+        let text: Vec<String> = lines
+            .iter()
+            .map(|line| {
+                line.spans
+                    .iter()
+                    .map(|span| span.content.as_ref())
+                    .collect()
+            })
+            .collect();
+        assert!(text.iter().any(|line| line.contains("a | b 继续写")));
+        assert!(text.iter().filter(|line| line.starts_with("▎ ")).count() >= 2);
+        assert!(text.iter().any(|line| line.contains(icons::CHECK_SQUARE)));
+        assert!(text.iter().any(|line| line.contains(icons::SQUARE)));
     }
 
     #[test]

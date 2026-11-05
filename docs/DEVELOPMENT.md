@@ -56,7 +56,7 @@ cargo clippy --all-targets -- -D warnings
 | `src/release_tui.rs` | 独立的个人发行版发布 TUI |
 | `src/md_app.rs` | Markdown 预览器的扫描、筛选、大纲、按键与编辑器切换 |
 | `src/md_ui.rs` | Markdown 预览器渲染，复用 README 的 Markdown 渲染器 |
-| `src/ui.rs` | GitHub 工作台、议题/通知页与设置 TUI 渲染 |
+| `src/ui.rs` | GitHub 工作台、议题/通知页与设置 TUI 渲染；含共享 Markdown 渲染器（内联样式、代码高亮、表格） |
 | `src/api.rs` | GitHub API、gh 凭据、代理、下载与工作流触发 |
 | `src/model.rs` | GitHub serde 数据结构 |
 | `src/config.rs` | 配置字段、TTL 与路径 |

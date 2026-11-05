@@ -85,7 +85,7 @@ pub(crate) struct LoadedDoc {
     pub(crate) headings: Vec<Heading>,
 }
 
-#[derive(Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum Hit {
     FileRow(usize),
     OutlineRow(usize),
@@ -93,6 +93,8 @@ pub(crate) enum Hit {
     FilesPanel,
     OutlinePanel,
     PreviewPanel,
+    FilterRow,
+    SearchRow,
     CloseHelp,
 }
 
@@ -104,6 +106,11 @@ pub(crate) struct MdApp {
     pub(crate) offset: usize,
     pub(crate) filter: TextInput,
     pub(crate) filter_editing: bool,
+    pub(crate) search: TextInput,
+    pub(crate) search_editing: bool,
+    pub(crate) search_query: String,
+    pub(crate) search_matches: Vec<usize>,
+    pub(crate) search_index: usize,
     pub(crate) focus: Tab,
     pub(crate) pane: Tab,
     pub(crate) sort: Sort,
@@ -144,6 +151,11 @@ impl MdApp {
             offset: 0,
             filter: TextInput::new(""),
             filter_editing: false,
+            search: TextInput::new(""),
+            search_editing: false,
+            search_query: String::new(),
+            search_matches: Vec::new(),
+            search_index: 0,
             focus: Tab::Files,
             pane: Tab::Files,
             sort: Sort::Path,
@@ -191,6 +203,7 @@ impl MdApp {
     }
 
     fn rescan(&mut self) {
+        self.clear_search();
         let keep = self.doc.as_ref().map(|doc| doc.rel.clone());
         match scan_docs(&self.root) {
             Ok(files) => {
@@ -294,6 +307,7 @@ impl MdApp {
                     content,
                     headings,
                 });
+                self.clear_search();
                 if focus_preview {
                     self.focus = Tab::Preview;
                 }
@@ -381,6 +395,91 @@ impl MdApp {
         let next = (self.preview_scroll as isize + delta).clamp(0, self.preview_scroll_max as isize)
             as u16;
         self.preview_scroll = next;
+    }
+
+    fn searchable_lines(&self) -> Vec<String> {
+        let Some(doc) = self.doc.as_ref() else {
+            return Vec::new();
+        };
+        if self.raw {
+            return doc.content.lines().map(str::to_string).collect();
+        }
+        crate::ui::markdown_lines(&doc.content, self.preview_width.max(20), &self.theme)
+            .iter()
+            .map(|line| {
+                line.spans
+                    .iter()
+                    .map(|span| span.content.as_ref())
+                    .collect::<String>()
+            })
+            .collect()
+    }
+
+    pub(crate) fn start_search(&mut self) {
+        if self.doc.is_none() {
+            return;
+        }
+        self.search = TextInput::new(self.search_query.clone());
+        self.search_editing = true;
+        self.focus = Tab::Preview;
+    }
+
+    fn confirm_search(&mut self) {
+        self.search_editing = false;
+        self.search_query = self.search.value.trim().to_string();
+        self.refresh_search();
+    }
+
+    fn refresh_search(&mut self) {
+        self.search_matches.clear();
+        self.search_index = 0;
+        let query = self.search_query.to_lowercase();
+        if query.is_empty() {
+            return;
+        }
+        for (index, line) in self.searchable_lines().iter().enumerate() {
+            if line.to_lowercase().contains(&query) {
+                self.search_matches.push(index);
+            }
+        }
+        if self.search_matches.is_empty() {
+            self.set_error(format!("没有找到 \"{}\" 喵~", self.search_query));
+            return;
+        }
+        self.jump_search(0);
+    }
+
+    fn jump_search(&mut self, index: usize) {
+        if self.search_matches.is_empty() {
+            return;
+        }
+        self.search_index = index % self.search_matches.len();
+        let line = self.search_matches[self.search_index];
+        self.preview_scroll = line.saturating_sub(2).min(u16::MAX as usize) as u16;
+        self.set_ok(format!(
+            "{} 搜索 \"{}\" {}/{} 喵~",
+            icons::SEARCH,
+            self.search_query,
+            self.search_index + 1,
+            self.search_matches.len()
+        ));
+    }
+
+    fn next_search(&mut self, delta: isize) {
+        if self.search_matches.is_empty() {
+            return;
+        }
+        let len = self.search_matches.len() as isize;
+        let next = (self.search_index as isize + delta).rem_euclid(len) as usize;
+        self.jump_search(next);
+    }
+
+    fn clear_search(&mut self) {
+        self.search_editing = false;
+        self.search_query.clear();
+        self.search_matches.clear();
+        self.search_index = 0;
+        self.search = TextInput::new("");
     }
 
     fn page_step(&self) -> usize {
@@ -488,6 +587,7 @@ impl MdApp {
         }
         self.raw = !self.raw;
         self.preview_scroll = 0;
+        self.clear_search();
         self.set_ok(if self.raw {
             "切到源码模式啦喵~ m 回到渲染喵~".to_string()
         } else {
@@ -501,9 +601,14 @@ impl MdApp {
         }
         self.fullscreen = !self.fullscreen;
         self.focus = Tab::Preview;
+        self.clear_search();
     }
 
     fn escape(&mut self) {
+        if !self.search_query.is_empty() || self.search_editing {
+            self.clear_search();
+            return;
+        }
         if self.fullscreen {
             self.fullscreen = false;
         } else if self.focus != Tab::Files {
@@ -542,6 +647,16 @@ impl MdApp {
                 self.pane = Tab::Outline;
             }
             Hit::PreviewPanel => self.focus = Tab::Preview,
+            Hit::FilterRow => {
+                self.fullscreen = false;
+                self.pane = Tab::Files;
+                self.focus = Tab::Files;
+                self.filter_editing = true;
+                self.filter.end();
+            }
+            Hit::SearchRow => {
+                self.start_search();
+            }
             Hit::CloseHelp => self.show_help = false,
         }
     }
@@ -570,6 +685,31 @@ impl MdApp {
                 KeyCode::Esc | KeyCode::Char('?') | KeyCode::Char('q')
             ) {
                 self.show_help = false;
+            }
+            return;
+        }
+        if self.search_editing {
+            match key.code {
+                KeyCode::Esc => self.search_editing = false,
+                KeyCode::Enter => self.confirm_search(),
+                KeyCode::Backspace => self.search.backspace(),
+                KeyCode::Delete => self.search.delete(),
+                KeyCode::Left => self.search.left(),
+                KeyCode::Right => self.search.right(),
+                KeyCode::Home => self.search.home(),
+                KeyCode::End => self.search.end(),
+                KeyCode::Char('u') if key.modifiers.contains(KeyModifiers::CONTROL) => {
+                    self.search = TextInput::new("");
+                }
+                KeyCode::Char(ch)
+                    if !key
+                        .modifiers
+                        .intersects(KeyModifiers::CONTROL | KeyModifiers::ALT)
+                        && !ch.is_control() =>
+                {
+                    self.search.insert(ch);
+                }
+                _ => {}
             }
             return;
         }
@@ -612,6 +752,7 @@ impl MdApp {
         }
         if key.modifiers.contains(KeyModifiers::CONTROL) {
             match key.code {
+                KeyCode::Char('f') => self.start_search(),
                 KeyCode::Char('d') => self.down(10),
                 KeyCode::Char('u') => self.up(10),
                 _ => {}
@@ -634,6 +775,8 @@ impl MdApp {
             KeyCode::Char('t') => self.cycle_theme(),
             KeyCode::Char('r') => self.rescan(),
             KeyCode::Char('m') => self.toggle_raw(),
+            KeyCode::Char('n') => self.next_search(1),
+            KeyCode::Char('N') => self.next_search(-1),
             KeyCode::Char('F') => self.toggle_fullscreen(),
             KeyCode::Char('e') => self.editor = self.doc.as_ref().map(|doc| doc.path.clone()),
             KeyCode::Char('s') => {
