@@ -59,3 +59,5 @@ pub const COMMAND: &str = "\u{f120}";
 pub const RANDOM: &str = "\u{f074}";
 pub const THEME: &str = "\u{f1fc}";
 pub const SPARKLE: &str = "\u{f890}";
+pub const CHEVRON_LEFT: &str = "\u{f053}";
+pub const CHEVRON_RIGHT: &str = "\u{f054}";

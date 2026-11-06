@@ -20,6 +20,8 @@ search_history = []
 show_file_tree = false
 show_readme = false
 download_dir = "~/Downloads/gitx-tui"
+pinned_repos = []
+default_page = "home"
 ```
 
 | 字段 | 说明 |
@@ -34,6 +36,8 @@ download_dir = "~/Downloads/gitx-tui"
 | `show_file_tree` | 是否加载仓库文件树 |
 | `show_readme` | 是否加载 README |
 | `download_dir` | 下载目录，支持 `~/` 开头 |
+| `pinned_repos` | 首页置顶仓库，`owner/name` 数组，最多 24 个 |
+| `default_page` | 启动页：`home`、`repositories`、`starred`、`search`、`trending`、`account`、`notifications`、`insights`，默认 `home` |
 
 ## 主题
 

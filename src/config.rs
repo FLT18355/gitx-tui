@@ -38,6 +38,7 @@ pub struct Config {
     pub download_dir: String,
     pub commit_limit: usize,
     pub pinned_repos: Vec<String>,
+    pub default_page: String,
 }
 
 impl Default for Config {
@@ -54,6 +55,7 @@ impl Default for Config {
             download_dir: default_download_dir(),
             commit_limit: 50,
             pinned_repos: Vec::new(),
+            default_page: "home".to_string(),
         }
     }
 }
@@ -103,6 +105,9 @@ impl Config {
         }
         pinned.truncate(24);
         self.pinned_repos = pinned;
+        self.default_page = crate::app::Page::from_default_name(&self.default_page)
+            .default_name()
+            .to_string();
     }
 
     pub fn expanded_download_dir(&self) -> PathBuf {
@@ -272,6 +277,19 @@ mod tests {
         assert_eq!(Config::load(&paths).theme, "neon");
         fs::remove_file(paths.theme_file("neon")).unwrap();
         assert_eq!(Config::load(&paths).theme, "mocha");
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn normalizes_default_page() {
+        let root = std::env::temp_dir().join(format!("gitx-default-cfg-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&root);
+        let paths = Paths::for_test(root.join("config"), root.join("cache"));
+        fs::create_dir_all(paths.config_dir()).unwrap();
+        fs::write(paths.config_file(), "default_page = \"Trending\"\n").unwrap();
+        assert_eq!(Config::load(&paths).default_page, "trending");
+        fs::write(paths.config_file(), "default_page = \"nowhere\"\n").unwrap();
+        assert_eq!(Config::load(&paths).default_page, "home");
         let _ = fs::remove_dir_all(&root);
     }
 

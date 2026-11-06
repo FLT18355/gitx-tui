@@ -34,3 +34,6 @@ commit_limit = 50
 
 # 首页置顶仓库，按 owner/name 保存，最多 24 个
 pinned_repos = []
+
+# 启动页：home / repositories / starred / search / trending / account / notifications / insights
+default_page = "home"

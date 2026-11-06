@@ -78,9 +78,16 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
     }
 
     app.hitboxes = hits;
+    colorize_icons(frame.buffer_mut(), &theme);
 }
 
-fn draw_header(frame: &mut Frame, app: &App, theme: &Theme, area: Rect, hits: &mut Vec<HitBox>) {
+fn draw_header(
+    frame: &mut Frame,
+    app: &mut App,
+    theme: &Theme,
+    area: Rect,
+    hits: &mut Vec<HitBox>,
+) {
     fill(frame, area, theme.color("mantle"));
     let brand = Rect::new(area.x + 2, area.y, area.width.saturating_sub(4), 1);
     let mut title = vec![Span::styled(
@@ -184,11 +191,106 @@ fn draw_header(frame: &mut Frame, app: &App, theme: &Theme, area: Rect, hits: &m
         Page::Notifications,
         Page::Trending,
     ];
-    let mut x = area.x + 2;
+    let width_list: Vec<u16> = labels
+        .iter()
+        .map(|label| format::text_width(label) as u16 + 4)
+        .collect();
+    let total_width = width_list.iter().sum::<u16>() + labels.len().saturating_sub(1) as u16;
+    let hint = "0 首页   Ctrl+K 命令   / 搜索   ? 帮助喵~";
+    let hint_text_width = format::text_width(hint) as u16;
+    let hint_width = if area.width > 124 && total_width + hint_text_width + 8 <= area.width {
+        hint_text_width + 3
+    } else {
+        0
+    };
+    let strip_left = area.x + 2;
+    let strip_right = area.x + area.width.saturating_sub(hint_width + 2);
+    let overflow = total_width > strip_right.saturating_sub(strip_left);
+    let arrow_width = 3_u16;
+    let tabs_left = if overflow {
+        strip_left + arrow_width + 1
+    } else {
+        strip_left
+    };
+    let tabs_right = if overflow {
+        strip_right.saturating_sub(arrow_width + 1)
+    } else {
+        strip_right
+    };
+    let tabs_width = tabs_right.saturating_sub(tabs_left);
+    let fit_from = |start: usize| -> usize {
+        let mut used = 0_u16;
+        let mut count = 0;
+        for width in width_list.iter().skip(start) {
+            let need = if count == 0 { *width } else { *width + 1 };
+            if used.saturating_add(need) > tabs_width {
+                break;
+            }
+            used += need;
+            count += 1;
+        }
+        count
+    };
+    let capacity = fit_from(0).max(1);
+    let max_start = labels.len().saturating_sub(capacity);
+    let mut start = app.nav_offset.min(max_start);
+    if overflow && fit_from(start) == 0 {
+        start = start.saturating_sub(1);
+    }
+    if !overflow {
+        start = 0;
+    }
+    app.nav_offset = start;
+
+    if overflow {
+        for (rect, action, enabled, icon) in [
+            (
+                Rect::new(strip_left, area.y + 1, arrow_width, 1),
+                Action::NavLeft,
+                start > 0,
+                icons::CHEVRON_LEFT,
+            ),
+            (
+                Rect::new(
+                    strip_right.saturating_sub(arrow_width),
+                    area.y + 1,
+                    arrow_width,
+                    1,
+                ),
+                Action::NavRight,
+                start < max_start,
+                icons::CHEVRON_RIGHT,
+            ),
+        ] {
+            let hovered = app.hover.as_ref() == Some(&action);
+            fill(
+                frame,
+                rect,
+                if hovered && enabled {
+                    theme.color("surface1")
+                } else {
+                    theme.color("surface0")
+                },
+            );
+            frame.render_widget(
+                Paragraph::new(icon)
+                    .alignment(Alignment::Center)
+                    .style(Style::default().fg(if enabled {
+                        theme.color("blue")
+                    } else {
+                        theme.color("surface2")
+                    })),
+                rect,
+            );
+            register(hits, rect, action);
+        }
+    }
+
+    let mut x = tabs_left;
     let mut selected_rect = None;
-    for (index, label) in labels.iter().enumerate() {
-        let width = format::text_width(label) as u16 + 4;
-        if x.saturating_add(width).saturating_add(1) > area.x + area.width {
+    for (index, label) in labels.iter().enumerate().skip(start) {
+        let width = width_list[index];
+        if x.saturating_add(width) > tabs_right {
             break;
         }
         let rect = Rect::new(x, area.y + 1, width, 1);
@@ -224,8 +326,7 @@ fn draw_header(frame: &mut Frame, app: &App, theme: &Theme, area: Rect, hits: &m
         x += width + 1;
     }
 
-    if area.width > 124 {
-        let hint = "0 首页   Ctrl+K 命令   / 搜索   ? 帮助喵~";
+    if hint_width > 0 {
         let width = format::text_width(hint) as u16;
         let rect = Rect::new(
             area.x + area.width.saturating_sub(width + 2),
@@ -1814,30 +1915,69 @@ fn draw_insights_right(frame: &mut Frame, app: &App, theme: &Theme, area: Rect) 
         } else {
             theme.color("red")
         };
-        frame.render_widget(
-            Paragraph::new(format!("{label}  {}/{}", info.remaining, info.limit))
-                .style(Style::default().fg(theme.color("subtext0"))),
+        draw_metric_bar(
+            frame,
+            theme,
             Rect::new(area.x, y, area.width, 1),
+            label,
+            ratio,
+            &format!("{}/{}", info.remaining, info.limit),
+            color,
+            icons::NETWORK,
         );
-        y += 1;
-        if y >= area.y + area.height {
-            break;
-        }
-        let bar_width = area.width.saturating_sub(2) as usize;
-        let filled = (bar_width as f32 * ratio).round() as usize;
-        let mut spans = gradient_chars(filled, "▰", color, color);
-        spans.extend(gradient_chars(
-            bar_width.saturating_sub(filled),
-            "▱",
-            theme.color("surface1"),
-            theme.color("surface1"),
-        ));
-        frame.render_widget(
-            Paragraph::new(Line::from(spans)),
-            Rect::new(area.x, y, area.width, 1),
-        );
-        y += 1;
+        y += 2;
     }
+}
+
+#[allow(clippy::too_many_arguments)]
+fn draw_metric_bar(
+    frame: &mut Frame,
+    theme: &Theme,
+    area: Rect,
+    label: &str,
+    ratio: f32,
+    value: &str,
+    color: Color,
+    icon: &str,
+) {
+    if area.width < 12 || area.height == 0 {
+        return;
+    }
+    let label_width = 12_u16.min(area.width / 3).max(6);
+    let value_width = (format::text_width(value) as u16)
+        .min(area.width / 2)
+        .max(3);
+    let bar_width = area.width.saturating_sub(label_width + value_width + 1);
+    let inner_bar = bar_width.saturating_sub(2).max(1) as usize;
+    let filled = (inner_bar as f32 * ratio.clamp(0.0, 1.0)).round() as usize;
+    frame.render_widget(
+        Paragraph::new(format::truncate(label, label_width as usize))
+            .style(Style::default().fg(theme.color("subtext0"))),
+        Rect::new(area.x, area.y, label_width, 1),
+    );
+    let mut spans = vec![Span::styled(format!("{icon} "), Style::default().fg(color))];
+    spans.extend(gradient_chars(filled, "▰", color, color));
+    spans.extend(gradient_chars(
+        inner_bar.saturating_sub(filled),
+        "▱",
+        theme.color("surface1"),
+        theme.color("surface1"),
+    ));
+    frame.render_widget(
+        Paragraph::new(Line::from(spans)),
+        Rect::new(area.x + label_width, area.y, bar_width, 1),
+    );
+    frame.render_widget(
+        Paragraph::new(value.to_string())
+            .alignment(Alignment::Right)
+            .style(Style::default().fg(theme.color("overlay0"))),
+        Rect::new(
+            area.x + area.width.saturating_sub(value_width),
+            area.y,
+            value_width,
+            1,
+        ),
+    );
 }
 
 fn draw_language_bars(frame: &mut Frame, theme: &Theme, area: Rect, languages: &[(String, usize)]) {
@@ -1864,47 +2004,18 @@ fn draw_language_bars(frame: &mut Frame, theme: &Theme, area: Rect, languages: &
         theme.color("yellow"),
         theme.color("teal"),
     ];
-    let label_width = 12_u16.min(area.width / 3);
     for (index, (language, count)) in languages.iter().take(area.height as usize).enumerate() {
         let y = area.y + index as u16;
         let color = palette[index % palette.len()];
-        frame.render_widget(
-            Paragraph::new(format::truncate(language, label_width as usize))
-                .style(Style::default().fg(theme.color("subtext0"))),
-            Rect::new(area.x, y, label_width, 1),
-        );
-        let count_width = 5_u16;
-        let bar_width = area.width.saturating_sub(label_width + count_width + 2) as usize;
-        let filled = ((bar_width as f32) * (*count as f32 / max as f32)).ceil() as usize;
-        let mut spans = vec![Span::styled(
-            format!("{} ", icons::CODE),
-            Style::default().fg(color),
-        )];
-        spans.extend(gradient_chars(
-            filled.min(bar_width),
-            "▰",
+        draw_metric_bar(
+            frame,
+            theme,
+            Rect::new(area.x, y, area.width, 1),
+            language,
+            *count as f32 / max as f32,
+            &count.to_string(),
             color,
-            theme.color("surface1"),
-        ));
-        frame.render_widget(
-            Paragraph::new(Line::from(spans)),
-            Rect::new(
-                area.x + label_width,
-                y,
-                area.width.saturating_sub(label_width + count_width),
-                1,
-            ),
-        );
-        frame.render_widget(
-            Paragraph::new(format!("{count:>4}"))
-                .alignment(Alignment::Right)
-                .style(Style::default().fg(theme.color("overlay0"))),
-            Rect::new(
-                area.x + area.width.saturating_sub(count_width),
-                y,
-                count_width,
-                1,
-            ),
+            icons::CODE,
         );
     }
 }
@@ -2499,7 +2610,7 @@ fn draw_account_quota(
     let now = crate::cache::now_epoch();
     let mut y = inner.y + 3;
     for (label, info) in rate.items() {
-        if y + 4 >= inner.y + inner.height {
+        if y + 2 >= inner.y + inner.height {
             break;
         }
         let percent = if info.limit == 0 {
@@ -2514,31 +2625,16 @@ fn draw_account_quota(
         } else {
             theme.color("red")
         };
-        frame.render_widget(
-            Paragraph::new(Line::from(vec![
-                Span::styled(
-                    label,
-                    Style::default()
-                        .fg(theme.color("text"))
-                        .add_modifier(Modifier::BOLD),
-                ),
-                Span::styled(
-                    format!("  {} / {} 剩余", info.remaining, info.limit),
-                    Style::default().fg(theme.color("subtext0")),
-                ),
-                Span::styled(
-                    format!("  {percent}%"),
-                    Style::default().fg(color).add_modifier(Modifier::BOLD),
-                ),
-            ])),
+        draw_metric_bar(
+            frame,
+            theme,
             Rect::new(inner.x, y, inner.width, 1),
+            label,
+            percent as f32 / 100.0,
+            &format!("{} / {} · {}%", info.remaining, info.limit, percent),
+            color,
+            icons::NETWORK,
         );
-        let bar = Rect::new(inner.x, y + 1, inner.width.saturating_sub(2), 1);
-        fill(frame, bar, theme.color("surface0"));
-        let filled = (bar.width as u32 * percent / 100) as u16;
-        if filled > 0 {
-            fill(frame, Rect::new(bar.x, bar.y, filled, 1), color);
-        }
         frame.render_widget(
             Paragraph::new(format!(
                 "已用 {} · {}喵~",
@@ -2546,9 +2642,9 @@ fn draw_account_quota(
                 format::reset_label(info.reset, now)
             ))
             .style(Style::default().fg(theme.color("overlay0"))),
-            Rect::new(inner.x, y + 2, inner.width, 1),
+            Rect::new(inner.x, y + 1, inner.width, 1),
         );
-        y += 4;
+        y += 3;
     }
 
     let note = format!("{} 额度接口不消耗额度，刷新随便点喵~", icons::INFO);
@@ -3899,6 +3995,23 @@ fn workflow_status_icon(status: &str, conclusion: Option<&str>) -> (&'static str
     }
 }
 
+fn release_tag_pill(theme: &Theme, tag: &str, accent: Color) -> Span<'static> {
+    Span::styled(
+        format!(" {tag} "),
+        Style::default()
+            .bg(accent)
+            .fg(theme.color("base"))
+            .add_modifier(Modifier::BOLD),
+    )
+}
+
+fn release_badge(icon: &str, text: &str, color: Color) -> Span<'static> {
+    Span::styled(
+        format!("  {icon} {text}"),
+        Style::default().fg(color).add_modifier(Modifier::BOLD),
+    )
+}
+
 fn draw_release_page(
     frame: &mut Frame,
     app: &mut App,
@@ -3976,12 +4089,7 @@ fn draw_release_page(
         Action::Refresh,
         false,
     );
-    let title = format!(
-        "{} 发行版喵~  {} / {}",
-        icons::TAG,
-        repo.display_full_name(),
-        release.tag_name
-    );
+    let title = format!("{} 发行版喵~  {}", icons::TAG, repo.display_full_name());
     let title_width = refresh_x.saturating_sub(inner.x + back_width + 2);
     frame.render_widget(
         Paragraph::new(format::truncate(&title, title_width as usize)).style(
@@ -3992,23 +4100,37 @@ fn draw_release_page(
         Rect::new(inner.x + back_width + 2, inner.y, title_width, 1),
     );
 
-    let mut badges = vec![Span::styled(
-        release.title().to_string(),
-        Style::default()
-            .fg(theme.color("text"))
-            .add_modifier(Modifier::BOLD),
-    )];
+    let accent = if release.prerelease {
+        theme.color("mauve")
+    } else if release.draft {
+        theme.color("red")
+    } else {
+        theme.color("blue")
+    };
+    let tag_text = format::truncate(&release.tag_name, (inner.width / 3).max(6) as usize);
+    let pill = release_tag_pill(theme, &tag_text, accent);
+    let tag_width = format::text_width(&tag_text) as u16 + 2;
+    let mut badges = vec![
+        pill,
+        Span::styled("  ", Style::default()),
+        Span::styled(
+            format::truncate(
+                release.title(),
+                inner.width.saturating_sub(tag_width + 18) as usize,
+            ),
+            Style::default()
+                .fg(theme.color("text"))
+                .add_modifier(Modifier::BOLD),
+        ),
+    ];
+    if app.release_selected == 0 {
+        badges.push(release_badge(icons::SPARKLE, "最新", theme.color("green")));
+    }
     if release.prerelease {
-        badges.push(Span::styled(
-            "  预发布",
-            Style::default().fg(theme.color("peach")),
-        ));
+        badges.push(release_badge(icons::CLOCK, "预发布", theme.color("peach")));
     }
     if release.draft {
-        badges.push(Span::styled(
-            "  草稿",
-            Style::default().fg(theme.color("red")),
-        ));
+        badges.push(release_badge(icons::WARNING, "草稿", theme.color("red")));
     }
     frame.render_widget(
         Paragraph::new(Line::from(badges)),
@@ -4016,8 +4138,7 @@ fn draw_release_page(
     );
     frame.render_widget(
         Paragraph::new(format!(
-            "{}  ·  {}  ·  {} 个附带文件喵~",
-            release.tag_name,
+            "{}  ·  {} 个附带文件喵~",
             format::relative_time(release.date()),
             release.assets.len()
         ))
@@ -6842,33 +6963,6 @@ fn draw_releases_panel(
         } else {
             fill(frame, rect, theme.color("mantle"));
         }
-        let mut title = vec![
-            Span::styled(
-                format!("{} ", icons::TAG),
-                Style::default().fg(theme.color("peach")),
-            ),
-            Span::styled(
-                format::truncate(&release.tag_name, body.width.saturating_sub(14) as usize),
-                Style::default()
-                    .fg(theme.color("blue"))
-                    .add_modifier(Modifier::BOLD),
-            ),
-        ];
-        if index == 0 {
-            title.push(Span::styled(
-                " 最新",
-                Style::default().fg(theme.color("green")),
-            ));
-        } else if release.prerelease {
-            title.push(Span::styled(
-                " 预发布",
-                Style::default().fg(theme.color("peach")),
-            ));
-        }
-        frame.render_widget(
-            Paragraph::new(Line::from(title)),
-            Rect::new(rect.x + 1, rect.y, rect.width.saturating_sub(1), 1),
-        );
         let meta = if body.width >= 36 {
             format!(
                 "{} 个文件 · {} ",
@@ -6878,6 +6972,42 @@ fn draw_releases_panel(
         } else {
             format!("{} 个文件 ", release.assets.len())
         };
+        let meta_width = format::text_width(&meta) as u16;
+        let badge_width = if index == 0 {
+            9
+        } else if release.prerelease {
+            11
+        } else {
+            0
+        };
+        let tag_max = rect
+            .width
+            .saturating_sub(meta_width + badge_width + 6)
+            .max(4) as usize;
+        let tag_text = format::truncate(&release.tag_name, tag_max);
+        let accent = if release.draft {
+            theme.color("red")
+        } else if release.prerelease {
+            theme.color("mauve")
+        } else {
+            theme.color("blue")
+        };
+        let mut title = vec![
+            Span::styled(
+                format!("{} ", icons::TAG),
+                Style::default().fg(theme.color("peach")),
+            ),
+            release_tag_pill(theme, &tag_text, accent),
+        ];
+        if index == 0 {
+            title.push(release_badge(icons::SPARKLE, "最新", theme.color("green")));
+        } else if release.prerelease {
+            title.push(release_badge(icons::CLOCK, "预发布", theme.color("peach")));
+        }
+        frame.render_widget(
+            Paragraph::new(Line::from(title)),
+            Rect::new(rect.x + 1, rect.y, rect.width.saturating_sub(1), 1),
+        );
         frame.render_widget(
             Paragraph::new(format::truncate(
                 &meta,
@@ -8761,6 +8891,15 @@ fn draw_settings_page(
                 Rect::new(right_column.x, y + 7, right_column.width, 1),
             );
         }
+        if y + 8 < actions_y {
+            draw_default_page_row(
+                frame,
+                app,
+                theme,
+                hits,
+                Rect::new(right_column.x, y + 8, right_column.width, 1),
+            );
+        }
     }
 
     let mut x = inner.x;
@@ -9131,6 +9270,45 @@ fn draw_commit_limit_row(
     register(hits, area, Action::SetSettingsRow(8));
 }
 
+fn draw_default_page_row(
+    frame: &mut Frame,
+    app: &App,
+    theme: &Theme,
+    hits: &mut Vec<HitBox>,
+    area: Rect,
+) {
+    if app.settings_row == 9 {
+        fill(frame, area, theme.color("surface0"));
+    }
+    let page = Page::from_default_name(&app.config.default_page);
+    frame.render_widget(
+        Paragraph::new("默认页喵~").style(Style::default().fg(theme.color("subtext1"))),
+        Rect::new(area.x + 1, area.y, 16, 1),
+    );
+    frame.render_widget(
+        Paragraph::new(Line::from(vec![
+            Span::styled(
+                format!("{} ", icons::HOME),
+                Style::default().fg(theme.color("pink")),
+            ),
+            Span::styled(
+                page.default_label(),
+                Style::default()
+                    .fg(theme.color("text"))
+                    .add_modifier(Modifier::BOLD),
+            ),
+        ])),
+        Rect::new(area.x + 17, area.y, 18, 1),
+    );
+    frame.render_widget(
+        Paragraph::new("h/l 换喵~")
+            .alignment(Alignment::Right)
+            .style(Style::default().fg(theme.color("overlay0"))),
+        Rect::new(area.x, area.y, area.width.saturating_sub(1), 1),
+    );
+    register(hits, area, Action::SetSettingsRow(9));
+}
+
 fn render_scrolled(
     frame: &mut Frame,
     area: Rect,
@@ -9341,41 +9519,16 @@ fn draw_repo_languages_overlay(
             } else {
                 language.bytes as f64 * 100.0 / total as f64
             };
-            let bar_width = 8_usize;
-            let filled = ((percent / 100.0) * bar_width as f64)
-                .round()
-                .clamp(0.0, bar_width as f64) as usize;
-            let bar = format!(
-                "{}{}",
-                "█".repeat(filled),
-                "░".repeat(bar_width.saturating_sub(filled))
-            );
-            let right = format!(
-                "{:>5.1}%  {}  {}",
-                percent,
-                bar,
-                format::format_size(language.bytes)
-            );
-            let right_width = format::text_width(&right) as u16;
-            let name_width = row_rect.width.saturating_sub(right_width + 2);
-            frame.render_widget(
-                Paragraph::new(Line::from(vec![
-                    Span::styled(
-                        "● ",
-                        Style::default().fg(language_color(theme, &language.name)),
-                    ),
-                    Span::styled(
-                        format::truncate(&language.name, name_width as usize),
-                        Style::default().fg(theme.color("subtext1")),
-                    ),
-                ])),
-                Rect::new(row_rect.x, row_rect.y, name_width, 1),
-            );
-            frame.render_widget(
-                Paragraph::new(right)
-                    .alignment(Alignment::Right)
-                    .style(Style::default().fg(theme.color("overlay0"))),
+            let value = format!("{percent:>5.1}% · {}", format::format_size(language.bytes));
+            draw_metric_bar(
+                frame,
+                theme,
                 row_rect,
+                &language.name,
+                percent as f32 / 100.0,
+                &value,
+                language_color(theme, &language.name),
+                icons::CODE,
             );
         }
     }
@@ -10441,6 +10594,121 @@ fn draw_too_small(frame: &mut Frame, area: Rect, theme: &Theme) {
     );
 }
 
+fn colorize_icons(buffer: &mut ratatui::buffer::Buffer, theme: &Theme) {
+    let area = *buffer.area();
+    for y in area.y..area.y.saturating_add(area.height) {
+        for x in area.x..area.x.saturating_add(area.width) {
+            let is_icon = {
+                let Some(cell) = buffer.cell((x, y)) else {
+                    continue;
+                };
+                let mut chars = cell.symbol().chars();
+                matches!(
+                    (chars.next(), chars.next()),
+                    (Some(ch), None) if (0xE000..=0xF8FF).contains(&(ch as u32))
+                )
+            };
+            if !is_icon {
+                continue;
+            }
+            let symbol = buffer
+                .cell((x, y))
+                .map(|cell| cell.symbol().to_string())
+                .unwrap_or_default();
+            if let Some(cell) = buffer.cell_mut((x, y)) {
+                cell.set_fg(icon_tint(&symbol, theme));
+            }
+        }
+    }
+}
+
+fn icon_tint(symbol: &str, theme: &Theme) -> Color {
+    if symbol == icons::STAR || symbol == icons::STAR_EMPTY || symbol == icons::SPARKLE {
+        theme.color("yellow")
+    } else if symbol == icons::FLAME || symbol == icons::TRASH || symbol == icons::WARNING {
+        theme.color("red")
+    } else if symbol == icons::REPO
+        || symbol == icons::FOLDER_OPEN
+        || symbol == icons::DOWNLOAD_DIR
+        || symbol == icons::INFO
+        || symbol == icons::GITHUB
+    {
+        theme.color("blue")
+    } else if symbol == icons::USER || symbol == icons::PLAY {
+        theme.color("green")
+    } else if symbol == icons::BELL
+        || symbol == icons::TAG
+        || symbol == icons::DOWNLOAD
+        || symbol == icons::ARCHIVE
+        || symbol == icons::RANDOM
+    {
+        theme.color("peach")
+    } else if symbol == icons::SEARCH
+        || symbol == icons::EXTERNAL
+        || symbol == icons::EYE
+        || symbol == icons::EXPAND
+        || symbol == icons::CODE
+        || symbol == icons::CODE_FILE
+    {
+        theme.color("sky")
+    } else if symbol == icons::LOCK || symbol == icons::PIN || symbol == icons::CHART {
+        theme.color("mauve")
+    } else if symbol == icons::GLOBE || symbol == icons::NETWORK {
+        theme.color("teal")
+    } else if symbol == icons::ISSUE
+        || symbol == icons::CHECK
+        || symbol == icons::CHECK_CIRCLE
+        || symbol == icons::CHECK_SQUARE
+        || symbol == icons::SAVE
+        || symbol == icons::REFRESH
+        || symbol == icons::TERMINAL
+        || symbol == icons::COMMAND
+    {
+        theme.color("green")
+    } else if symbol == icons::CLOCK || symbol == icons::COMMIT {
+        theme.color("yellow")
+    } else if symbol == icons::COPY
+        || symbol == icons::LICENSE
+        || symbol == icons::COMMENT
+        || symbol == icons::BOOK
+        || symbol == icons::BRANCH
+        || symbol == icons::PULL
+        || symbol == icons::COGS
+    {
+        theme.color("lavender")
+    } else if symbol == icons::DATABASE {
+        theme.color("peach")
+    } else if symbol == icons::PALETTE
+        || symbol == icons::THEME
+        || symbol == icons::IMAGE
+        || symbol == icons::HOME
+    {
+        theme.color("pink")
+    } else if symbol == icons::BACK
+        || symbol == icons::CHEVRON_LEFT
+        || symbol == icons::CHEVRON_RIGHT
+    {
+        theme.color("subtext0")
+    } else if symbol == icons::X_CIRCLE {
+        theme.color("red")
+    } else if symbol == icons::SQUARE {
+        theme.color("overlay1")
+    } else {
+        let palette = [
+            theme.color("blue"),
+            theme.color("mauve"),
+            theme.color("green"),
+            theme.color("peach"),
+            theme.color("sky"),
+            theme.color("pink"),
+            theme.color("yellow"),
+            theme.color("teal"),
+        ];
+        let code = symbol.chars().next().unwrap_or('?') as usize;
+        palette[code % palette.len()]
+    }
+}
+
 fn register_owner_hit(hits: &mut Vec<HitBox>, x: u16, y: u16, width: u16, owner: &str) {
     if owner.is_empty() || width == 0 {
         return;
@@ -11064,6 +11332,159 @@ mod tests {
         assert!(text.contains("主题工作室"));
         assert!(text.contains("Mocha"));
         assert!(text.contains("Latte"));
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn header_scrolls_tabs_when_narrow() {
+        let dir = std::env::temp_dir().join(format!("gitx-nav-ui-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        let paths = crate::config::Paths::for_test(dir.join("config"), dir.join("cache"));
+        let mut app = App::settings(paths, None);
+        app.settings_only = false;
+        app.page = Page::Home;
+        let mut terminal = ratatui::Terminal::new(ratatui::backend::TestBackend::new(84, 30))
+            .expect("test terminal");
+        terminal
+            .draw(|frame| draw(frame, &mut app))
+            .expect("render narrow header");
+        assert!(app.hitboxes.iter().any(|hit| hit.action == Action::NavLeft));
+        assert!(
+            app.hitboxes
+                .iter()
+                .any(|hit| hit.action == Action::NavRight)
+        );
+        let text = buffer_text(terminal.backend().buffer());
+        let compact = text.split_whitespace().collect::<String>();
+        assert!(!compact.contains("帮助喵~"));
+        assert!(compact.contains("首页喵~"));
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn icons_get_theme_colors() {
+        let dir = std::env::temp_dir().join(format!("gitx-icon-ui-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        let paths = crate::config::Paths::for_test(dir.join("config"), dir.join("cache"));
+        let mut app = App::settings(paths, None);
+        app.settings_only = false;
+        app.page = Page::Home;
+        app.login = Some("octocat".to_string());
+        let pink = app.theme.color("pink");
+        let yellow = app.theme.color("yellow");
+        let mut terminal = ratatui::Terminal::new(ratatui::backend::TestBackend::new(120, 40))
+            .expect("test terminal");
+        terminal
+            .draw(|frame| draw(frame, &mut app))
+            .expect("render icons");
+        let buffer = terminal.backend().buffer();
+        assert!(
+            buffer
+                .content()
+                .iter()
+                .any(|cell| cell.symbol() == icons::HOME && cell.fg == pink)
+        );
+        assert!(
+            buffer
+                .content()
+                .iter()
+                .any(|cell| cell.symbol() == icons::STAR && cell.fg == yellow)
+        );
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn settings_page_exposes_default_page_row() {
+        let dir = std::env::temp_dir().join(format!("gitx-settings-ui-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        let paths = crate::config::Paths::for_test(dir.join("config"), dir.join("cache"));
+        let mut app = App::settings(paths, None);
+        app.page = Page::Settings;
+        let mut terminal = ratatui::Terminal::new(ratatui::backend::TestBackend::new(120, 40))
+            .expect("test terminal");
+        terminal
+            .draw(|frame| draw(frame, &mut app))
+            .expect("render settings");
+        let text = buffer_text(terminal.backend().buffer())
+            .split_whitespace()
+            .collect::<String>();
+        assert!(text.contains("默认页"));
+        assert!(
+            app.hitboxes
+                .iter()
+                .any(|hit| hit.action == Action::SetSettingsRow(9))
+        );
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn repository_release_rows_show_pills_and_state_badges() {
+        let dir = std::env::temp_dir().join(format!("gitx-release-list-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        let paths = crate::config::Paths::for_test(dir.join("config"), dir.join("cache"));
+        let mut app = App::settings(paths, None);
+        app.settings_only = false;
+        let repo = test_repo("octocat", "hello-world");
+        app.page = Page::Repo;
+        app.return_page = Page::Repositories;
+        app.page_repo = Some(repo.clone());
+        app.detail = Some(repo);
+        app.repo_pane = crate::app::RepoPane::Releases;
+        app.releases = vec![
+            crate::model::Release {
+                tag_name: "v2.0.0".to_string(),
+                name: Some("新版本".to_string()),
+                ..Default::default()
+            },
+            crate::model::Release {
+                tag_name: "v1.9.0-rc1".to_string(),
+                prerelease: true,
+                ..Default::default()
+            },
+        ];
+        let mut terminal = ratatui::Terminal::new(ratatui::backend::TestBackend::new(120, 40))
+            .expect("test terminal");
+        terminal
+            .draw(|frame| draw(frame, &mut app))
+            .expect("render release rows");
+        let text = buffer_text(terminal.backend().buffer())
+            .split_whitespace()
+            .collect::<String>();
+        assert!(text.contains("v2.0.0"));
+        assert!(text.contains("v1.9.0-rc1"));
+        assert!(text.contains("最新"));
+        assert!(text.contains("预发布"));
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn release_detail_draws_tag_pill_and_latest_badge() {
+        let dir = std::env::temp_dir().join(format!("gitx-release-ui-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        let paths = crate::config::Paths::for_test(dir.join("config"), dir.join("cache"));
+        let mut app = App::settings(paths, None);
+        app.settings_only = false;
+        let repo = test_repo("octocat", "hello-world");
+        app.page = Page::ReleaseDetail;
+        app.return_page = Page::Repo;
+        app.page_repo = Some(repo);
+        app.releases = vec![crate::model::Release {
+            tag_name: "v1.2.3".to_string(),
+            name: Some("第一版".to_string()),
+            ..Default::default()
+        }];
+        app.release_selected = 0;
+        let mut terminal = ratatui::Terminal::new(ratatui::backend::TestBackend::new(120, 40))
+            .expect("test terminal");
+        terminal
+            .draw(|frame| draw(frame, &mut app))
+            .expect("render release");
+        let text = buffer_text(terminal.backend().buffer())
+            .split_whitespace()
+            .collect::<String>();
+        assert!(text.contains("v1.2.3"));
+        assert!(text.contains("最新"));
+        assert!(text.contains("发行说明"));
         let _ = std::fs::remove_dir_all(dir);
     }
 }

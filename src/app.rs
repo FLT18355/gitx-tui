@@ -93,6 +93,56 @@ impl Page {
             Self::Repo | Self::Actions | Self::Issues | Self::Commits | Self::ReleaseDetail
         )
     }
+
+    pub const DEFAULT_PAGES: [Page; 8] = [
+        Self::Home,
+        Self::Repositories,
+        Self::Starred,
+        Self::Search,
+        Self::Trending,
+        Self::Account,
+        Self::Notifications,
+        Self::Insights,
+    ];
+
+    pub fn from_default_name(name: &str) -> Self {
+        match name.trim().to_ascii_lowercase().as_str() {
+            "repositories" | "repos" => Self::Repositories,
+            "starred" => Self::Starred,
+            "search" => Self::Search,
+            "trending" => Self::Trending,
+            "account" => Self::Account,
+            "notifications" => Self::Notifications,
+            "insights" => Self::Insights,
+            _ => Self::Home,
+        }
+    }
+
+    pub fn default_name(self) -> &'static str {
+        match self {
+            Self::Repositories => "repositories",
+            Self::Starred => "starred",
+            Self::Search => "search",
+            Self::Trending => "trending",
+            Self::Account => "account",
+            Self::Notifications => "notifications",
+            Self::Insights => "insights",
+            _ => "home",
+        }
+    }
+
+    pub fn default_label(self) -> &'static str {
+        match self {
+            Self::Repositories => "仓库喵~",
+            Self::Starred => "收藏喵~",
+            Self::Search => "搜索喵~",
+            Self::Trending => "热门喵~",
+            Self::Account => "账号喵~",
+            Self::Notifications => "通知喵~",
+            Self::Insights => "洞察喵~",
+            _ => "首页喵~",
+        }
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -199,6 +249,8 @@ pub enum Action {
     RandomRepo,
     TogglePin,
     OpenPin(usize),
+    NavLeft,
+    NavRight,
     StartProxyEdit,
     StartDownloadDirEdit,
     ToggleFileTree,
@@ -707,6 +759,7 @@ pub struct App {
     pub palette_selected: usize,
     pub theme_selected: usize,
     pub home_selected: usize,
+    pub nav_offset: usize,
     pub pin_cache: Vec<Repo>,
     pub pin_loading: Vec<String>,
     pub should_quit: bool,
@@ -858,6 +911,11 @@ impl App {
         let cache = Cache::new(paths.cache_dir().to_path_buf());
         let cache_stats = cache.stats();
         let download_dir_initial = config.download_dir.clone();
+        let start_page = if settings_only {
+            Page::Settings
+        } else {
+            Page::from_default_name(&config.default_page)
+        };
         let (tx, rx) = mpsc::channel();
         let mut app = Self {
             paths,
@@ -924,21 +982,14 @@ impl App {
             delete_repo: None,
             delete_loading: None,
             cache_row: 0,
-            page: if settings_only {
-                Page::Settings
-            } else {
-                Page::Repositories
-            },
-            return_page: if settings_only {
-                Page::Settings
-            } else {
-                Page::Repositories
-            },
+            page: start_page,
+            return_page: start_page,
             overlay: None,
             palette_input: TextInput::new(""),
             palette_selected: 0,
             theme_selected: 0,
             home_selected: 0,
+            nav_offset: start_page.nav_index().unwrap_or(0),
             pin_cache: Vec::new(),
             pin_loading: Vec::new(),
             should_quit: false,
@@ -950,7 +1001,7 @@ impl App {
             search_submitted: None,
             search_input: TextInput::new(""),
             search_filter: TextInput::new(""),
-            search_focus: false,
+            search_focus: start_page == Page::Search,
             trending: Vec::new(),
             trending_total: None,
             trending_filter: TextInput::new(""),
@@ -1098,6 +1149,19 @@ impl App {
             }
         }
 
+        self.load_notifications_cache();
+        self.fetch_notifications(false);
+        if self.page == Page::Home {
+            self.sync_pins();
+            self.fetch_repos_if_needed(false);
+            self.fetch_starred_if_needed(false);
+        }
+        if self.page == Page::Insights {
+            self.fetch_rate_limit(false);
+        }
+        if self.page == Page::Trending {
+            self.fetch_trending(false);
+        }
         self.schedule_selected_detail();
         self.refresh_cache_stats();
     }
@@ -4564,6 +4628,7 @@ impl App {
             Page::Home => {
                 self.fetch_repos_if_needed(true);
                 self.fetch_starred_if_needed(true);
+                self.fetch_notifications(true);
                 self.sync_pins();
                 self.refresh_cache_stats();
             }
@@ -4595,6 +4660,9 @@ impl App {
         }
         self.page = page;
         self.return_page = page;
+        if let Some(index) = page.nav_index() {
+            self.nav_offset = index;
+        }
         self.page_repo = None;
         self.issue_repo = None;
         self.search_focus = page == Page::Search;
@@ -4656,6 +4724,9 @@ impl App {
         self.release_filter_focus = false;
         self.page_repo = Some(repo.clone());
         self.page = Page::Repo;
+        if let Some(index) = self.return_page.nav_index() {
+            self.nav_offset = index;
+        }
         self.page_scroll = 0;
         self.search_focus = false;
         self.readme_fullscreen = false;
@@ -5073,6 +5144,9 @@ impl App {
         self.page = target;
         self.page_repo = None;
         self.issue_repo = None;
+        if let Some(index) = target.nav_index() {
+            self.nav_offset = index;
+        }
         self.schedule_selected_detail();
     }
 
@@ -5802,7 +5876,7 @@ impl App {
         }
         if self.page == Page::Settings {
             if delta > 0 {
-                self.settings_row = (self.settings_row + 1).min(10);
+                self.settings_row = (self.settings_row + 1).min(11);
             } else {
                 self.settings_row = self.settings_row.saturating_sub(1);
             }
@@ -6182,7 +6256,7 @@ impl App {
                     return;
                 }
                 KeyCode::Tab => {
-                    self.settings_row = (self.settings_row + 1).min(10);
+                    self.settings_row = (self.settings_row + 1).min(11);
                     return;
                 }
                 KeyCode::BackTab => {
@@ -6403,7 +6477,7 @@ impl App {
             Page::Commits => self.move_commit_selection(1),
             Page::ReleaseDetail => self.move_release_asset_selection(1),
             Page::Notifications => self.move_notification_selection(1),
-            Page::Settings => self.settings_row = (self.settings_row + 1).min(10),
+            Page::Settings => self.settings_row = (self.settings_row + 1).min(11),
             Page::Home => self.move_home_selection(1),
             Page::Insights => {}
             _ => self.move_selection(1),
@@ -6429,7 +6503,7 @@ impl App {
     fn key_end(&mut self) {
         match self.page {
             Page::Repo => self.set_repo_pane_scroll(u16::MAX),
-            Page::Settings => self.settings_row = 10,
+            Page::Settings => self.settings_row = 11,
             Page::Actions => {
                 self.select_action_run(self.action_runs.len().saturating_sub(1));
             }
@@ -6491,7 +6565,7 @@ impl App {
                 self.release_scroll = (self.release_scroll + 10).min(self.release_scroll_max);
             }
             Page::Notifications => self.move_notification_selection(5),
-            Page::Settings => self.settings_row = (self.settings_row + 3).min(10),
+            Page::Settings => self.settings_row = (self.settings_row + 3).min(11),
             Page::Account => {}
             _ => self.next_list_page(),
         }
@@ -6594,6 +6668,7 @@ impl App {
             6 => self.adjust_ttl(TtlKind::Detail, direction),
             7 => self.adjust_ttl(TtlKind::Search, direction),
             8 => self.adjust_commit_limit(direction),
+            9 => self.cycle_default_page(direction),
             _ => {}
         }
     }
@@ -6609,10 +6684,31 @@ impl App {
             6 => self.adjust_ttl(TtlKind::Detail, 1),
             7 => self.adjust_ttl(TtlKind::Search, 1),
             8 => self.adjust_commit_limit(1),
-            9 => self.clear_cache(),
-            10 => self.save_config(true),
+            9 => self.cycle_default_page(1),
+            10 => self.clear_cache(),
+            11 => self.save_config(true),
             _ => {}
         }
+    }
+
+    pub fn cycle_default_page(&mut self, direction: i32) {
+        let current = Page::from_default_name(&self.config.default_page);
+        let index = Page::DEFAULT_PAGES
+            .iter()
+            .position(|page| *page == current)
+            .unwrap_or(0) as i32;
+        let next = (index + direction).rem_euclid(Page::DEFAULT_PAGES.len() as i32) as usize;
+        let page = Page::DEFAULT_PAGES[next];
+        self.config.default_page = page.default_name().to_string();
+        self.config_dirty = true;
+        self.settings_row = 9;
+        self.set_status(
+            StatusKind::Info,
+            &format!(
+                "下次启动会进「{}」，记得到设置页保存哦喵~",
+                page.default_label()
+            ),
+        );
     }
 
     pub fn adjust_commit_limit(&mut self, direction: i32) {
@@ -6821,7 +6917,7 @@ impl App {
     }
 
     pub fn handle_settings_row(&mut self, row: usize) {
-        self.settings_row = row.min(10);
+        self.settings_row = row.min(11);
     }
 
     pub fn handle_paste(&mut self, text: &str) {
@@ -7002,6 +7098,8 @@ impl App {
             Action::RandomRepo => self.random_repo(),
             Action::TogglePin => self.toggle_pin(),
             Action::OpenPin(index) => self.open_pin(index),
+            Action::NavLeft => self.nav_offset = self.nav_offset.saturating_sub(1),
+            Action::NavRight => self.nav_offset = (self.nav_offset + 1).min(6),
             Action::StartProxyEdit => self.start_proxy_edit(),
             Action::StartDownloadDirEdit => self.start_download_dir_edit(),
             Action::ToggleFileTree => self.toggle_file_tree(),
@@ -7620,6 +7718,55 @@ mod tests {
         input.insert('A');
         assert_eq!(input.value, "A库");
         assert_eq!(input.cursor, 1);
+    }
+
+    #[test]
+    fn default_page_names_round_trip() {
+        assert_eq!(Page::from_default_name("home"), Page::Home);
+        assert_eq!(Page::from_default_name("trending"), Page::Trending);
+        assert_eq!(Page::from_default_name("insights"), Page::Insights);
+        assert_eq!(Page::from_default_name("nonsense"), Page::Home);
+        for page in Page::DEFAULT_PAGES {
+            assert_eq!(Page::from_default_name(page.default_name()), page);
+        }
+    }
+
+    #[test]
+    fn default_page_setting_cycles_and_marks_dirty() {
+        let root = std::env::temp_dir().join(format!("gitx-default-page-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        let paths = Paths::for_test(root.join("config"), root.join("cache"));
+        let mut app = App::settings(paths, None);
+        app.config.default_page = "home".to_string();
+        app.cycle_default_page(1);
+        assert_eq!(app.config.default_page, "repositories");
+        assert_eq!(app.settings_row, 9);
+        assert!(app.config_dirty);
+        app.cycle_default_page(-1);
+        assert_eq!(app.config.default_page, "home");
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn boot_loads_unread_notifications_for_home() {
+        let root = std::env::temp_dir().join(format!("gitx-home-unread-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        let paths = Paths::for_test(root.join("config"), root.join("cache"));
+        std::fs::create_dir_all(paths.cache_dir()).unwrap();
+        std::fs::write(
+            paths.cache_dir().join("notifications_unread.json"),
+            format!(
+                "{{\"fetched_at\":{},\"data\":[{{\"id\":\"1\",\"unread\":true}}]}}",
+                now_epoch()
+            ),
+        )
+        .unwrap();
+        let mut app = App::settings(paths, None);
+        app.settings_only = false;
+        app.page = Page::Home;
+        app.boot();
+        assert_eq!(app.unread_notifications(), 1);
+        let _ = std::fs::remove_dir_all(root);
     }
 
     #[test]
