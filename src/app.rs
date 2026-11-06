@@ -17,6 +17,7 @@ use std::time::{Duration, Instant};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Page {
+    Home,
     Repositories,
     Starred,
     Search,
@@ -24,6 +25,7 @@ pub enum Page {
     Account,
     Notifications,
     Settings,
+    Insights,
     Repo,
     Profile,
     Actions,
@@ -35,35 +37,39 @@ pub enum Page {
 impl Page {
     pub fn nav_index(self) -> Option<usize> {
         match self {
-            Self::Repositories => Some(0),
-            Self::Starred => Some(1),
-            Self::Search => Some(2),
-            Self::Account => Some(3),
-            Self::Notifications => Some(4),
-            Self::Trending => Some(5),
+            Self::Home => Some(0),
+            Self::Repositories => Some(1),
+            Self::Starred => Some(2),
+            Self::Search => Some(3),
+            Self::Account => Some(4),
+            Self::Notifications => Some(5),
+            Self::Trending => Some(6),
             Self::Repo
             | Self::Profile
             | Self::Actions
             | Self::Issues
             | Self::Commits
             | Self::ReleaseDetail
-            | Self::Settings => None,
+            | Self::Settings
+            | Self::Insights => None,
         }
     }
 
     pub fn from_nav(index: usize) -> Self {
         match index {
-            1 => Self::Starred,
-            2 => Self::Search,
-            3 => Self::Account,
-            4 => Self::Notifications,
-            5 => Self::Trending,
-            _ => Self::Repositories,
+            1 => Self::Repositories,
+            2 => Self::Starred,
+            3 => Self::Search,
+            4 => Self::Account,
+            5 => Self::Notifications,
+            6 => Self::Trending,
+            _ => Self::Home,
         }
     }
 
     pub fn title(self) -> &'static str {
         match self {
+            Self::Home => "首页喵~",
             Self::Repositories => "人家的仓库喵~",
             Self::Starred => "星星收藏喵~",
             Self::Search => "找仓库喵~",
@@ -71,6 +77,7 @@ impl Page {
             Self::Account => "账号喵~",
             Self::Notifications => "通知喵~",
             Self::Settings => "设置喵~",
+            Self::Insights => "数据洞察喵~",
             Self::Repo => "仓库详情喵~",
             Self::Profile => "用户主页喵~",
             Self::Actions => "工作流喵~",
@@ -100,6 +107,8 @@ pub enum Overlay {
     ForkRepo,
     DeleteRepo,
     NewIssue,
+    Palette,
+    Themes,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -183,6 +192,13 @@ pub enum Action {
     OpenCurrent,
     CopyClone,
     SetTheme(String),
+    CycleTheme,
+    OpenThemes,
+    OpenPalette,
+    OpenHelp,
+    RandomRepo,
+    TogglePin,
+    OpenPin(usize),
     StartProxyEdit,
     StartDownloadDirEdit,
     ToggleFileTree,
@@ -248,6 +264,13 @@ pub enum Action {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct HitBox {
     pub rect: Rect,
+    pub action: Action,
+}
+
+#[derive(Debug, Clone)]
+pub struct PaletteItem {
+    pub label: String,
+    pub hint: String,
     pub action: Action,
 }
 
@@ -606,6 +629,10 @@ enum Msg {
     NotificationsRead {
         result: Result<(), String>,
     },
+    PinnedRepo {
+        name: String,
+        result: Result<Repo, String>,
+    },
 }
 
 pub struct App {
@@ -676,6 +703,12 @@ pub struct App {
     pub page: Page,
     pub return_page: Page,
     pub overlay: Option<Overlay>,
+    pub palette_input: TextInput,
+    pub palette_selected: usize,
+    pub theme_selected: usize,
+    pub home_selected: usize,
+    pub pin_cache: Vec<Repo>,
+    pub pin_loading: Vec<String>,
     pub should_quit: bool,
     pub settings_only: bool,
 
@@ -902,6 +935,12 @@ impl App {
                 Page::Repositories
             },
             overlay: None,
+            palette_input: TextInput::new(""),
+            palette_selected: 0,
+            theme_selected: 0,
+            home_selected: 0,
+            pin_cache: Vec::new(),
+            pin_loading: Vec::new(),
             should_quit: false,
             settings_only,
             repos: Vec::new(),
@@ -1897,6 +1936,34 @@ impl App {
                     Err(error) => self.set_status(StatusKind::Error, &error),
                 }
             }
+            Msg::PinnedRepo { name, result } => {
+                self.pin_loading
+                    .retain(|item| !item.eq_ignore_ascii_case(&name));
+                if !self
+                    .config
+                    .pinned_repos
+                    .iter()
+                    .any(|item| item.eq_ignore_ascii_case(&name))
+                {
+                    return;
+                }
+                match result {
+                    Ok(repo) => {
+                        if !self
+                            .pin_cache
+                            .iter()
+                            .any(|item| item.display_full_name().eq_ignore_ascii_case(&name))
+                        {
+                            self.pin_cache.push(repo);
+                        }
+                    }
+                    Err(error) => {
+                        if self.page == Page::Home {
+                            self.set_status(StatusKind::Error, &error);
+                        }
+                    }
+                }
+            }
             Msg::DownloadProgress {
                 id,
                 received,
@@ -1953,6 +2020,7 @@ impl App {
             &mut self.starred,
             &mut self.search_results,
             &mut self.trending,
+            &mut self.pin_cache,
         ] {
             for item in list.iter_mut() {
                 if item.id == repo.id || item.display_full_name() == old_name {
@@ -2065,7 +2133,7 @@ impl App {
                 .or_else(|| self.page_repo.clone()),
             Page::Issues => self.issue_repo.clone(),
             Page::Commits => self.commit_repo.clone(),
-            Page::Notifications | Page::Settings => None,
+            Page::Notifications | Page::Settings | Page::Home | Page::Insights => None,
             _ => self
                 .detail
                 .clone()
@@ -4493,6 +4561,16 @@ impl App {
             }
             Page::Notifications => self.fetch_notifications(true),
             Page::Settings => self.refresh_cache_stats(),
+            Page::Home => {
+                self.fetch_repos_if_needed(true);
+                self.fetch_starred_if_needed(true);
+                self.sync_pins();
+                self.refresh_cache_stats();
+            }
+            Page::Insights => {
+                self.refresh_cache_stats();
+                self.fetch_rate_limit(true);
+            }
         }
     }
 
@@ -4530,6 +4608,14 @@ impl App {
             self.editing_proxy = false;
             self.editing_download_dir = false;
         }
+        if page == Page::Home {
+            self.sync_pins();
+            self.refresh_cache_stats();
+        }
+        if page == Page::Insights {
+            self.refresh_cache_stats();
+            self.fetch_rate_limit(false);
+        }
         if matches!(page, Page::Repositories | Page::Starred) {
             self.schedule_selected_detail();
             self.follow_selection();
@@ -4560,6 +4646,10 @@ impl App {
             self.set_status(StatusKind::Info, "先挑一个仓库嘛，人家才知道你想看哪个喵~");
             return;
         };
+        self.open_repo(repo);
+    }
+
+    pub fn open_repo(&mut self, repo: Repo) {
         self.return_page = return_page_when_opening(self.page, self.return_page);
         self.issue_repo = None;
         self.release_filter = TextInput::new("");
@@ -4610,6 +4700,359 @@ impl App {
             repo,
             at: Instant::now(),
         });
+    }
+
+    pub fn pinned_list(&self) -> Vec<Repo> {
+        self.config
+            .pinned_repos
+            .iter()
+            .map(|name| {
+                self.pin_cache
+                    .iter()
+                    .chain(self.repos.iter())
+                    .chain(self.starred.iter())
+                    .chain(self.search_results.iter())
+                    .chain(self.trending.iter())
+                    .chain(self.profile_repos.iter())
+                    .find(|repo| repo.display_full_name().eq_ignore_ascii_case(name))
+                    .cloned()
+                    .unwrap_or_else(|| Repo {
+                        full_name: name.clone(),
+                        ..Repo::default()
+                    })
+            })
+            .collect()
+    }
+
+    pub fn is_pinned(&self, repo: &Repo) -> bool {
+        let name = repo.display_full_name();
+        self.config
+            .pinned_repos
+            .iter()
+            .any(|item| item.eq_ignore_ascii_case(&name))
+    }
+
+    pub fn toggle_pin(&mut self) {
+        let target = if self.page == Page::Repo {
+            self.page_repo.clone().or_else(|| self.detail.clone())
+        } else if matches!(
+            self.page,
+            Page::Repositories | Page::Starred | Page::Search | Page::Trending | Page::Profile
+        ) {
+            self.selected_repo()
+        } else {
+            None
+        };
+        let Some(repo) = target else {
+            self.set_status(StatusKind::Info, "先挑一个仓库，人家才好在首页钉住它喵~");
+            return;
+        };
+        let name = repo.display_full_name();
+        if let Some(position) = self
+            .config
+            .pinned_repos
+            .iter()
+            .position(|item| item.eq_ignore_ascii_case(&name))
+        {
+            self.config.pinned_repos.remove(position);
+            self.pin_cache
+                .retain(|item| !item.display_full_name().eq_ignore_ascii_case(&name));
+            self.home_selected = self
+                .home_selected
+                .min(self.pinned_list().len().saturating_sub(1));
+            match self.config.save(&self.paths) {
+                Ok(()) => self.set_status(StatusKind::Ok, &format!("{name} 从首页取下啦喵~")),
+                Err(error) => {
+                    self.set_status(StatusKind::Error, &format!("置顶改动没存住：{error}喵~"))
+                }
+            }
+            return;
+        }
+        self.config.pinned_repos.push(name.clone());
+        self.config.pinned_repos.truncate(24);
+        if !self
+            .pin_cache
+            .iter()
+            .any(|item| item.display_full_name().eq_ignore_ascii_case(&name))
+        {
+            self.pin_cache.push(repo);
+        }
+        match self.config.save(&self.paths) {
+            Ok(()) => self.set_status(StatusKind::Ok, &format!("{name} 钉到首页啦喵~")),
+            Err(error) => {
+                self.set_status(StatusKind::Error, &format!("置顶改动没存住：{error}喵~"))
+            }
+        }
+    }
+
+    pub fn sync_pins(&mut self) {
+        let pins = self.pinned_list();
+        let names = self.config.pinned_repos.clone();
+        for (index, name) in names.into_iter().enumerate() {
+            if pins.get(index).map(|repo| repo.id).unwrap_or(0) == 0 {
+                self.fetch_pin(name);
+            }
+        }
+        self.home_selected = self.home_selected.min(pins.len().saturating_sub(1));
+    }
+
+    fn fetch_pin(&mut self, name: String) {
+        if self
+            .pin_loading
+            .iter()
+            .any(|item| item.eq_ignore_ascii_case(&name))
+        {
+            return;
+        }
+        self.pin_loading.push(name.clone());
+        let tx = self.tx.clone();
+        let client = self.client.clone();
+        std::thread::spawn(move || {
+            let result = client.repository(&name, false);
+            let _ = tx.send(Msg::PinnedRepo { name, result });
+        });
+    }
+
+    pub fn open_pin(&mut self, index: usize) {
+        let pins = self.pinned_list();
+        let Some(repo) = pins.get(index).cloned() else {
+            return;
+        };
+        if repo.id != 0 {
+            self.open_repo(repo);
+            return;
+        }
+        if let Some(name) = self.config.pinned_repos.get(index).cloned() {
+            self.fetch_pin(name.clone());
+            self.set_status(StatusKind::Info, &format!("人家正在把 {name} 取回来喵~"));
+        }
+    }
+
+    pub fn move_home_selection(&mut self, delta: i32) {
+        let len = self.pinned_list().len();
+        if len == 0 {
+            self.home_selected = 0;
+            return;
+        }
+        self.home_selected = (self.home_selected as i32 + delta).clamp(0, len as i32 - 1) as usize;
+    }
+
+    pub fn random_repo(&mut self) {
+        let mut candidates = Vec::new();
+        for page in [
+            self.current_list_page(),
+            Page::Trending,
+            Page::Starred,
+            Page::Repositories,
+        ] {
+            for repo in self.raw_list(page) {
+                if !candidates
+                    .iter()
+                    .any(|item: &Repo| item.display_full_name() == repo.display_full_name())
+                {
+                    candidates.push(repo.clone());
+                }
+            }
+            if !candidates.is_empty() {
+                break;
+            }
+        }
+        if candidates.is_empty() {
+            self.set_status(StatusKind::Info, "仓库列表还空着，先按 r 刷新一下嘛喵~");
+            return;
+        }
+        let seed = self.started_at.elapsed().subsec_nanos() as usize;
+        let repo = candidates[seed % candidates.len()].clone();
+        self.set_status(
+            StatusKind::Info,
+            &format!("命运选中了 {} 喵~", repo.display_full_name()),
+        );
+        self.open_repo(repo);
+    }
+
+    pub fn unread_notifications(&self) -> usize {
+        self.notifications.iter().filter(|item| item.unread).count()
+    }
+
+    pub fn language_overview(&self) -> Vec<(String, usize)> {
+        let mut counts: std::collections::BTreeMap<String, usize> =
+            std::collections::BTreeMap::new();
+        for repo in self.repos.iter().chain(self.starred.iter()) {
+            *counts.entry(repo.language_label().to_string()).or_insert(0) += 1;
+        }
+        let mut counts: Vec<_> = counts.into_iter().collect();
+        counts.sort_by(|left, right| {
+            right.1.cmp(&left.1).then_with(|| {
+                left.0
+                    .to_ascii_lowercase()
+                    .cmp(&right.0.to_ascii_lowercase())
+            })
+        });
+        counts
+    }
+
+    pub fn top_repos_by_stars(&self, limit: usize) -> Vec<Repo> {
+        let mut repos: Vec<Repo> = Vec::new();
+        for repo in self.repos.iter().chain(self.starred.iter()) {
+            if !repos
+                .iter()
+                .any(|item| item.display_full_name() == repo.display_full_name())
+            {
+                repos.push(repo.clone());
+            }
+        }
+        repos.sort_by_key(|left| std::cmp::Reverse(left.stargazers_count));
+        repos.truncate(limit);
+        repos
+    }
+
+    pub fn palette_items(&self) -> Vec<PaletteItem> {
+        vec![
+            PaletteItem {
+                label: "首页".to_string(),
+                hint: "总览 · 置顶 · 快捷入口".to_string(),
+                action: Action::Navigate(Page::Home),
+            },
+            PaletteItem {
+                label: "人家的仓库".to_string(),
+                hint: "账号下的全部仓库".to_string(),
+                action: Action::Navigate(Page::Repositories),
+            },
+            PaletteItem {
+                label: "星星收藏".to_string(),
+                hint: "收藏的仓库".to_string(),
+                action: Action::Navigate(Page::Starred),
+            },
+            PaletteItem {
+                label: "搜索仓库".to_string(),
+                hint: "全局搜索".to_string(),
+                action: Action::Navigate(Page::Search),
+            },
+            PaletteItem {
+                label: "热门仓库".to_string(),
+                hint: "按日 / 周 / 月涨星".to_string(),
+                action: Action::Navigate(Page::Trending),
+            },
+            PaletteItem {
+                label: "账号与额度".to_string(),
+                hint: "资料 · API 额度".to_string(),
+                action: Action::Navigate(Page::Account),
+            },
+            PaletteItem {
+                label: "通知中心".to_string(),
+                hint: "未读 / 全部通知".to_string(),
+                action: Action::Navigate(Page::Notifications),
+            },
+            PaletteItem {
+                label: "数据洞察".to_string(),
+                hint: "语言 · 星标 · 缓存".to_string(),
+                action: Action::Navigate(Page::Insights),
+            },
+            PaletteItem {
+                label: "设置".to_string(),
+                hint: "主题 · 代理 · 缓存".to_string(),
+                action: Action::Navigate(Page::Settings),
+            },
+            PaletteItem {
+                label: "随机探索一个仓库".to_string(),
+                hint: "E · 打开命运选中的仓库".to_string(),
+                action: Action::RandomRepo,
+            },
+            PaletteItem {
+                label: "置顶 / 取消置顶当前仓库".to_string(),
+                hint: "P · 固定到首页".to_string(),
+                action: Action::TogglePin,
+            },
+            PaletteItem {
+                label: "主题工作室".to_string(),
+                hint: "T · 挑一套配色".to_string(),
+                action: Action::OpenThemes,
+            },
+            PaletteItem {
+                label: "切换下一套主题".to_string(),
+                hint: "t · 立即换色".to_string(),
+                action: Action::CycleTheme,
+            },
+            PaletteItem {
+                label: "缓存管理".to_string(),
+                hint: "c · 清理缓存".to_string(),
+                action: Action::OpenCacheManager,
+            },
+            PaletteItem {
+                label: "操作说明".to_string(),
+                hint: "? · 全部按键".to_string(),
+                action: Action::OpenHelp,
+            },
+            PaletteItem {
+                label: "刷新当前页".to_string(),
+                hint: "r · 重新取数据".to_string(),
+                action: Action::Refresh,
+            },
+            PaletteItem {
+                label: "保存设置".to_string(),
+                hint: "Ctrl+S · 写入配置文件".to_string(),
+                action: Action::SaveConfig,
+            },
+        ]
+    }
+
+    pub fn palette_filtered(&self) -> Vec<PaletteItem> {
+        let query = self.palette_input.value.trim().to_lowercase();
+        self.palette_items()
+            .into_iter()
+            .filter(|item| {
+                query.is_empty()
+                    || item.label.to_lowercase().contains(&query)
+                    || item.hint.to_lowercase().contains(&query)
+            })
+            .collect()
+    }
+
+    pub fn open_palette(&mut self) {
+        self.palette_input = TextInput::new("");
+        self.palette_selected = 0;
+        self.overlay = Some(Overlay::Palette);
+    }
+
+    pub fn move_palette_selection(&mut self, delta: i32) {
+        let len = self.palette_filtered().len();
+        if len == 0 {
+            self.palette_selected = 0;
+            return;
+        }
+        self.palette_selected =
+            (self.palette_selected as i32 + delta).clamp(0, len as i32 - 1) as usize;
+    }
+
+    pub fn activate_palette(&mut self) {
+        let Some(item) = self.palette_filtered().get(self.palette_selected).cloned() else {
+            return;
+        };
+        self.overlay = None;
+        self.handle_action(item.action);
+    }
+
+    pub fn open_themes(&mut self) {
+        self.theme_selected = self
+            .themes
+            .iter()
+            .position(|flavor| *flavor == self.theme.flavor)
+            .unwrap_or(0);
+        self.overlay = Some(Overlay::Themes);
+    }
+
+    pub fn move_theme_selection(&mut self, delta: i32) {
+        if self.themes.is_empty() {
+            return;
+        }
+        self.theme_selected =
+            (self.theme_selected as i32 + delta).clamp(0, self.themes.len() as i32 - 1) as usize;
+    }
+
+    pub fn choose_theme_selection(&mut self) {
+        if let Some(flavor) = self.themes.get(self.theme_selected).cloned() {
+            self.set_theme(flavor);
+        }
     }
 
     pub fn go_back(&mut self) {
@@ -5430,6 +5873,60 @@ impl App {
             }
             return;
         }
+        if key.modifiers.contains(KeyModifiers::CONTROL)
+            && matches!(key.code, KeyCode::Char('k') | KeyCode::Char('K'))
+        {
+            self.open_palette();
+            return;
+        }
+        if self.overlay == Some(Overlay::Palette) {
+            match key.code {
+                KeyCode::Esc => self.overlay = None,
+                KeyCode::Enter => self.activate_palette(),
+                KeyCode::Up => self.move_palette_selection(-1),
+                KeyCode::Down => self.move_palette_selection(1),
+                KeyCode::PageUp => self.move_palette_selection(-5),
+                KeyCode::PageDown => self.move_palette_selection(5),
+                KeyCode::Home => self.palette_selected = 0,
+                KeyCode::End => {
+                    self.palette_selected = self.palette_filtered().len().saturating_sub(1);
+                }
+                KeyCode::Backspace => {
+                    self.palette_input.backspace();
+                    self.palette_selected = 0;
+                }
+                KeyCode::Delete => {
+                    self.palette_input.delete();
+                    self.palette_selected = 0;
+                }
+                KeyCode::Left => self.palette_input.left(),
+                KeyCode::Right => self.palette_input.right(),
+                KeyCode::Char('u') if key.modifiers.contains(KeyModifiers::CONTROL) => {
+                    self.palette_input = TextInput::new("");
+                    self.palette_selected = 0;
+                }
+                KeyCode::Char(ch) => {
+                    self.palette_input.insert(ch);
+                    self.palette_selected = 0;
+                }
+                _ => {}
+            }
+            return;
+        }
+        if self.overlay == Some(Overlay::Themes) {
+            match key.code {
+                KeyCode::Esc | KeyCode::Char('q') | KeyCode::Char('T') => self.overlay = None,
+                KeyCode::Up | KeyCode::Char('k') => self.move_theme_selection(-1),
+                KeyCode::Down | KeyCode::Char('j') => self.move_theme_selection(1),
+                KeyCode::Home | KeyCode::Char('g') => self.theme_selected = 0,
+                KeyCode::End | KeyCode::Char('G') => {
+                    self.theme_selected = self.themes.len().saturating_sub(1);
+                }
+                KeyCode::Enter => self.choose_theme_selection(),
+                _ => {}
+            }
+            return;
+        }
         if self.overlay == Some(Overlay::NewIssue) {
             self.handle_new_issue_key(key);
             return;
@@ -5708,6 +6205,13 @@ impl App {
                     return;
                 }
                 KeyCode::Char('1'..='6')
+                | KeyCode::Char('0')
+                | KeyCode::Char('9')
+                | KeyCode::Char('I')
+                | KeyCode::Char('E')
+                | KeyCode::Char('P')
+                | KeyCode::Char('T')
+                | KeyCode::Char(':')
                 | KeyCode::Char('/')
                 | KeyCode::Char('s')
                 | KeyCode::Char('a')
@@ -5776,11 +6280,17 @@ impl App {
             }
             KeyCode::Char('/') | KeyCode::Char('s') => self.focus_search(),
             KeyCode::Char('1') => self.navigate(Page::Repositories),
+            KeyCode::Char('0') => self.navigate(Page::Home),
             KeyCode::Char('2') => self.navigate(Page::Starred),
             KeyCode::Char('3') => self.navigate(Page::Search),
             KeyCode::Char('4') => self.open_account(),
             KeyCode::Char('5') => self.navigate(Page::Notifications),
             KeyCode::Char('6') => self.navigate(Page::Trending),
+            KeyCode::Char('9') | KeyCode::Char('I') => self.navigate(Page::Insights),
+            KeyCode::Char('E') => self.random_repo(),
+            KeyCode::Char('P') => self.toggle_pin(),
+            KeyCode::Char('T') => self.open_themes(),
+            KeyCode::Char(':') => self.open_palette(),
             KeyCode::Char('p') if self.page == Page::Trending => {
                 self.set_trending_period(self.trending_period.next())
             }
@@ -5790,9 +6300,11 @@ impl App {
                 Page::Repo | Page::Profile | Page::Actions | Page::Issues | Page::ReleaseDetail => {
                     self.go_back()
                 }
-                Page::Settings | Page::Account | Page::Notifications => {
-                    self.navigate(Page::Repositories)
-                }
+                Page::Settings
+                | Page::Account
+                | Page::Notifications
+                | Page::Home
+                | Page::Insights => self.navigate(Page::Repositories),
                 _ => {}
             },
             KeyCode::Char('r') => self.refresh_current(),
@@ -5838,6 +6350,13 @@ impl App {
                 Page::Commits => self.open_selected_commit(),
                 Page::ReleaseDetail => self.download_selected_release_asset(),
                 Page::Notifications => self.open_selected_notification(),
+                Page::Home => {
+                    if self.pinned_list().is_empty() {
+                        self.navigate(Page::Search);
+                    } else {
+                        self.open_pin(self.home_selected);
+                    }
+                }
                 _ => self.open_repo_page(),
             },
             KeyCode::Up | KeyCode::Char('k') => self.key_up(),
@@ -5857,7 +6376,7 @@ impl App {
             .page
             .nav_index()
             .unwrap_or_else(|| self.return_page.nav_index().unwrap_or(0));
-        let next = (current + 1) % 6;
+        let next = (current + 1) % 7;
         self.navigate(Page::from_nav(next));
     }
 
@@ -5870,6 +6389,8 @@ impl App {
             Page::ReleaseDetail => self.move_release_asset_selection(-1),
             Page::Notifications => self.move_notification_selection(-1),
             Page::Settings => self.settings_row = self.settings_row.saturating_sub(1),
+            Page::Home => self.move_home_selection(-1),
+            Page::Insights => {}
             _ => self.move_selection(-1),
         }
     }
@@ -5883,6 +6404,8 @@ impl App {
             Page::ReleaseDetail => self.move_release_asset_selection(1),
             Page::Notifications => self.move_notification_selection(1),
             Page::Settings => self.settings_row = (self.settings_row + 1).min(10),
+            Page::Home => self.move_home_selection(1),
+            Page::Insights => {}
             _ => self.move_selection(1),
         }
     }
@@ -5897,6 +6420,8 @@ impl App {
             Page::ReleaseDetail => self.select_release_asset(0),
             Page::Notifications => self.notification_selected = 0,
             Page::Account => {}
+            Page::Home => self.home_selected = 0,
+            Page::Insights => {}
             _ => self.first_list_page(),
         }
     }
@@ -5927,6 +6452,10 @@ impl App {
                 self.notification_selected = self.notifications.len().saturating_sub(1);
             }
             Page::Account => {}
+            Page::Home => {
+                self.home_selected = self.pinned_list().len().saturating_sub(1);
+            }
+            Page::Insights => {}
             _ => self.last_list_page(),
         }
     }
@@ -6466,6 +6995,13 @@ impl App {
             Action::OpenCurrent => self.open_current(),
             Action::CopyClone => self.copy_clone(),
             Action::SetTheme(flavor) => self.set_theme(flavor),
+            Action::CycleTheme => self.cycle_theme(1),
+            Action::OpenThemes => self.open_themes(),
+            Action::OpenPalette => self.open_palette(),
+            Action::OpenHelp => self.overlay = Some(Overlay::Help),
+            Action::RandomRepo => self.random_repo(),
+            Action::TogglePin => self.toggle_pin(),
+            Action::OpenPin(index) => self.open_pin(index),
             Action::StartProxyEdit => self.start_proxy_edit(),
             Action::StartDownloadDirEdit => self.start_download_dir_edit(),
             Action::ToggleFileTree => self.toggle_file_tree(),
@@ -6610,7 +7146,10 @@ impl App {
 }
 
 fn should_schedule_selected_detail(page: Page) -> bool {
-    !page.is_repo_page() && page != Page::Profile
+    matches!(
+        page,
+        Page::Repositories | Page::Starred | Page::Search | Page::Trending
+    )
 }
 
 fn return_page_when_opening(current: Page, return_page: Page) -> Page {
@@ -7081,5 +7620,39 @@ mod tests {
         input.insert('A');
         assert_eq!(input.value, "A库");
         assert_eq!(input.cursor, 1);
+    }
+
+    #[test]
+    fn dashboard_pages_do_not_schedule_list_detail() {
+        assert!(!should_schedule_selected_detail(Page::Home));
+        assert!(!should_schedule_selected_detail(Page::Insights));
+        assert!(!should_schedule_selected_detail(Page::Settings));
+    }
+
+    #[test]
+    fn palette_and_pin_keys_work() {
+        let root = std::env::temp_dir().join(format!("gitx-pin-key-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        let paths = Paths::for_test(root.join("config"), root.join("cache"));
+        let mut app = App::settings(paths, None);
+        app.settings_only = false;
+        app.page = Page::Repositories;
+        let repo = Repo {
+            name: "hello-world".to_string(),
+            full_name: "octocat/hello-world".to_string(),
+            ..Default::default()
+        };
+        app.repos = vec![repo];
+        app.handle_key(KeyEvent::new(KeyCode::Char('P'), KeyModifiers::NONE));
+        assert_eq!(app.config.pinned_repos, vec!["octocat/hello-world"]);
+        assert_eq!(app.pinned_list().len(), 1);
+
+        app.handle_key(KeyEvent::new(KeyCode::Char('k'), KeyModifiers::CONTROL));
+        assert_eq!(app.overlay, Some(Overlay::Palette));
+        app.palette_input = TextInput::new("洞察");
+        app.handle_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
+        assert_eq!(app.page, Page::Insights);
+        assert_eq!(app.overlay, None);
+        let _ = std::fs::remove_dir_all(root);
     }
 }

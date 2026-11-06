@@ -31,3 +31,6 @@ download_dir = "~/Downloads/gitx-tui"
 
 # 提交页一次读取的提交条数（10 - 100）
 commit_limit = 50
+
+# 首页置顶仓库，按 owner/name 保存，最多 24 个
+pinned_repos = []

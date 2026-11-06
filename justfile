@@ -68,3 +68,17 @@ clean:
 # 给当前版本打 tag
 tag:
     git tag -a "v{{version}}" -m "v{{version}}"
+
+# 提交并推送：just ship "提交信息"
+ship msg:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    if [ -z "$(git status --porcelain)" ]; then
+        echo "󰀦  没有需要提交的变更。"
+        exit 0
+    fi
+    git add .
+    git commit -m "{{msg}}"
+    BRANCH=$(git branch --show-current)
+    echo "󰁔  推送分支 $BRANCH..."
+    git push origin "$BRANCH"

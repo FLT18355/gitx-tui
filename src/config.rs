@@ -37,6 +37,7 @@ pub struct Config {
     pub show_readme: bool,
     pub download_dir: String,
     pub commit_limit: usize,
+    pub pinned_repos: Vec<String>,
 }
 
 impl Default for Config {
@@ -52,6 +53,7 @@ impl Default for Config {
             show_readme: false,
             download_dir: default_download_dir(),
             commit_limit: 50,
+            pinned_repos: Vec::new(),
         }
     }
 }
@@ -92,6 +94,15 @@ impl Config {
         if self.download_dir.is_empty() {
             self.download_dir = default_download_dir();
         }
+        let mut pinned: Vec<String> = Vec::new();
+        for name in self.pinned_repos.drain(..) {
+            let name = name.trim().to_string();
+            if !name.is_empty() && !pinned.iter().any(|item| item.eq_ignore_ascii_case(&name)) {
+                pinned.push(name);
+            }
+        }
+        pinned.truncate(24);
+        self.pinned_repos = pinned;
     }
 
     pub fn expanded_download_dir(&self) -> PathBuf {
@@ -261,6 +272,22 @@ mod tests {
         assert_eq!(Config::load(&paths).theme, "neon");
         fs::remove_file(paths.theme_file("neon")).unwrap();
         assert_eq!(Config::load(&paths).theme, "mocha");
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn normalizes_pinned_repos() {
+        let root = std::env::temp_dir().join(format!("gitx-pins-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&root);
+        let paths = Paths::for_test(root.join("config"), root.join("cache"));
+        fs::create_dir_all(paths.config_dir()).unwrap();
+        fs::write(
+            paths.config_file(),
+            "pinned_repos = [\"a/b\", \"A/B\", \"c/d\", \"  \"]\n",
+        )
+        .unwrap();
+        let config = Config::load(&paths);
+        assert_eq!(config.pinned_repos, vec!["a/b", "c/d"]);
         let _ = fs::remove_dir_all(&root);
     }
 
