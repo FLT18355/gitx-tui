@@ -215,18 +215,85 @@ pub fn tag_info(root: &Path, tag: &str) -> Result<String, String> {
     Ok(limit_lines(info, 400))
 }
 
-pub fn push(root: &Path, branch: &str) -> Result<String, String> {
-    let has_upstream = git(
+fn short_hash(hash: &str) -> &str {
+    &hash[..hash.len().min(7)]
+}
+
+fn has_upstream(root: &Path) -> bool {
+    git(
         root,
         &["rev-parse", "--abbrev-ref", "--symbolic-full-name", "@{u}"],
     )
-    .is_ok();
-    if has_upstream {
+    .is_ok()
+}
+
+pub fn push(root: &Path, branch: &str) -> Result<String, String> {
+    if has_upstream(root) {
         git(root, &["push"])?;
     } else {
         git(root, &["push", "-u", "origin", branch])?;
     }
     Ok("推送好啦喵~".to_string())
+}
+
+pub fn force_push(root: &Path, branch: &str) -> Result<String, String> {
+    if has_upstream(root) {
+        git(root, &["push", "--force-with-lease"])?;
+    } else {
+        git(
+            root,
+            &["push", "--force-with-lease", "-u", "origin", branch],
+        )?;
+    }
+    Ok("安全强推好啦喵~（--force-with-lease）".to_string())
+}
+
+pub fn pull_rebase(root: &Path) -> Result<String, String> {
+    git(root, &["pull", "--rebase"])?;
+    Ok("rebase 方式拉取好啦喵~".to_string())
+}
+
+pub fn cherry_pick(root: &Path, hash: &str) -> Result<String, String> {
+    git(root, &["cherry-pick", hash])?;
+    Ok(format!("把提交 {} 摘进来啦喵~", short_hash(hash)))
+}
+
+pub fn revert(root: &Path, hash: &str) -> Result<String, String> {
+    git(root, &["revert", "--no-edit", hash])?;
+    Ok(format!("提交 {} 已反转啦喵~", short_hash(hash)))
+}
+
+pub fn delete_tag(root: &Path, tag: &str) -> Result<(), String> {
+    git(root, &["tag", "-d", "--", tag]).map(|_| ())
+}
+
+pub fn rename_branch(root: &Path, from: &str, to: &str) -> Result<(), String> {
+    git(root, &["branch", "-m", from, to]).map(|_| ())
+}
+
+pub fn set_upstream(root: &Path, branch: &str, upstream: &str) -> Result<(), String> {
+    git(root, &["branch", "--set-upstream-to", upstream, branch]).map(|_| ())
+}
+
+pub fn blame(root: &Path, path: &str) -> Result<String, String> {
+    let text = git(root, &["blame", "-w", "-n", "--date=short", "--", path])?;
+    Ok(limit_lines(text, 2_000))
+}
+
+pub fn graph(root: &Path) -> Result<String, String> {
+    let text = git(
+        root,
+        &[
+            "log",
+            "--graph",
+            "--oneline",
+            "--decorate=short",
+            "--all",
+            "-n",
+            "150",
+        ],
+    )?;
+    Ok(limit_lines(text, 1_000))
 }
 
 pub fn push_tags(root: &Path) -> Result<String, String> {
@@ -280,6 +347,69 @@ mod tests {
         git(&root, &["add", "a.txt"]).unwrap();
         git(&root, &["commit", "-m", "first"]).unwrap();
         root
+    }
+
+    #[test]
+    fn sets_upstream_force_pushes_and_pulls_rebase() {
+        let root = temp_repo();
+        let remote = root.with_extension("remote.git");
+        let _ = fs::remove_dir_all(&remote);
+        git(
+            &root,
+            &[
+                "init",
+                "--bare",
+                "--initial-branch=main",
+                remote.to_str().unwrap(),
+            ],
+        )
+        .unwrap();
+        git(
+            &root,
+            &["remote", "add", "origin", remote.to_str().unwrap()],
+        )
+        .unwrap();
+        push(&root, "main").unwrap();
+        set_upstream(&root, "main", "origin/main").unwrap();
+        fs::write(root.join("b.txt"), "two\n").unwrap();
+        git(&root, &["add", "b.txt"]).unwrap();
+        git(&root, &["commit", "-m", "second"]).unwrap();
+        force_push(&root, "main").unwrap();
+        git(&root, &["reset", "--hard", "HEAD~1"]).unwrap();
+        assert!(!root.join("b.txt").exists());
+        pull_rebase(&root).unwrap();
+        assert!(root.join("b.txt").exists());
+        let _ = fs::remove_dir_all(&root);
+        let _ = fs::remove_dir_all(&remote);
+    }
+
+    #[test]
+    fn cherry_picks_reverts_tags_and_renames() {
+        let root = temp_repo();
+        git(&root, &["switch", "-c", "feature"]).unwrap();
+        fs::write(root.join("b.txt"), "two\n").unwrap();
+        git(&root, &["add", "b.txt"]).unwrap();
+        git(&root, &["commit", "-m", "feature work"]).unwrap();
+        let hash = git(&root, &["rev-parse", "HEAD"])
+            .unwrap()
+            .trim()
+            .to_string();
+        git(&root, &["switch", "main"]).unwrap();
+        cherry_pick(&root, &hash).unwrap();
+        assert!(root.join("b.txt").exists());
+        revert(&root, &hash).unwrap();
+        assert!(!root.join("b.txt").exists());
+        create_tag(&root, "v1").unwrap();
+        assert!(tag_info(&root, "v1").is_ok());
+        delete_tag(&root, "v1").unwrap();
+        assert!(tag_info(&root, "v1").is_err());
+        rename_branch(&root, "feature", "renamed").unwrap();
+        assert!(ref_log(&root, "renamed").is_ok());
+        let blame = blame(&root, "a.txt").unwrap();
+        assert!(blame.contains("one"));
+        assert!(blame.contains("gxt test"));
+        assert!(graph(&root).unwrap().contains("first"));
+        let _ = fs::remove_dir_all(&root);
     }
 
     #[test]

@@ -14,7 +14,7 @@ use std::fs;
 use std::io;
 use std::path::{Path, PathBuf};
 use std::process::Command;
-use std::time::{Duration, SystemTime};
+use std::time::{Duration, Instant, SystemTime};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum Tab {
@@ -132,6 +132,7 @@ pub(crate) struct MdApp {
     pub(crate) editor: Option<PathBuf>,
     pub(crate) hits: Vec<(Rect, Hit)>,
     pub(crate) hover: Option<Hit>,
+    pub(crate) started: Instant,
     pub(crate) files_rect: Rect,
     pub(crate) outline_rect: Rect,
     pub(crate) preview_rect: Rect,
@@ -177,6 +178,7 @@ impl MdApp {
             editor: None,
             hits: Vec::new(),
             hover: None,
+            started: Instant::now(),
             files_rect: Rect::default(),
             outline_rect: Rect::default(),
             preview_rect: Rect::default(),

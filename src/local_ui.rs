@@ -1,3 +1,4 @@
+use crate::chrome;
 use crate::format;
 use crate::icons;
 use crate::local::StatusFile;
@@ -26,6 +27,7 @@ pub fn draw(frame: &mut Frame, app: &mut LocalApp) {
             "终端再大一点嘛喵~",
             "本地仓库页至少要 80 x 22 才摆得下喵~",
         );
+        chrome::colorize_icons(frame.buffer_mut(), &theme);
         return;
     }
     let chunks = Layout::vertical([
@@ -43,93 +45,195 @@ pub fn draw(frame: &mut Frame, app: &mut LocalApp) {
     if app.help {
         draw_help(frame, &theme, area);
     }
+    chrome::colorize_icons(frame.buffer_mut(), &theme);
 }
 
 fn draw_header(frame: &mut Frame, app: &mut LocalApp, theme: &Theme, area: Rect) {
     fill(frame, area, theme.color("mantle"));
     let brand_hover = app.pointer.is_some_and(|(_, y)| y == area.y);
-    let brand = Line::from(vec![
-        Span::styled(
-            format!("{} ", icons::TERMINAL),
-            Style::default().fg(theme.color("green")),
-        ),
-        Span::styled(
-            "gxt",
-            Style::default()
-                .fg(theme.color("text"))
-                .add_modifier(Modifier::BOLD),
-        ),
-        Span::styled(
-            "  本地仓库喵~",
-            Style::default().fg(theme.color("subtext0")),
-        ),
-        Span::styled(
-            format!(
-                "  {}",
-                format::truncate(
-                    &app.repo.display_root(),
-                    area.width.saturating_sub(24) as usize
-                )
-            ),
-            Style::default().fg(if brand_hover {
-                theme.color("blue")
-            } else {
-                theme.color("overlay0")
-            }),
-        ),
-    ]);
-    frame.render_widget(
-        Paragraph::new(brand),
-        Rect::new(area.x + 2, area.y, area.width.saturating_sub(4), 1),
-    );
-
-    let mut branch = vec![
-        Span::styled(
-            format!("{} ", icons::BRANCH),
-            Style::default().fg(theme.color("blue")),
-        ),
-        Span::styled(
-            app.repo.branch.clone(),
-            Style::default()
-                .fg(theme.color("text"))
-                .add_modifier(Modifier::BOLD),
-        ),
-    ];
-    if !app.repo.upstream.is_empty() {
-        branch.push(Span::styled(
-            format!(" → {}", app.repo.upstream),
+    let mut title = vec![Span::styled(
+        format!("{} ", icons::TERMINAL),
+        Style::default().fg(theme.color("green")),
+    )];
+    title.extend(chrome::gradient_text(
+        "gxt · 本地仓库",
+        theme.color("blue"),
+        theme.color("mauve"),
+        true,
+    ));
+    if area.width > 96 {
+        title.push(Span::styled(
+            format!("   {} git 工作台", icons::SPARKLE),
             Style::default().fg(theme.color("overlay0")),
         ));
     }
-    if app.repo.ahead > 0 {
-        branch.push(Span::styled(
-            format!("  ↑{}", app.repo.ahead),
-            Style::default().fg(theme.color("green")),
-        ));
+    frame.render_widget(
+        Paragraph::new(Line::from(title)),
+        Rect::new(area.x + 2, area.y, area.width.saturating_sub(4), 1),
+    );
+
+    let root = format!("{} {}", icons::FOLDER_OPEN, app.repo.display_root());
+    let root_room = area.width.saturating_sub(42) as usize;
+    if app.busy.is_none() && area.width > 96 && root_room > 12 {
+        let root = format::truncate(&root, root_room);
+        let root_width = format::text_width(&root) as u16 + 2;
+        frame.render_widget(
+            Paragraph::new(root)
+                .alignment(Alignment::Right)
+                .style(Style::default().fg(if brand_hover {
+                    theme.color("blue")
+                } else {
+                    theme.color("overlay0")
+                })),
+            Rect::new(
+                area.x + area.width.saturating_sub(root_width),
+                area.y,
+                root_width,
+                1,
+            ),
+        );
     }
-    if app.repo.behind > 0 {
-        branch.push(Span::styled(
-            format!("  ↓{}", app.repo.behind),
-            Style::default().fg(theme.color("peach")),
-        ));
+
+    let tabs = [
+        (LocalPane::Status, icons::FILE, "改动"),
+        (LocalPane::Commits, icons::CLOCK, "提交"),
+        (LocalPane::Branches, icons::BRANCH, "分支"),
+        (LocalPane::Tags, icons::TAG, "标签"),
+        (LocalPane::Stashes, icons::ARCHIVE, "stash"),
+        (LocalPane::Graph, icons::NETWORK, "图谱"),
+    ];
+    let labels: Vec<String> = tabs
+        .iter()
+        .map(|(_, icon, label)| icons::label(icon, label))
+        .collect();
+    let widths: Vec<u16> = labels
+        .iter()
+        .map(|label| format::text_width(label) as u16 + 4)
+        .collect();
+    let mut x = area.x + 2;
+    let strip_right = area.x + area.width.saturating_sub(2);
+    let mut active_rect = None;
+    for (index, (pane, _, _)) in tabs.iter().enumerate() {
+        let width = widths[index];
+        if x + width > strip_right {
+            break;
+        }
+        let rect = Rect::new(x, area.y + 1, width, 1);
+        let selected = app.pane == *pane;
+        let hovered = app.hover == Some(LocalAction::Focus(*pane));
+        if selected {
+            active_rect = Some(rect);
+        }
+        fill(
+            frame,
+            rect,
+            if selected {
+                theme.color("surface1")
+            } else if hovered {
+                theme.color("surface0")
+            } else {
+                theme.color("mantle")
+            },
+        );
+        let style = if selected {
+            Style::default()
+                .fg(theme.color("blue"))
+                .add_modifier(Modifier::BOLD)
+        } else if hovered {
+            Style::default().fg(theme.color("text"))
+        } else {
+            Style::default().fg(theme.color("subtext0"))
+        };
+        frame.render_widget(
+            Paragraph::new(labels[index].clone())
+                .alignment(Alignment::Center)
+                .style(style),
+            rect,
+        );
+        app.hits.push((rect, LocalAction::Focus(*pane)));
+        x += width + 1;
+    }
+
+    let info_left = x + 2;
+    if area.width > 104 && info_left + 20 < strip_right {
+        let mut info = vec![
+            Span::styled(
+                format!("{} ", icons::BRANCH),
+                Style::default().fg(theme.color("blue")),
+            ),
+            Span::styled(
+                format::clean_text(&app.repo.branch),
+                Style::default()
+                    .fg(theme.color("text"))
+                    .add_modifier(Modifier::BOLD),
+            ),
+        ];
+        if !app.repo.upstream.is_empty() {
+            info.push(Span::styled(
+                format!(" → {}", app.repo.upstream),
+                Style::default().fg(theme.color("overlay0")),
+            ));
+        }
+        if app.repo.ahead > 0 {
+            info.push(Span::styled(
+                format!("  ↑{}", app.repo.ahead),
+                Style::default().fg(theme.color("green")),
+            ));
+        }
+        if app.repo.behind > 0 {
+            info.push(Span::styled(
+                format!("  ↓{}", app.repo.behind),
+                Style::default().fg(theme.color("peach")),
+            ));
+        }
+        let room = strip_right.saturating_sub(info_left) as usize;
+        let line = Line::from(info);
+        let used: usize = line
+            .spans
+            .iter()
+            .map(|span| format::text_width(&span.content))
+            .sum();
+        if used <= room {
+            frame.render_widget(
+                Paragraph::new(line),
+                Rect::new(info_left, area.y + 1, room as u16, 1),
+            );
+        }
     }
     if let Some(busy) = app.busy.as_deref() {
         let frame_no = (app.started_at.elapsed().as_millis() / 120) as u64;
-        branch.push(Span::styled(
-            format!("  {} {busy}", format::spinner(frame_no)),
-            Style::default().fg(theme.color("peach")),
-        ));
+        let text = format!("{} {busy}", format::spinner(frame_no));
+        let width = format::text_width(&text) as u16 + 2;
+        if area.width > width + 4 {
+            frame.render_widget(
+                Paragraph::new(text)
+                    .alignment(Alignment::Right)
+                    .style(Style::default().fg(theme.color("peach"))),
+                Rect::new(area.x + area.width.saturating_sub(width), area.y, width, 1),
+            );
+        }
     }
-    frame.render_widget(
-        Paragraph::new(Line::from(branch)),
-        Rect::new(area.x + 2, area.y + 1, area.width.saturating_sub(4), 1),
-    );
 
-    fill(
-        frame,
+    frame.render_widget(
+        Paragraph::new(chrome::gradient_line(
+            area.width as usize,
+            "─",
+            theme.color("surface1"),
+            theme.color("overlay0"),
+        )),
         Rect::new(area.x, area.y + 2, area.width, 1),
-        theme.color("surface0"),
     );
+    if let Some(rect) = active_rect {
+        frame.render_widget(
+            Paragraph::new(Line::from(chrome::gradient_chars(
+                rect.width as usize,
+                "━",
+                theme.color("blue"),
+                theme.color("mauve"),
+            ))),
+            Rect::new(rect.x, area.y + 2, rect.width, 1),
+        );
+    }
 }
 
 fn draw_body(frame: &mut Frame, app: &mut LocalApp, theme: &Theme, area: Rect) {
@@ -213,36 +317,47 @@ fn section(
     } else if hovered {
         theme.color("text")
     } else {
-        theme.color("overlay0")
+        theme.color("overlay1")
     };
+    let title_style = if focused {
+        Style::default()
+            .fg(theme.color("blue"))
+            .add_modifier(Modifier::BOLD)
+    } else {
+        Style::default()
+            .fg(theme.color("text"))
+            .add_modifier(Modifier::BOLD)
+    };
+    let used = format::text_width(&format!("{icon} {title}  "));
+    let mut meta = meta.to_string();
+    if used + format::text_width(&meta) + 8 > area.width as usize {
+        meta.clear();
+    }
+    let meta_width = format::text_width(&meta);
+    let rule = (area.width as usize)
+        .saturating_sub(used + meta_width + if meta.is_empty() { 0 } else { 3 })
+        .max(1);
+    let mut spans = vec![
+        Span::styled(format!("{icon} "), Style::default().fg(accent)),
+        Span::styled(title.to_string(), title_style),
+        Span::styled("  ", Style::default()),
+    ];
+    spans.extend(chrome::gradient_chars(
+        rule,
+        "─",
+        theme.color("surface1"),
+        theme.color("surface2"),
+    ));
+    if !meta.is_empty() {
+        spans.push(Span::styled(
+            format!(" {meta}"),
+            Style::default().fg(theme.color("overlay0")),
+        ));
+    }
     frame.render_widget(
-        Paragraph::new(Line::from(vec![
-            Span::styled(format!("{icon} "), Style::default().fg(accent)),
-            Span::styled(
-                title.to_string(),
-                if focused {
-                    Style::default()
-                        .fg(theme.color("blue"))
-                        .add_modifier(Modifier::BOLD)
-                } else if hovered {
-                    Style::default()
-                        .fg(theme.color("text"))
-                        .add_modifier(Modifier::BOLD)
-                } else {
-                    Style::default().fg(theme.color("text"))
-                },
-            ),
-        ])),
+        Paragraph::new(Line::from(spans)),
         Rect::new(area.x, area.y, area.width, 1),
     );
-    if !meta.is_empty() {
-        frame.render_widget(
-            Paragraph::new(meta.to_string())
-                .alignment(Alignment::Right)
-                .style(Style::default().fg(theme.color("overlay0"))),
-            Rect::new(area.x, area.y, area.width, 1),
-        );
-    }
     Rect::new(
         area.x,
         area.y + 1,
@@ -511,7 +626,8 @@ fn status_badge(file: &StatusFile, theme: &Theme) -> (&'static str, Color) {
 }
 
 fn draw_diff(frame: &mut Frame, app: &mut LocalApp, theme: &Theme, area: Rect) {
-    let active = app.pane == LocalPane::Diff || app.hover_pane == Some(LocalPane::Diff);
+    let graph = app.pane == LocalPane::Graph;
+    let active = app.pane == LocalPane::Diff || graph || app.hover_pane == Some(LocalPane::Diff);
     let border = if active {
         theme.color("blue")
     } else {
@@ -526,7 +642,12 @@ fn draw_diff(frame: &mut Frame, app: &mut LocalApp, theme: &Theme, area: Rect) {
     );
     app.layout.diff = area;
     if area.width > 0 && area.height > 0 {
-        app.hits.push((area, LocalAction::Focus(LocalPane::Diff)));
+        let focus = if graph {
+            LocalPane::Graph
+        } else {
+            LocalPane::Diff
+        };
+        app.hits.push((area, LocalAction::Focus(focus)));
     }
     let inner = Rect::new(
         area.x + 2,
@@ -549,12 +670,27 @@ fn draw_diff(frame: &mut Frame, app: &mut LocalApp, theme: &Theme, area: Rect) {
     } else {
         String::new()
     };
-    frame.render_widget(
-        Paragraph::new(format::truncate(
+    let icon = if graph {
+        icons::NETWORK
+    } else {
+        match app.diff_context {
+            LocalPane::Commits => icons::COMMIT,
+            LocalPane::Branches => icons::BRANCH,
+            LocalPane::Tags => icons::TAG,
+            LocalPane::Stashes => icons::ARCHIVE,
+            _ => icons::CODE,
+        }
+    };
+    let title = format!(
+        "{} {}",
+        icon,
+        format::truncate(
             &app.diff_title,
-            inner.width.saturating_sub(page.len() as u16 + 3) as usize,
-        ))
-        .style(
+            inner.width.saturating_sub(page.len() as u16 + 4) as usize,
+        )
+    );
+    frame.render_widget(
+        Paragraph::new(title).style(
             Style::default()
                 .fg(if active {
                     theme.color("blue")
@@ -573,10 +709,14 @@ fn draw_diff(frame: &mut Frame, app: &mut LocalApp, theme: &Theme, area: Rect) {
             Rect::new(inner.x, inner.y, inner.width, 1),
         );
     }
-    fill(
-        frame,
+    frame.render_widget(
+        Paragraph::new(chrome::gradient_line(
+            inner.width as usize,
+            "─",
+            theme.color("surface1"),
+            theme.color("surface2"),
+        )),
         Rect::new(inner.x, inner.y + 1, inner.width, 1),
-        theme.color("surface0"),
     );
     let body = Rect::new(
         inner.x,
@@ -593,6 +733,9 @@ fn draw_diff(frame: &mut Frame, app: &mut LocalApp, theme: &Theme, area: Rect) {
         .diff_text
         .lines()
         .map(|line| {
+            if graph {
+                return graph_line(line, theme);
+            }
             let style = if line.starts_with("+++") || line.starts_with("---") {
                 Style::default()
                     .fg(theme.color("overlay0"))
@@ -618,6 +761,65 @@ fn draw_diff(frame: &mut Frame, app: &mut LocalApp, theme: &Theme, area: Rect) {
         Paragraph::new(Text::from(lines)).scroll((app.diff_scroll, 0)),
         body,
     );
+}
+
+fn graph_line(line: &str, theme: &Theme) -> Line<'static> {
+    let split = line
+        .find(|ch: char| ch.is_ascii_alphanumeric())
+        .unwrap_or(0);
+    let mut spans = Vec::new();
+    if split > 0 {
+        let mut x = 0usize;
+        for ch in line[..split].chars() {
+            let color = match ch {
+                '*' => theme.color("mauve"),
+                '/' | '\\' => theme.color("peach"),
+                '|' => theme.color("surface2"),
+                _ => theme.color("overlay0"),
+            };
+            spans.push(Span::styled(ch.to_string(), Style::default().fg(color)));
+            x += 1;
+        }
+        let _ = x;
+    }
+    let rest = &line[split..];
+    if let Some((head, tail)) = rest.split_once(' ') {
+        if !head.is_empty() && head.len() >= 7 && head.chars().all(|ch| ch.is_ascii_hexdigit()) {
+            spans.push(Span::styled(
+                head.to_string(),
+                Style::default().fg(theme.color("yellow")),
+            ));
+            if let Some((deco, rest)) = tail.split_once(' ')
+                && deco.starts_with('(')
+                && deco.ends_with(')')
+            {
+                spans.push(Span::styled(
+                    format!(" {deco}"),
+                    Style::default().fg(theme.color("peach")),
+                ));
+                spans.push(Span::styled(
+                    format!(" {rest}"),
+                    Style::default().fg(theme.color("subtext0")),
+                ));
+            } else {
+                spans.push(Span::styled(
+                    format!(" {tail}"),
+                    Style::default().fg(theme.color("subtext0")),
+                ));
+            }
+        } else {
+            spans.push(Span::styled(
+                rest.to_string(),
+                Style::default().fg(theme.color("subtext0")),
+            ));
+        }
+    } else if !rest.is_empty() {
+        spans.push(Span::styled(
+            rest.to_string(),
+            Style::default().fg(theme.color("subtext0")),
+        ));
+    }
+    Line::from(spans)
 }
 
 fn draw_commits(frame: &mut Frame, app: &mut LocalApp, theme: &Theme, area: Rect) {
@@ -800,21 +1002,25 @@ fn draw_help(frame: &mut Frame, theme: &Theme, area: Rect) {
     frame.render_widget(block, rect);
     fill(frame, inner, theme.color("mantle"));
     let lines = [
-        ("Tab / 1~6", "切换面板"),
+        ("Tab / 1~7", "切换面板；7 是提交图谱"),
         ("j k / ↑ ↓", "选择；[ ] 或 PgUp/PgDn 翻页"),
         ("g / G", "第一项 / 最后一项"),
         ("Enter", "分支：切换；stash：应用；其他：刷新差异"),
         ("s / u", "暂存 / 取消暂存；S / U 全部"),
         ("d", "在暂存和未暂存差异之间切换"),
         ("c / A", "提交 / 修改最后一条提交"),
+        ("C / V", "提交：摘取到当前分支 / 反转提交（需确认）"),
         ("t / b", "创建标签 / 创建并切换分支"),
+        ("N / O", "分支：改名 / 设置上游"),
         ("M / R / X", "分支：合并 / 变基 / 删除（需确认）"),
         ("Q", "中止进行中的合并或变基"),
         ("z / Z", "保存 stash / 恢复最近一条 stash"),
-        ("a / D", "Stash：应用 / 删除选中 stash"),
+        ("a / D", "Stash：应用 / 删除；标签页 D 删除标签"),
+        ("B", "改动：查看选中文件的逐行 blame"),
         ("x", "丢弃选中文件的全部改动（需确认）"),
-        ("p / P", "推送当前分支 / 推送标签"),
-        ("f / L", "fetch / pull（仅 fast-forward）"),
+        ("p / F", "推送 / 安全强推 --force-with-lease（需确认）"),
+        ("P", "推送标签"),
+        ("f / L / l", "fetch / pull 快进 / pull --rebase"),
         ("H / r", "查看文件提交历史 / 刷新仓库"),
         ("h / ?   q / Esc", "帮助 / 退出；帮助打开时先关帮助"),
     ];
@@ -844,7 +1050,7 @@ fn draw_footer(frame: &mut Frame, app: &mut LocalApp, theme: &Theme, area: Rect)
     } else if app.message_error {
         (icons::WARNING, theme.color("red"))
     } else {
-        (icons::INFO, theme.color("subtext0"))
+        (icons::INFO, theme.color("green"))
     };
     let message = app.busy.as_deref().unwrap_or(&app.message);
     let frame_no = (app.started_at.elapsed().as_millis() / 120) as u64;
@@ -853,29 +1059,69 @@ fn draw_footer(frame: &mut Frame, app: &mut LocalApp, theme: &Theme, area: Rect)
     } else {
         format!("{icon}  {message}")
     };
-    let hint = if area.width >= 100 && app.busy.is_none() {
-        hover_hint(app)
+    let elapsed = app.started_at.elapsed().as_secs();
+    let session = if elapsed >= 3600 {
+        format!("{}h{:02}m", elapsed / 3600, (elapsed % 3600) / 60)
     } else {
-        None
+        format!("{}m{:02}s", elapsed / 60, elapsed % 60)
     };
-    let hint_width = hint
-        .as_deref()
-        .map(|text| format::text_width(text) as u16 + 2)
-        .unwrap_or(0);
-    let status_width = area.width.saturating_sub(4 + hint_width);
+    let timer = format!("{} {session}  ", icons::CLOCK);
+    let timer_width = if area.width > 60 {
+        format::text_width(&timer) as u16
+    } else {
+        0
+    };
+    let status_width = area.width.saturating_sub(4 + timer_width);
     frame.render_widget(
         Paragraph::new(format::truncate(&status, status_width as usize))
             .style(Style::default().fg(color)),
         Rect::new(area.x + 2, area.y, status_width, 1),
     );
-    if let Some(hint) = hint {
+    if timer_width > 0 {
         frame.render_widget(
-            Paragraph::new(hint)
+            Paragraph::new(timer)
                 .alignment(Alignment::Right)
                 .style(Style::default().fg(theme.color("overlay0"))),
+            Rect::new(
+                area.x + area.width.saturating_sub(timer_width),
+                area.y,
+                timer_width,
+                1,
+            ),
+        );
+    }
+
+    let hint = if area.width >= 100 && app.busy.is_none() {
+        hover_hint(app)
+    } else {
+        None
+    };
+    let hint = hint.or_else(|| {
+        if area.width >= 100 && app.busy.is_none() {
+            Some(format!(
+                "{} {} 分支 · {} 标签 · {} 提交 · {} stash",
+                icons::BRANCH,
+                app.repo.branches.len(),
+                app.repo.tags.len(),
+                app.repo.commits.len(),
+                app.repo.stashes.len()
+            ))
+        } else {
+            None
+        }
+    });
+    if let Some(hint) = hint {
+        frame.render_widget(
+            Paragraph::new(format::truncate(
+                &hint,
+                area.width.saturating_sub(4) as usize,
+            ))
+            .alignment(Alignment::Right)
+            .style(Style::default().fg(theme.color("overlay0"))),
             Rect::new(area.x + 2, area.y, area.width.saturating_sub(4), 1),
         );
     }
+
     let mut x = area.x + 2;
     let end = area.x + area.width.saturating_sub(2);
     let switch = "Tab 切面板  ";
@@ -945,7 +1191,7 @@ fn hover_hint(app: &LocalApp) -> Option<String> {
                 format::truncate(&format::clean_text(&stash.subject), 36)
             )
         }
-        LocalPane::Diff => return None,
+        LocalPane::Diff | LocalPane::Graph => return None,
     };
     Some(format::truncate(&text, 72))
 }
@@ -957,17 +1203,22 @@ fn pane_hints(pane: LocalPane) -> &'static [(LocalAction, &'static str, &'static
             (LocalAction::Unstage, "u", "取消"),
             (LocalAction::Commit, "c", "提交"),
             (LocalAction::Push, "p", "推送"),
-            (LocalAction::Fetch, "f", "取回"),
             (LocalAction::Pull, "L", "拉取"),
+            (LocalAction::ForcePush, "F", "强推"),
+            (LocalAction::PullRebase, "l", "rebase"),
+            (LocalAction::Fetch, "f", "取回"),
+            (LocalAction::Blame, "B", "blame"),
+            (LocalAction::StashSave, "z", "stash"),
+            (LocalAction::Discard, "x", "丢弃"),
             (LocalAction::Refresh, "r", "刷新"),
             (LocalAction::Help, "h", "帮助"),
             (LocalAction::Quit, "q", "退出"),
-            (LocalAction::Discard, "x", "丢弃"),
-            (LocalAction::StashSave, "z", "stash"),
         ],
         LocalPane::Commits => &[
             (LocalAction::Commit, "c", "提交"),
             (LocalAction::Amend, "A", "修改"),
+            (LocalAction::CherryPick, "C", "摘取"),
+            (LocalAction::Revert, "V", "反转"),
             (LocalAction::Push, "p", "推送"),
             (LocalAction::Fetch, "f", "取回"),
             (LocalAction::Pull, "L", "拉取"),
@@ -979,8 +1230,10 @@ fn pane_hints(pane: LocalPane) -> &'static [(LocalAction, &'static str, &'static
             (LocalAction::CheckoutBranch, "Enter", "切换"),
             (LocalAction::Merge, "M", "合并"),
             (LocalAction::Rebase, "R", "变基"),
-            (LocalAction::DeleteBranch, "X", "删除"),
             (LocalAction::NewBranch, "b", "新建"),
+            (LocalAction::RenameBranch, "N", "改名"),
+            (LocalAction::SetUpstream, "O", "上游"),
+            (LocalAction::DeleteBranch, "X", "删除"),
             (LocalAction::Abort, "Q", "中止"),
             (LocalAction::Refresh, "r", "刷新"),
             (LocalAction::Help, "h", "帮助"),
@@ -989,6 +1242,7 @@ fn pane_hints(pane: LocalPane) -> &'static [(LocalAction, &'static str, &'static
         LocalPane::Tags => &[
             (LocalAction::Tag, "t", "新标签"),
             (LocalAction::PushTags, "P", "推标签"),
+            (LocalAction::DeleteTag, "D", "删标签"),
             (LocalAction::Refresh, "r", "刷新"),
             (LocalAction::Help, "h", "帮助"),
             (LocalAction::Quit, "q", "退出"),
@@ -1002,9 +1256,17 @@ fn pane_hints(pane: LocalPane) -> &'static [(LocalAction, &'static str, &'static
             (LocalAction::Help, "h", "帮助"),
             (LocalAction::Quit, "q", "退出"),
         ],
+        LocalPane::Graph => &[
+            (LocalAction::Refresh, "r", "刷新"),
+            (LocalAction::Help, "h", "帮助"),
+            (LocalAction::Quit, "q", "退出"),
+        ],
         LocalPane::Diff => &[
             (LocalAction::Stage, "s", "暂存"),
             (LocalAction::Unstage, "u", "取消"),
+            (LocalAction::Pull, "L", "拉取"),
+            (LocalAction::PullRebase, "l", "rebase"),
+            (LocalAction::Fetch, "f", "取回"),
             (LocalAction::Refresh, "r", "刷新"),
             (LocalAction::Help, "h", "帮助"),
             (LocalAction::Quit, "q", "退出"),
@@ -1027,6 +1289,12 @@ fn draw_prompt(frame: &mut Frame, app: &mut LocalApp, theme: &Theme, area: Rect)
         PromptKind::Rebase => ("确认变基喵~", ""),
         PromptKind::BranchDelete => ("确认删除分支喵~", ""),
         PromptKind::Abort => ("确认中止喵~", ""),
+        PromptKind::CherryPick => ("确认摘提交喵~", ""),
+        PromptKind::Revert => ("确认反转提交喵~", ""),
+        PromptKind::DeleteTag => ("确认删除标签喵~", ""),
+        PromptKind::ForcePush => ("确认安全强推喵~", ""),
+        PromptKind::RenameBranch => ("分支改名喵~", "新的分支名喵~"),
+        PromptKind::SetUpstream => ("设置上游喵~", "比如 origin/main 喵~"),
     };
     let width = area.width.saturating_sub(12).min(70);
     let height = 8.min(area.height.saturating_sub(4));
@@ -1080,6 +1348,26 @@ fn draw_prompt(frame: &mut Frame, app: &mut LocalApp, theme: &Theme, area: Rect)
                 "已解决的冲突进度会丢失喵~",
                 "Enter 确认中止   Esc 取消喵~",
             ),
+            PromptKind::CherryPick => (
+                format!("提交 {}", &target[..target.len().min(7)]),
+                "会把这条提交摘到当前分支喵~",
+                "Enter 确认摘取   Esc 取消喵~",
+            ),
+            PromptKind::Revert => (
+                format!("提交 {}", &target[..target.len().min(7)]),
+                "会生成一条反向提交，不会改写历史喵~",
+                "Enter 确认反转   Esc 取消喵~",
+            ),
+            PromptKind::DeleteTag => (
+                format!("标签 {target}"),
+                "只删本地标签，远端标签要另推喵~",
+                "Enter 确认删除   Esc 取消喵~",
+            ),
+            PromptKind::ForcePush => (
+                format!("{} → {}", app.repo.branch, app.repo.upstream),
+                "--force-with-lease 会覆盖远端，lease 不匹配就拒绝喵~",
+                "Enter 确认强推   Esc 取消喵~",
+            ),
             _ => (
                 target.to_string(),
                 "这个文件的全部改动都会被丢弃喵~",
@@ -1132,7 +1420,7 @@ fn draw_prompt(frame: &mut Frame, app: &mut LocalApp, theme: &Theme, area: Rect)
 fn draw_center(frame: &mut Frame, theme: &Theme, area: Rect, title: &str, detail: &str) {
     let lines = vec![
         Line::from(Span::styled(
-            title,
+            format!("ᓚᘏᗢ  {title}"),
             Style::default()
                 .fg(theme.color("text"))
                 .add_modifier(Modifier::BOLD),
@@ -1161,4 +1449,63 @@ fn fill(frame: &mut Frame, rect: Rect, color: Color) {
         return;
     }
     frame.render_widget(Block::new().style(Style::default().bg(color)), rect);
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::local_app::LocalApp;
+    use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
+    use ratatui::Terminal;
+    use ratatui::backend::TestBackend;
+    use std::fs;
+    use std::time::{SystemTime, UNIX_EPOCH};
+
+    fn temp_repo() -> std::path::PathBuf {
+        let stamp = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let root = std::env::temp_dir().join(format!("gxt-local-ui-{stamp}"));
+        fs::create_dir_all(&root).unwrap();
+        crate::local_git::git(&root, &["init", "-b", "main"]).unwrap();
+        crate::local_git::git(&root, &["config", "user.email", "test@example.com"]).unwrap();
+        crate::local_git::git(&root, &["config", "user.name", "gxt test"]).unwrap();
+        fs::write(root.join("a.txt"), "one\n").unwrap();
+        crate::local_git::git(&root, &["add", "a.txt"]).unwrap();
+        crate::local_git::git(&root, &["commit", "-m", "first"]).unwrap();
+        root
+    }
+
+    #[test]
+    fn renders_tabs_and_commit_graph() {
+        let root = temp_repo();
+        let mut app = LocalApp::new(&root, Some("mocha".to_string())).unwrap();
+        let mut terminal = Terminal::new(TestBackend::new(100, 30)).unwrap();
+        terminal.draw(|frame| draw(frame, &mut app)).unwrap();
+        let text: String = terminal
+            .backend()
+            .buffer()
+            .content()
+            .iter()
+            .map(|cell| cell.symbol())
+            .collect();
+        let compact: String = text.chars().filter(|ch| !ch.is_whitespace()).collect();
+        for label in ["本地仓库", "改动", "提交", "分支", "标签", "图谱"] {
+            assert!(compact.contains(label), "missing {label}");
+        }
+        app.handle_key(KeyEvent::new(KeyCode::Char('7'), KeyModifiers::NONE));
+        terminal.draw(|frame| draw(frame, &mut app)).unwrap();
+        let text: String = terminal
+            .backend()
+            .buffer()
+            .content()
+            .iter()
+            .map(|cell| cell.symbol())
+            .collect();
+        let compact: String = text.chars().filter(|ch| !ch.is_whitespace()).collect();
+        assert!(compact.contains("提交图谱"));
+        assert!(compact.contains("first"));
+        let _ = fs::remove_dir_all(&root);
+    }
 }

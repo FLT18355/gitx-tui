@@ -1,6 +1,7 @@
 mod api;
 mod app;
 mod cache;
+mod chrome;
 mod cli;
 mod commands;
 mod config;

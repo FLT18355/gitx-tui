@@ -24,6 +24,7 @@ pub enum LocalPane {
     Branches,
     Tags,
     Stashes,
+    Graph,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -38,6 +39,12 @@ pub enum PromptKind {
     Rebase,
     BranchDelete,
     Abort,
+    CherryPick,
+    Revert,
+    DeleteTag,
+    ForcePush,
+    RenameBranch,
+    SetUpstream,
 }
 
 impl PromptKind {
@@ -50,6 +57,10 @@ impl PromptKind {
                 | PromptKind::Rebase
                 | PromptKind::BranchDelete
                 | PromptKind::Abort
+                | PromptKind::CherryPick
+                | PromptKind::Revert
+                | PromptKind::DeleteTag
+                | PromptKind::ForcePush
         )
     }
 }
@@ -71,6 +82,14 @@ pub enum LocalAction {
     PushTags,
     Fetch,
     Pull,
+    PullRebase,
+    ForcePush,
+    CherryPick,
+    Revert,
+    DeleteTag,
+    RenameBranch,
+    SetUpstream,
+    Blame,
     Merge,
     Rebase,
     DeleteBranch,
@@ -323,6 +342,10 @@ impl LocalApp {
                     Ok(String::new())
                 }
             },
+            LocalPane::Graph => {
+                self.diff_title = "提交图谱喵~  --graph --all".to_string();
+                local_ops::graph(&root)
+            }
             LocalPane::Diff => Ok(String::new()),
         };
         self.diff_text = match result {
@@ -376,7 +399,7 @@ impl LocalApp {
                     .clamp(0, self.repo.stashes.len() as i32 - 1)
                     as usize;
             }
-            LocalPane::Diff => {
+            LocalPane::Diff | LocalPane::Graph => {
                 self.scroll_diff(delta * 3);
                 return;
             }
@@ -396,7 +419,7 @@ impl LocalApp {
             LocalPane::Branches => self.branch_rows,
             LocalPane::Tags => self.tag_rows,
             LocalPane::Stashes => self.stash_rows,
-            LocalPane::Diff => {
+            LocalPane::Diff | LocalPane::Graph => {
                 self.scroll_diff(direction * self.diff_scroll_max.max(1) as i32);
                 return;
             }
@@ -441,7 +464,7 @@ impl LocalApp {
                     0
                 };
             }
-            LocalPane::Diff => {
+            LocalPane::Diff | LocalPane::Graph => {
                 self.diff_scroll = if end { self.diff_scroll_max } else { 0 };
                 return;
             }
@@ -457,6 +480,7 @@ impl LocalApp {
             LocalPane::Branches,
             LocalPane::Tags,
             LocalPane::Stashes,
+            LocalPane::Graph,
         ];
         let current = order
             .iter()
@@ -631,6 +655,132 @@ impl LocalApp {
         self.message_error = false;
     }
 
+    fn begin_cherry_pick(&mut self) {
+        let Some(commit) = self.selected_commit().cloned() else {
+            self.message = "先在提交面板选一条提交喵~".to_string();
+            self.message_error = true;
+            return;
+        };
+        self.prompt = Some(Prompt {
+            kind: PromptKind::CherryPick,
+            input: TextInput::new(""),
+            target: Some(commit.hash),
+        });
+        self.message = format!("把 {} 摘到当前分支，Enter 确认，Esc 取消喵~", commit.short);
+        self.message_error = false;
+    }
+
+    fn begin_revert(&mut self) {
+        let Some(commit) = self.selected_commit().cloned() else {
+            self.message = "先在提交面板选一条提交喵~".to_string();
+            self.message_error = true;
+            return;
+        };
+        self.prompt = Some(Prompt {
+            kind: PromptKind::Revert,
+            input: TextInput::new(""),
+            target: Some(commit.hash),
+        });
+        self.message = format!(
+            "为 {} 生成一条反转提交，Enter 确认，Esc 取消喵~",
+            commit.short
+        );
+        self.message_error = false;
+    }
+
+    fn begin_delete_tag(&mut self) {
+        let Some(tag) = self.selected_tag().cloned() else {
+            self.message = "先在标签面板选一个标签喵~".to_string();
+            self.message_error = true;
+            return;
+        };
+        self.prompt = Some(Prompt {
+            kind: PromptKind::DeleteTag,
+            input: TextInput::new(""),
+            target: Some(tag.name),
+        });
+        self.message = "标签会从本地删除，Enter 确认，Esc 取消喵~".to_string();
+        self.message_error = false;
+    }
+
+    fn begin_force_push(&mut self) {
+        if self.repo.upstream.is_empty() {
+            self.message = "当前分支还没有上游，先普通推送一次喵~".to_string();
+            self.message_error = true;
+            return;
+        }
+        self.prompt = Some(Prompt {
+            kind: PromptKind::ForcePush,
+            input: TextInput::new(""),
+            target: Some(self.repo.branch.clone()),
+        });
+        self.message = "会用 --force-with-lease 覆盖远端，Enter 确认，Esc 取消喵~".to_string();
+        self.message_error = false;
+    }
+
+    fn begin_rename_branch(&mut self) {
+        let Some(branch) = self.selected_branch().cloned() else {
+            self.message = "先在分支面板选一条分支喵~".to_string();
+            self.message_error = true;
+            return;
+        };
+        self.prompt = Some(Prompt {
+            kind: PromptKind::RenameBranch,
+            input: TextInput::new(&branch.name),
+            target: Some(branch.name),
+        });
+        self.message = "写新分支名，Enter 改名，Esc 取消喵~".to_string();
+        self.message_error = false;
+    }
+
+    fn begin_set_upstream(&mut self) {
+        let Some(branch) = self.selected_branch().cloned() else {
+            self.message = "先在分支面板选一条分支喵~".to_string();
+            self.message_error = true;
+            return;
+        };
+        let default = if branch.upstream.is_empty() {
+            format!("origin/{}", branch.name)
+        } else {
+            branch.upstream.clone()
+        };
+        self.prompt = Some(Prompt {
+            kind: PromptKind::SetUpstream,
+            input: TextInput::new(&default),
+            target: Some(branch.name),
+        });
+        self.message = "写上上游分支，Enter 设置，Esc 取消喵~".to_string();
+        self.message_error = false;
+    }
+
+    fn show_blame(&mut self) {
+        let Some(file) = self.selected_file().cloned() else {
+            self.message = "先在改动面板选中一个文件喵~".to_string();
+            self.message_error = true;
+            return;
+        };
+        match local_ops::blame(&self.repo.root, &file.path) {
+            Ok(text) => {
+                self.diff_title = format!("逐行归属喵~  {}", format::truncate(&file.path, 40));
+                self.diff_text = if text.trim().is_empty() {
+                    "这个文件还没有可 blame 的内容喵~".to_string()
+                } else {
+                    text
+                };
+                self.diff_scroll = 0;
+                self.diff_scroll_max = 0;
+                self.diff_context = LocalPane::Status;
+                self.pane = LocalPane::Diff;
+                self.message = format!("{} 的逐行归属摆出来啦喵~", file.path);
+                self.message_error = false;
+            }
+            Err(error) => {
+                self.message = error;
+                self.message_error = true;
+            }
+        }
+    }
+
     fn begin_commit(&mut self) {
         if self.repo.staged_count() == 0 {
             self.message = "先按 s 暂存一些改动，再写提交信息喵~".to_string();
@@ -707,15 +857,31 @@ impl LocalApp {
             self.message = match kind {
                 PromptKind::Commit | PromptKind::Amend => "提交信息不能空着喵~".to_string(),
                 PromptKind::Tag => "标签名不能空着喵~".to_string(),
-                PromptKind::Branch => "分支名不能空着喵~".to_string(),
+                PromptKind::Branch | PromptKind::RenameBranch => "分支名不能空着喵~".to_string(),
+                PromptKind::SetUpstream => "上游分支不能空着喵~".to_string(),
                 PromptKind::Discard
                 | PromptKind::StashDrop
                 | PromptKind::Merge
                 | PromptKind::Rebase
                 | PromptKind::BranchDelete
-                | PromptKind::Abort => String::new(),
+                | PromptKind::Abort
+                | PromptKind::CherryPick
+                | PromptKind::Revert
+                | PromptKind::DeleteTag
+                | PromptKind::ForcePush => String::new(),
             };
             self.message_error = true;
+            return;
+        }
+        if kind == PromptKind::ForcePush {
+            self.prompt = None;
+            let root = self.repo.root.clone();
+            let branch = target
+                .filter(|branch| !branch.is_empty())
+                .unwrap_or_else(|| self.repo.branch.clone());
+            self.start_remote("正在安全强推喵~...", move || {
+                local_ops::force_push(&root, &branch)
+            });
             return;
         }
         let result = match kind {
@@ -744,6 +910,27 @@ impl LocalApp {
                 None => Err("没有选中要删除的分支喵~".to_string()),
             },
             PromptKind::Abort => local_ops::abort_in_progress(&self.repo.root).map(|_| ()),
+            PromptKind::CherryPick => match target.as_deref() {
+                Some(hash) => local_ops::cherry_pick(&self.repo.root, hash).map(|_| ()),
+                None => Err("没有选中要摘的提交喵~".to_string()),
+            },
+            PromptKind::Revert => match target.as_deref() {
+                Some(hash) => local_ops::revert(&self.repo.root, hash).map(|_| ()),
+                None => Err("没有选中要反转的提交喵~".to_string()),
+            },
+            PromptKind::DeleteTag => match target.as_deref() {
+                Some(tag) => local_ops::delete_tag(&self.repo.root, tag),
+                None => Err("没有选中要删除的标签喵~".to_string()),
+            },
+            PromptKind::RenameBranch => match target.as_deref() {
+                Some(branch) => local_ops::rename_branch(&self.repo.root, branch, &value),
+                None => Err("没有选中要改名的分支喵~".to_string()),
+            },
+            PromptKind::SetUpstream => match target.as_deref() {
+                Some(branch) => local_ops::set_upstream(&self.repo.root, branch, &value),
+                None => Err("没有选中要设置上游的分支喵~".to_string()),
+            },
+            PromptKind::ForcePush => Ok(()),
         };
         match result {
             Ok(()) => {
@@ -770,6 +957,22 @@ impl LocalApp {
                         format!("分支 {} 删掉啦喵~", target.unwrap_or_default())
                     }
                     PromptKind::Abort => "合并或变基中止啦喵~".to_string(),
+                    PromptKind::CherryPick => {
+                        format!("提交 {} 摘进来啦喵~", target.unwrap_or_default())
+                    }
+                    PromptKind::Revert => {
+                        format!("提交 {} 已反转啦喵~", target.unwrap_or_default())
+                    }
+                    PromptKind::DeleteTag => {
+                        format!("标签 {} 删掉啦喵~", target.unwrap_or_default())
+                    }
+                    PromptKind::RenameBranch => {
+                        format!("分支 {} 改名成 {value} 啦喵~", target.unwrap_or_default())
+                    }
+                    PromptKind::SetUpstream => {
+                        format!("{} 的上游设成 {value} 啦喵~", target.unwrap_or_default())
+                    }
+                    PromptKind::ForcePush => "安全强推好啦喵~".to_string(),
                 };
                 self.message_error = false;
             }
@@ -919,6 +1122,13 @@ impl LocalApp {
         self.start_remote("正在拉取远端喵~...", move || local_ops::pull(&root));
     }
 
+    fn pull_rebase(&mut self) {
+        let root = self.repo.root.clone();
+        self.start_remote("正在用 rebase 拉取喵~...", move || {
+            local_ops::pull_rebase(&root)
+        });
+    }
+
     fn poll_messages(&mut self) {
         while let Ok(message) = self.rx.try_recv() {
             self.busy = None;
@@ -960,6 +1170,12 @@ impl LocalApp {
                     Some(PromptKind::Rebase) => "取消变基啦喵~".to_string(),
                     Some(PromptKind::BranchDelete) => "取消删除分支啦喵~".to_string(),
                     Some(PromptKind::Abort) => "取消中止操作啦喵~".to_string(),
+                    Some(PromptKind::CherryPick) => "取消摘提交啦喵~".to_string(),
+                    Some(PromptKind::Revert) => "取消反转提交啦喵~".to_string(),
+                    Some(PromptKind::DeleteTag) => "取消删除标签啦喵~".to_string(),
+                    Some(PromptKind::RenameBranch) => "取消分支改名啦喵~".to_string(),
+                    Some(PromptKind::SetUpstream) => "取消设置上游啦喵~".to_string(),
+                    Some(PromptKind::ForcePush) => "取消强推啦喵~".to_string(),
                     None => String::new(),
                 };
                 self.message_error = false;
@@ -986,11 +1202,16 @@ impl LocalApp {
     }
 
     fn pane_at(&self, x: u16, y: u16) -> Option<LocalPane> {
+        let right = if self.pane == LocalPane::Graph {
+            LocalPane::Graph
+        } else {
+            LocalPane::Diff
+        };
         let rects = [
             (LocalPane::Branches, self.layout.branches),
             (LocalPane::Tags, self.layout.tags),
             (LocalPane::Status, self.layout.status),
-            (LocalPane::Diff, self.layout.diff),
+            (right, self.layout.diff),
             (LocalPane::Commits, self.layout.commits),
             (LocalPane::Stashes, self.layout.stashes),
         ];
@@ -1049,7 +1270,7 @@ impl LocalApp {
                 self.repo.stashes.len(),
                 self.stash_selected,
             )),
-            LocalPane::Diff => None,
+            LocalPane::Diff | LocalPane::Graph => None,
         }
     }
 
@@ -1094,7 +1315,7 @@ impl LocalApp {
             LocalPane::Branches => self.branch_selected = index,
             LocalPane::Tags => self.tag_selected = index,
             LocalPane::Stashes => self.stash_selected = index,
-            LocalPane::Diff => {}
+            LocalPane::Diff | LocalPane::Graph => {}
         }
         self.refresh_diff();
         true
@@ -1145,6 +1366,14 @@ impl LocalApp {
             LocalAction::PushTags => self.push_tags(),
             LocalAction::Fetch => self.fetch(),
             LocalAction::Pull => self.pull(),
+            LocalAction::PullRebase => self.pull_rebase(),
+            LocalAction::ForcePush => self.begin_force_push(),
+            LocalAction::CherryPick => self.begin_cherry_pick(),
+            LocalAction::Revert => self.begin_revert(),
+            LocalAction::DeleteTag => self.begin_delete_tag(),
+            LocalAction::RenameBranch => self.begin_rename_branch(),
+            LocalAction::SetUpstream => self.begin_set_upstream(),
+            LocalAction::Blame => self.show_blame(),
             LocalAction::Merge => self.begin_merge(),
             LocalAction::Rebase => self.begin_rebase(),
             LocalAction::DeleteBranch => self.begin_branch_delete(),
@@ -1241,6 +1470,7 @@ impl LocalApp {
             KeyCode::Char('4') => self.jump_pane(LocalPane::Branches),
             KeyCode::Char('5') => self.jump_pane(LocalPane::Tags),
             KeyCode::Char('6') => self.jump_pane(LocalPane::Stashes),
+            KeyCode::Char('7') => self.jump_pane(LocalPane::Graph),
             KeyCode::Tab | KeyCode::Right => self.cycle_pane(1),
             KeyCode::BackTab | KeyCode::Left => self.cycle_pane(-1),
             KeyCode::Up | KeyCode::Char('k') => self.move_selection(-1),
@@ -1263,6 +1493,12 @@ impl LocalApp {
             KeyCode::Char('Z') => self.stash_pop(),
             KeyCode::Char('a') if self.pane == LocalPane::Stashes => self.apply_selected_stash(),
             KeyCode::Char('D') if self.pane == LocalPane::Stashes => self.begin_stash_drop(),
+            KeyCode::Char('D') if self.pane == LocalPane::Tags => self.begin_delete_tag(),
+            KeyCode::Char('C') if self.pane == LocalPane::Commits => self.begin_cherry_pick(),
+            KeyCode::Char('V') if self.pane == LocalPane::Commits => self.begin_revert(),
+            KeyCode::Char('N') if self.pane == LocalPane::Branches => self.begin_rename_branch(),
+            KeyCode::Char('O') if self.pane == LocalPane::Branches => self.begin_set_upstream(),
+            KeyCode::Char('B') if self.pane == LocalPane::Status => self.show_blame(),
             KeyCode::Char('M') if self.pane == LocalPane::Branches => self.begin_merge(),
             KeyCode::Char('R') if self.pane == LocalPane::Branches => self.begin_rebase(),
             KeyCode::Char('X') if self.pane == LocalPane::Branches => self.begin_branch_delete(),
@@ -1271,6 +1507,8 @@ impl LocalApp {
             KeyCode::Char('P') => self.push_tags(),
             KeyCode::Char('f') => self.fetch(),
             KeyCode::Char('L') => self.pull(),
+            KeyCode::Char('l') => self.pull_rebase(),
+            KeyCode::Char('F') => self.begin_force_push(),
             KeyCode::Char('r') => self.refresh(),
             KeyCode::Enter => match self.pane {
                 LocalPane::Branches => self.checkout_selected_branch(),

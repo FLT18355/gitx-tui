@@ -1,3 +1,4 @@
+use crate::chrome;
 use crate::format;
 use crate::icons;
 use crate::md_app::{Hit, MdApp, StatusKind, Tab};
@@ -19,6 +20,7 @@ pub fn draw(frame: &mut Frame, app: &mut MdApp) {
     if area.width < MIN_WIDTH || area.height < MIN_HEIGHT {
         app.hits.clear();
         draw_too_small(frame, area, &theme);
+        chrome::colorize_icons(frame.buffer_mut(), &theme);
         return;
     }
 
@@ -59,26 +61,25 @@ pub fn draw(frame: &mut Frame, app: &mut MdApp) {
         app.hits.clear();
         draw_help(frame, app, &theme, area);
     }
+    chrome::colorize_icons(frame.buffer_mut(), &theme);
 }
 
-fn draw_header(frame: &mut Frame, app: &MdApp, theme: &Theme, area: Rect) {
+fn draw_header(frame: &mut Frame, app: &mut MdApp, theme: &Theme, area: Rect) {
     fill(frame, area, theme.color("mantle"));
     let brand = Rect::new(area.x + 2, area.y, area.width.saturating_sub(4), 1);
-    let mut title = vec![
-        Span::styled(
-            format!("{} ", icons::BOOK),
-            Style::default().fg(theme.color("blue")),
-        ),
-        Span::styled(
-            "gxt",
-            Style::default()
-                .fg(theme.color("text"))
-                .add_modifier(Modifier::BOLD),
-        ),
-    ];
-    if area.width > 90 {
+    let mut title = vec![Span::styled(
+        format!("{} ", icons::BOOK),
+        Style::default().fg(theme.color("blue")),
+    )];
+    title.extend(chrome::gradient_text(
+        "gxt · markdown studio",
+        theme.color("blue"),
+        theme.color("mauve"),
+        true,
+    ));
+    if area.width > 96 {
         title.push(Span::styled(
-            "  当前目录的 Markdown 预览器喵~",
+            format!("   {} 当前目录的 Markdown 预览器", icons::SPARKLE),
             Style::default().fg(theme.color("overlay0")),
         ));
     }
@@ -88,9 +89,12 @@ fn draw_header(frame: &mut Frame, app: &MdApp, theme: &Theme, area: Rect) {
     let root_width = format::text_width(&root) as u16 + 2;
     if area.width > 100 && root_width < area.width / 2 {
         frame.render_widget(
-            Paragraph::new(root)
-                .alignment(Alignment::Right)
-                .style(Style::default().fg(theme.color("overlay0"))),
+            Paragraph::new(format::truncate(
+                &root,
+                area.width.saturating_sub(60) as usize,
+            ))
+            .alignment(Alignment::Right)
+            .style(Style::default().fg(theme.color("overlay0"))),
             Rect::new(
                 area.x + area.width.saturating_sub(root_width),
                 area.y,
@@ -100,48 +104,103 @@ fn draw_header(frame: &mut Frame, app: &MdApp, theme: &Theme, area: Rect) {
         );
     }
 
-    let tab = icons::label(icons::BOOK, "Markdown 预览喵~");
-    let tab_width = format::text_width(&tab) as u16 + 4;
-    let tab_rect = Rect::new(area.x + 2, area.y + 1, tab_width, 1);
-    fill(frame, tab_rect, theme.color("surface1"));
-    frame.render_widget(
-        Paragraph::new(tab).alignment(Alignment::Center).style(
+    let headings = app.doc.as_ref().map(|doc| doc.headings.len()).unwrap_or(0);
+    let tabs = [
+        (
+            Tab::Files,
+            icons::FILE,
+            format!("文件 {}", app.visible.len()),
+        ),
+        (Tab::Outline, icons::BOOK, format!("大纲 {headings}")),
+        (Tab::Preview, icons::EYE, "预览".to_string()),
+    ];
+    let labels: Vec<String> = tabs
+        .iter()
+        .map(|(_, icon, label)| icons::label(icon, label))
+        .collect();
+    let widths: Vec<u16> = labels
+        .iter()
+        .map(|label| format::text_width(label) as u16 + 4)
+        .collect();
+    let active_tab = if app.fullscreen {
+        Tab::Preview
+    } else {
+        app.focus
+    };
+    let mut x = area.x + 2;
+    let strip_right = area.x + area.width.saturating_sub(2);
+    let mut active_rect = None;
+    for (index, (tab, _, _)) in tabs.iter().enumerate() {
+        let width = widths[index];
+        if x + width > strip_right {
+            break;
+        }
+        let rect = Rect::new(x, area.y + 1, width, 1);
+        let selected = active_tab == *tab;
+        let hovered = app.hover == Some(Hit::FocusTab(*tab));
+        if selected {
+            active_rect = Some(rect);
+        }
+        fill(
+            frame,
+            rect,
+            if selected {
+                theme.color("surface1")
+            } else if hovered {
+                theme.color("surface0")
+            } else {
+                theme.color("mantle")
+            },
+        );
+        let style = if selected {
             Style::default()
                 .fg(theme.color("blue"))
-                .add_modifier(Modifier::BOLD),
-        ),
-        tab_rect,
-    );
-    let status = format!(
-        "{} 个文件 · {} 个标题",
-        app.files.len(),
-        app.doc.as_ref().map(|doc| doc.headings.len()).unwrap_or(0)
-    );
-    if area.width > tab_width + 40 {
+                .add_modifier(Modifier::BOLD)
+        } else if hovered {
+            Style::default().fg(theme.color("text"))
+        } else {
+            Style::default().fg(theme.color("subtext0"))
+        };
         frame.render_widget(
-            Paragraph::new(status).style(Style::default().fg(theme.color("overlay0"))),
-            Rect::new(
-                area.x + tab_width + 4,
-                area.y + 1,
-                area.width.saturating_sub(tab_width + 6),
-                1,
-            ),
+            Paragraph::new(labels[index].clone())
+                .alignment(Alignment::Center)
+                .style(style),
+            rect,
         );
+        register(app, rect, Hit::FocusTab(*tab));
+        x += width + 1;
     }
-    let hint = "Ctrl+F 搜索   Tab 换焦点   / 筛选   t 主题   ? 帮助喵~";
-    if area.width > 116 {
+    let hint = "Ctrl+F 搜索   / 筛选   t 主题   ? 帮助喵~";
+    let hint_width = format::text_width(hint) as u16;
+    if strip_right.saturating_sub(x) > hint_width + 6 {
         frame.render_widget(
             Paragraph::new(hint)
                 .alignment(Alignment::Right)
                 .style(Style::default().fg(theme.color("overlay0"))),
-            Rect::new(area.x + 2, area.y + 1, area.width.saturating_sub(4), 1),
+            Rect::new(x + 2, area.y + 1, strip_right.saturating_sub(x + 2), 1),
         );
     }
-    fill(
-        frame,
+
+    frame.render_widget(
+        Paragraph::new(chrome::gradient_line(
+            area.width as usize,
+            "─",
+            theme.color("surface1"),
+            theme.color("overlay0"),
+        )),
         Rect::new(area.x, area.y + 2, area.width, 1),
-        theme.color("surface0"),
     );
+    if let Some(rect) = active_rect {
+        frame.render_widget(
+            Paragraph::new(Line::from(chrome::gradient_chars(
+                rect.width as usize,
+                "━",
+                theme.color("blue"),
+                theme.color("mauve"),
+            ))),
+            Rect::new(rect.x, area.y + 2, rect.width, 1),
+        );
+    }
 }
 
 fn draw_footer(frame: &mut Frame, app: &MdApp, theme: &Theme, area: Rect) {
@@ -156,14 +215,43 @@ fn draw_footer(frame: &mut Frame, app: &MdApp, theme: &Theme, area: Rect) {
     } else {
         format!("{icon}  {}", app.status)
     };
+    let timer = format!(
+        "{} {:02}:{:02}  ",
+        icons::CLOCK,
+        app.started.elapsed().as_secs() / 60,
+        app.started.elapsed().as_secs() % 60
+    );
+    let timer_width = if area.width > 60 {
+        format::text_width(&timer) as u16
+    } else {
+        0
+    };
     frame.render_widget(
         Paragraph::new(format::truncate(
             &status,
-            area.width.saturating_sub(4) as usize,
+            area.width.saturating_sub(4 + timer_width) as usize,
         ))
         .style(Style::default().fg(color)),
-        Rect::new(area.x + 2, area.y, area.width.saturating_sub(4), 1),
+        Rect::new(
+            area.x + 2,
+            area.y,
+            area.width.saturating_sub(4 + timer_width),
+            1,
+        ),
     );
+    if timer_width > 0 {
+        frame.render_widget(
+            Paragraph::new(timer)
+                .alignment(Alignment::Right)
+                .style(Style::default().fg(theme.color("overlay0"))),
+            Rect::new(
+                area.x + area.width.saturating_sub(timer_width),
+                area.y,
+                timer_width,
+                1,
+            ),
+        );
+    }
 
     let hints = hints_for(app);
     let right = format!(
@@ -234,75 +322,64 @@ fn draw_divider(frame: &mut Frame, theme: &Theme, area: Rect, left_focused: bool
     }
 }
 
-fn draw_pane_tabs(frame: &mut Frame, app: &mut MdApp, theme: &Theme, area: Rect, active: Tab) {
-    let files_label = format!("{} 文件 {}", icons::FILE, app.visible.len());
-    let outline_label = format!(
-        "{} 大纲 {}",
-        icons::BOOK,
-        app.doc.as_ref().map(|doc| doc.headings.len()).unwrap_or(0)
-    );
-    let mut x = area.x;
-    for (tab, label) in [(Tab::Files, files_label), (Tab::Outline, outline_label)] {
-        let width = format::text_width(&label) as u16 + 2;
-        let rect = Rect::new(x, area.y, width, 1);
-        let selected = tab == active;
-        let hovered = app.hover == Some(Hit::FocusTab(tab));
-        fill(
-            frame,
-            rect,
-            if selected {
-                theme.color("surface1")
-            } else if hovered {
-                theme.color("surface0")
-            } else {
-                theme.color("mantle")
-            },
-        );
-        frame.render_widget(
-            Paragraph::new(label).alignment(Alignment::Center).style(
-                Style::default()
-                    .fg(if selected {
-                        theme.color("blue")
-                    } else {
-                        theme.color("subtext0")
-                    })
-                    .add_modifier(if selected {
-                        Modifier::BOLD
-                    } else {
-                        Modifier::empty()
-                    }),
-            ),
-            rect,
-        );
-        register(app, rect, Hit::FocusTab(tab));
-        x += width + 1;
-    }
-    let sort = format!("排序 {}", app.sort.label());
-    if area.x + area.width > x + sort.len() as u16 + 2 {
-        frame.render_widget(
-            Paragraph::new(sort)
-                .alignment(Alignment::Right)
-                .style(Style::default().fg(theme.color("overlay0"))),
-            Rect::new(x, area.y, area.x + area.width - x, 1),
-        );
-    }
-}
-
 fn draw_files(frame: &mut Frame, app: &mut MdApp, theme: &Theme, area: Rect) {
     app.files_rect = area;
     register(app, area, Hit::FilesPanel);
     fill(frame, area, theme.color("mantle"));
-    draw_pane_tabs(
-        frame,
-        app,
-        theme,
-        Rect::new(area.x + 1, area.y, area.width.saturating_sub(1), 1),
-        Tab::Files,
+    let focused = app.focus == Tab::Files;
+    let mut title = vec![
+        Span::styled(
+            format!("{} ", icons::FILE),
+            Style::default().fg(if focused {
+                theme.color("blue")
+            } else {
+                theme.color("overlay1")
+            }),
+        ),
+        Span::styled(
+            "文件".to_string(),
+            Style::default()
+                .fg(if focused {
+                    theme.color("blue")
+                } else {
+                    theme.color("text")
+                })
+                .add_modifier(Modifier::BOLD),
+        ),
+        Span::styled(
+            format!("  {} 篇", app.visible.len()),
+            Style::default().fg(theme.color("overlay0")),
+        ),
+    ];
+    let sort = format!("{} 排序 {}", icons::CHART, app.sort.label());
+    let used = format::text_width("文件  0000 篇") as u16;
+    let rule = area.width.saturating_sub(used + 12);
+    title.extend(chrome::gradient_chars(
+        rule as usize,
+        "─",
+        theme.color("surface1"),
+        theme.color("surface2"),
+    ));
+    frame.render_widget(
+        Paragraph::new(Line::from(title)),
+        Rect::new(area.x + 1, area.y, area.width.saturating_sub(2), 1),
     );
-    fill(
-        frame,
+    if area.width > 28 {
+        frame.render_widget(
+            Paragraph::new(sort)
+                .alignment(Alignment::Right)
+                .style(Style::default().fg(theme.color("overlay0"))),
+            Rect::new(area.x + 1, area.y, area.width.saturating_sub(3), 1),
+        );
+    }
+    frame.render_widget(
+        Paragraph::new(chrome::gradient_line(
+            area.width as usize,
+            "─",
+            theme.color("surface1"),
+            theme.color("surface2"),
+        )),
         Rect::new(area.x, area.y + 1, area.width, 1),
-        theme.color("surface0"),
     );
 
     let filter_row = app.filter_editing || !app.filter.value.is_empty();
@@ -322,7 +399,7 @@ fn draw_files(frame: &mut Frame, app: &mut MdApp, theme: &Theme, area: Rect) {
             "筛选后什么都不剩喵~"
         };
         frame.render_widget(
-            Paragraph::new(text)
+            Paragraph::new(format!("ᓚᘏᗢ  {text}"))
                 .alignment(Alignment::Center)
                 .style(Style::default().fg(theme.color("overlay0"))),
             Rect::new(body.x, body.y + body.height / 2, body.width, 1),
@@ -436,17 +513,51 @@ fn draw_outline(frame: &mut Frame, app: &mut MdApp, theme: &Theme, area: Rect) {
     app.outline_rect = area;
     register(app, area, Hit::OutlinePanel);
     fill(frame, area, theme.color("mantle"));
-    draw_pane_tabs(
-        frame,
-        app,
-        theme,
-        Rect::new(area.x + 1, area.y, area.width.saturating_sub(1), 1),
-        Tab::Outline,
+    let focused = app.focus == Tab::Outline;
+    let headings_count = app.doc.as_ref().map(|doc| doc.headings.len()).unwrap_or(0);
+    let mut title = vec![
+        Span::styled(
+            format!("{} ", icons::BOOK),
+            Style::default().fg(if focused {
+                theme.color("blue")
+            } else {
+                theme.color("overlay1")
+            }),
+        ),
+        Span::styled(
+            "大纲".to_string(),
+            Style::default()
+                .fg(if focused {
+                    theme.color("blue")
+                } else {
+                    theme.color("text")
+                })
+                .add_modifier(Modifier::BOLD),
+        ),
+        Span::styled(
+            format!("  {headings_count} 个标题  "),
+            Style::default().fg(theme.color("overlay0")),
+        ),
+    ];
+    let used = format::text_width("大纲  00 个标题  ") as u16;
+    title.extend(chrome::gradient_chars(
+        area.width.saturating_sub(used + 1) as usize,
+        "─",
+        theme.color("surface1"),
+        theme.color("surface2"),
+    ));
+    frame.render_widget(
+        Paragraph::new(Line::from(title)),
+        Rect::new(area.x + 1, area.y, area.width.saturating_sub(2), 1),
     );
-    fill(
-        frame,
+    frame.render_widget(
+        Paragraph::new(chrome::gradient_line(
+            area.width as usize,
+            "─",
+            theme.color("surface1"),
+            theme.color("surface2"),
+        )),
         Rect::new(area.x, area.y + 1, area.width, 1),
-        theme.color("surface0"),
     );
 
     let body = Rect::new(
@@ -472,7 +583,7 @@ fn draw_outline(frame: &mut Frame, app: &mut MdApp, theme: &Theme, area: Rect) {
             "先挑一篇文档喵~"
         };
         frame.render_widget(
-            Paragraph::new(text)
+            Paragraph::new(format!("ᓚᘏᗢ  {text}"))
                 .alignment(Alignment::Center)
                 .style(Style::default().fg(theme.color("overlay0"))),
             Rect::new(body.x, body.y + body.height / 2, body.width, 1),
@@ -633,11 +744,34 @@ fn draw_preview(frame: &mut Frame, app: &mut MdApp, theme: &Theme, area: Rect) {
             Rect::new(area.x + 1, area.y, area.width.saturating_sub(2), 1),
         );
     }
-    fill(
-        frame,
+    frame.render_widget(
+        Paragraph::new(chrome::gradient_line(
+            area.width as usize,
+            "─",
+            theme.color("surface1"),
+            theme.color("surface2"),
+        )),
         Rect::new(area.x, area.y + 1, area.width, 1),
-        theme.color("surface0"),
     );
+    if app.doc.is_some() {
+        let progress = if app.preview_scroll_max > 0 {
+            (app.preview_scroll as u32 * area.width as u32 / app.preview_scroll_max as u32)
+                .min(area.width as u32) as u16
+        } else {
+            area.width
+        };
+        if progress > 0 {
+            frame.render_widget(
+                Paragraph::new(Line::from(chrome::gradient_chars(
+                    progress as usize,
+                    "━",
+                    theme.color("blue"),
+                    theme.color("mauve"),
+                ))),
+                Rect::new(area.x, area.y + 1, progress, 1),
+            );
+        }
+    }
 
     let body = Rect::new(
         area.x + 1,
@@ -653,7 +787,7 @@ fn draw_preview(frame: &mut Frame, app: &mut MdApp, theme: &Theme, area: Rect) {
         frame.render_widget(
             Paragraph::new(vec![
                 Line::from(Span::styled(
-                    "左边挑一篇文档，Enter 打开喵~",
+                    "ᓚᘏᗢ  左边挑一篇文档，Enter 打开喵~",
                     Style::default().fg(theme.color("subtext0")),
                 )),
                 Line::default(),
