@@ -5,8 +5,8 @@ use crate::format::{self, base64};
 use crate::icons;
 use crate::model::{
     Branch, Commit, CommitDetail, Issue, IssueState, LanguageStat, Notification, RateLimit,
-    ReadmeContent, Release, Repo, RepoSort, SearchResponse, SearchSort, StarSort, TreeResponse,
-    TrendingPeriod, User, Workflow, key_part,
+    ReadmeContent, Release, Repo, RepoSort, SearchResponse, SearchSort, StarSort, Tag,
+    TreeResponse, TrendingPeriod, User, Workflow, WorkflowRun, key_part,
 };
 use crate::theme::Theme;
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers, MouseButton, MouseEvent, MouseEventKind};
@@ -32,6 +32,7 @@ pub enum Page {
     Issues,
     Commits,
     ReleaseDetail,
+    Tags,
 }
 
 impl Page {
@@ -50,6 +51,7 @@ impl Page {
             | Self::Issues
             | Self::Commits
             | Self::ReleaseDetail
+            | Self::Tags
             | Self::Settings
             | Self::Insights => None,
         }
@@ -84,13 +86,19 @@ impl Page {
             Self::Issues => "议题喵~",
             Self::Commits => "提交喵~",
             Self::ReleaseDetail => "发行版详情喵~",
+            Self::Tags => "标签喵~",
         }
     }
 
     pub fn is_repo_page(self) -> bool {
         matches!(
             self,
-            Self::Repo | Self::Actions | Self::Issues | Self::Commits | Self::ReleaseDetail
+            Self::Repo
+                | Self::Actions
+                | Self::Issues
+                | Self::Commits
+                | Self::ReleaseDetail
+                | Self::Tags
         )
     }
 
@@ -159,6 +167,7 @@ pub enum Overlay {
     NewIssue,
     Palette,
     Themes,
+    CancelRun,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -292,6 +301,20 @@ pub enum Action {
     SelectCacheRow(usize),
     OpenCacheDir,
     OpenRepoLanguages,
+    OpenTags,
+    OpenTagPage,
+    SelectTag(usize),
+    CopyTagName,
+    DownloadTagZip,
+    DownloadTagTarball,
+    CopySsh,
+    CopyFullName,
+    CopyAssetUrl { asset: usize },
+    FocusIssueFilter,
+    FocusCommitFilter,
+    RerunActionRun,
+    CancelActionRun,
+    ConfirmCancelRun,
     StartNewIssue,
     FocusNewIssue(bool),
     SubmitNewIssue,
@@ -457,6 +480,7 @@ pub fn cache_groups() -> Vec<CacheGroup> {
             prefixes: &[
                 "repo_",
                 "releases_",
+                "tags_",
                 "tree_",
                 "readme_",
                 "languages_",
@@ -590,6 +614,10 @@ enum Msg {
         name: String,
         result: Result<Vec<Release>, String>,
     },
+    Tags {
+        name: String,
+        result: Result<Vec<Tag>, String>,
+    },
     Tree {
         name: String,
         branch: String,
@@ -650,6 +678,14 @@ enum Msg {
         name: String,
         workflow: String,
         git_ref: String,
+        result: Result<(), String>,
+    },
+    ActionRunRerun {
+        name: String,
+        result: Result<(), String>,
+    },
+    ActionRunCancelled {
+        name: String,
         result: Result<(), String>,
     },
     Issues {
@@ -870,6 +906,18 @@ pub struct App {
     pub trending_loading: bool,
     pub detail_loading: Option<String>,
     pub releases_loading: Option<String>,
+    pub tags: Vec<Tag>,
+    pub tags_loading: Option<String>,
+    pub tags_fetched_at: Option<i64>,
+    pub tag_repo: Option<Repo>,
+    pub tag_selected: usize,
+    pub tag_scroll: u16,
+    pub issue_filter: TextInput,
+    pub issue_filter_focus: bool,
+    pub commit_filter: TextInput,
+    pub commit_filter_focus: bool,
+    pub cancel_run: Option<WorkflowRun>,
+    pub cancel_loading: bool,
 
     pub status: Status,
     pub hitboxes: Vec<HitBox>,
@@ -1093,6 +1141,18 @@ impl App {
             trending_loading: false,
             detail_loading: None,
             releases_loading: None,
+            tags: Vec::new(),
+            tags_loading: None,
+            tags_fetched_at: None,
+            tag_repo: None,
+            tag_selected: 0,
+            tag_scroll: 0,
+            issue_filter: TextInput::new(""),
+            issue_filter_focus: false,
+            commit_filter: TextInput::new(""),
+            commit_filter_focus: false,
+            cancel_run: None,
+            cancel_loading: false,
             status: Status {
                 text: if settings_only {
                     "全局设置喵~改完按 Ctrl+S 保存哦喵~".to_string()
@@ -1477,6 +1537,42 @@ impl App {
                     }
                 }
             }
+            Msg::Tags { name, result } => {
+                if self.tags_loading.as_deref() == Some(name.as_str()) {
+                    self.tags_loading = None;
+                }
+                if self
+                    .tag_repo
+                    .as_ref()
+                    .map(|repo| repo.display_full_name())
+                    .as_deref()
+                    != Some(name.as_str())
+                {
+                    return;
+                }
+                match result {
+                    Ok(tags) => {
+                        if let Some(repo) = self.tag_repo.clone() {
+                            let _ = self.cache.save(&repo.tags_cache_key(), &tags);
+                        }
+                        self.tags = tags;
+                        self.tags_fetched_at = Some(now_epoch());
+                        self.clamp_tag_selection();
+                        self.refresh_cache_stats();
+                        if self.page == Page::Tags {
+                            self.set_status(
+                                StatusKind::Ok,
+                                &format!("标签都拿来啦，一共 {} 个喵~", self.tags.len()),
+                            );
+                        }
+                    }
+                    Err(error) => {
+                        if self.page == Page::Tags {
+                            self.set_status(StatusKind::Error, &error);
+                        }
+                    }
+                }
+            }
             Msg::Tree {
                 name,
                 branch,
@@ -1793,6 +1889,35 @@ impl App {
                         self.workflow_error = Some(error.clone());
                         self.set_status(StatusKind::Error, &error);
                     }
+                }
+            }
+            Msg::ActionRunRerun { name, result } => {
+                if self.action_repo.as_deref() != Some(name.as_str()) {
+                    return;
+                }
+                match result {
+                    Ok(()) => {
+                        if self.page == Page::Actions {
+                            self.set_status(StatusKind::Ok, "重新跑起来啦喵~");
+                        }
+                        self.fetch_action_runs(true);
+                    }
+                    Err(error) => self.set_status(StatusKind::Error, &error),
+                }
+            }
+            Msg::ActionRunCancelled { name, result } => {
+                if self.action_repo.as_deref() != Some(name.as_str()) {
+                    return;
+                }
+                self.cancel_loading = false;
+                match result {
+                    Ok(()) => {
+                        self.set_status(StatusKind::Ok, "这次运行已经取消啦喵~");
+                        self.cancel_run = None;
+                        self.overlay = None;
+                        self.fetch_action_runs(true);
+                    }
+                    Err(error) => self.set_status(StatusKind::Error, &error),
                 }
             }
             Msg::Issues {
@@ -2187,7 +2312,7 @@ impl App {
 
     fn context_repo(&self) -> Option<Repo> {
         match self.page {
-            Page::Repo | Page::ReleaseDetail => {
+            Page::Repo | Page::ReleaseDetail | Page::Tags => {
                 self.page_repo.clone().or_else(|| self.detail.clone())
             }
             Page::Actions => self
@@ -2368,6 +2493,73 @@ impl App {
         if let Some(run) = run {
             self.open_url(&run.html_url);
         }
+    }
+
+    pub fn rerun_action_run(&mut self) {
+        let Some(run) = self.selected_action_run() else {
+            self.set_status(StatusKind::Info, "先挑一次工作流运行嘛喵~");
+            return;
+        };
+        let Some(name) = self.action_repo.clone() else {
+            return;
+        };
+        let Some(repo) = self.repo_by_name(&name) else {
+            self.set_status(StatusKind::Error, "找不到这个仓库的凭据喵~");
+            return;
+        };
+        if run.status != "completed" {
+            self.set_status(StatusKind::Info, "这次运行还没结束，先别重跑喵~");
+            return;
+        }
+        self.set_status(StatusKind::Info, "人家正在重新运行这次工作流喵~...");
+        let tx = self.tx.clone();
+        let client = self.client.clone();
+        let run_id = run.id;
+        std::thread::spawn(move || {
+            let result = client.rerun_action_run(&name, run_id, repo.private);
+            let _ = tx.send(Msg::ActionRunRerun { name, result });
+        });
+    }
+
+    pub fn open_cancel_action_run(&mut self) {
+        let Some(run) = self.selected_action_run() else {
+            self.set_status(StatusKind::Info, "先挑一次工作流运行嘛喵~");
+            return;
+        };
+        if run.status == "completed" {
+            self.set_status(StatusKind::Info, "这次运行已经结束了，不用取消喵~");
+            return;
+        }
+        self.cancel_loading = false;
+        self.cancel_run = Some(run);
+        self.overlay = Some(Overlay::CancelRun);
+    }
+
+    pub fn confirm_cancel_action_run(&mut self) {
+        if self.cancel_loading {
+            return;
+        }
+        let Some(run) = self.cancel_run.clone() else {
+            self.overlay = None;
+            return;
+        };
+        let Some(name) = self.action_repo.clone() else {
+            self.overlay = None;
+            return;
+        };
+        let Some(repo) = self.repo_by_name(&name) else {
+            self.set_status(StatusKind::Error, "找不到这个仓库的凭据喵~");
+            return;
+        };
+        self.cancel_loading = true;
+        self.set_status(StatusKind::Info, "人家正在取消这次运行喵~...");
+        let tx = self.tx.clone();
+        let client = self.client.clone();
+        let run_id = run.id;
+        std::thread::spawn(move || {
+            let result = client.cancel_action_run(&name, run_id, repo.private);
+            let _ = tx.send(Msg::ActionRunCancelled { name, result });
+        });
     }
 
     pub fn open_workflow_runner(&mut self) {
@@ -2896,10 +3088,17 @@ impl App {
     }
 
     pub fn issue_indices(&self) -> Vec<usize> {
+        let query = self.issue_filter.value.trim().to_lowercase();
         self.issues
             .iter()
             .enumerate()
             .filter(|(_, issue)| self.issue_kind.matches(issue))
+            .filter(|(_, issue)| {
+                query.is_empty()
+                    || issue.title.to_lowercase().contains(&query)
+                    || issue.author().to_lowercase().contains(&query)
+                    || issue.labels_label().to_lowercase().contains(&query)
+            })
             .map(|(index, _)| index)
             .collect()
     }
@@ -4225,6 +4424,158 @@ impl App {
         });
     }
 
+    pub fn open_tags(&mut self) {
+        let Some(repo) = self.context_repo() else {
+            self.set_status(StatusKind::Info, "先挑一个仓库嘛，人家才知道看哪个标签喵~");
+            return;
+        };
+        let name = repo.display_full_name();
+        let changed = self
+            .tag_repo
+            .as_ref()
+            .map(|current| current.display_full_name() != name)
+            .unwrap_or(true);
+        if changed {
+            self.tags.clear();
+            self.tags_fetched_at = None;
+            self.tag_selected = 0;
+            self.tag_scroll = 0;
+        }
+        self.tag_repo = Some(repo.clone());
+        self.return_page = return_page_when_opening(self.page, self.return_page);
+        self.page = Page::Tags;
+        self.load_tags_cache();
+        self.fetch_tags(false);
+    }
+
+    fn load_tags_cache(&mut self) {
+        let Some(repo) = self.tag_repo.clone() else {
+            return;
+        };
+        match self.cache.load::<Vec<Tag>>(&repo.tags_cache_key()) {
+            Some(cached) => {
+                self.tags = cached.data;
+                self.tags_fetched_at = Some(cached.fetched_at);
+            }
+            None => {
+                self.tags.clear();
+                self.tags_fetched_at = None;
+            }
+        }
+        self.clamp_tag_selection();
+    }
+
+    fn fetch_tags(&mut self, force: bool) {
+        let Some(repo) = self.tag_repo.clone() else {
+            return;
+        };
+        let name = repo.display_full_name();
+        if self.tags_loading.as_deref() == Some(name.as_str()) {
+            return;
+        }
+        let fresh = self
+            .tags_fetched_at
+            .map(|at| now_epoch() - at <= self.config.detail_ttl_secs as i64)
+            .unwrap_or(false);
+        if !force && fresh {
+            return;
+        }
+        self.tags_loading = Some(name.clone());
+        let tx = self.tx.clone();
+        let client = self.client.clone();
+        std::thread::spawn(move || {
+            let _ = tx.send(Msg::Tags {
+                name: name.clone(),
+                result: client.tags(&name, repo.private),
+            });
+        });
+    }
+
+    pub fn tag_repo_label(&self) -> String {
+        self.tag_repo
+            .as_ref()
+            .map(|repo| repo.display_full_name())
+            .unwrap_or_else(|| "还没有选仓库".to_string())
+    }
+
+    pub fn selected_tag(&self) -> Option<Tag> {
+        self.tags.get(self.tag_selected).cloned()
+    }
+
+    pub fn select_tag(&mut self, index: usize) {
+        if !self.tags.is_empty() {
+            self.tag_selected = index.min(self.tags.len() - 1);
+        }
+    }
+
+    pub fn move_tag_selection(&mut self, delta: i32) {
+        if self.tags.is_empty() {
+            return;
+        }
+        self.tag_selected =
+            (self.tag_selected as i32 + delta).clamp(0, self.tags.len() as i32 - 1) as usize;
+    }
+
+    fn clamp_tag_selection(&mut self) {
+        self.tag_selected = self.tag_selected.min(self.tags.len().saturating_sub(1));
+    }
+
+    pub fn open_selected_tag_page(&mut self) {
+        let Some(tag) = self.selected_tag() else {
+            self.set_status(StatusKind::Info, "先挑一个标签嘛喵~");
+            return;
+        };
+        let Some(repo) = self.tag_repo.clone() else {
+            return;
+        };
+        let base = if repo.html_url.trim().is_empty() {
+            format!("https://github.com/{}", repo.display_full_name())
+        } else {
+            repo.html_url.clone()
+        };
+        let url = format!("{}/tree/{}", base.trim_end_matches('/'), tag.name);
+        self.open_url(&url);
+    }
+
+    pub fn copy_selected_tag_name(&mut self) {
+        let Some(tag) = self.selected_tag() else {
+            self.set_status(StatusKind::Info, "先挑一个标签嘛喵~");
+            return;
+        };
+        self.copy_text(&tag.name, "标签名喵~");
+    }
+
+    pub fn download_selected_tag_archive(&mut self, zip: bool) {
+        let Some(tag) = self.selected_tag() else {
+            self.set_status(StatusKind::Info, "先挑一个标签嘛喵~");
+            return;
+        };
+        let Some(repo) = self.tag_repo.clone() else {
+            return;
+        };
+        let url = if zip {
+            tag.zipball_url.clone()
+        } else {
+            tag.tarball_url.clone()
+        };
+        if url.trim().is_empty() {
+            self.set_status(StatusKind::Error, "这个标签没有源码包地址喵~");
+            return;
+        }
+        let filename = format!(
+            "{}-{}.{}",
+            repo.name,
+            tag.name,
+            if zip { "zip" } else { "tar.gz" }
+        );
+        self.start_download(
+            format!("标签 {} 的源码包喵~", format::clean_text(&tag.name)),
+            url,
+            repo.private,
+            filename,
+        );
+    }
+
     fn schedule_repo_extras(&mut self, repo: &Repo, force: bool) {
         let name = repo.display_full_name();
         let branch = self.branch_for(repo);
@@ -4539,32 +4890,53 @@ impl App {
     }
 
     fn clamp_commit_selection(&mut self) {
-        if self.commits.is_empty() {
+        let len = self.commit_indices().len();
+        if len == 0 {
             self.commit_selected = 0;
         } else {
-            self.commit_selected = self.commit_selected.min(self.commits.len() - 1);
+            self.commit_selected = self.commit_selected.min(len - 1);
         }
+    }
+
+    pub fn commit_indices(&self) -> Vec<usize> {
+        let query = self.commit_filter.value.trim().to_lowercase();
+        self.commits
+            .iter()
+            .enumerate()
+            .filter(|(_, commit)| {
+                query.is_empty()
+                    || commit.summary().to_lowercase().contains(&query)
+                    || commit.author_name().to_lowercase().contains(&query)
+                    || commit.sha.to_lowercase().contains(&query)
+            })
+            .map(|(index, _)| index)
+            .collect()
     }
 
     pub fn selected_commit(&self) -> Option<Commit> {
-        self.commits.get(self.commit_selected).cloned()
+        self.commit_indices()
+            .get(self.commit_selected)
+            .and_then(|index| self.commits.get(*index))
+            .cloned()
     }
 
     pub fn move_commit_selection(&mut self, delta: i32) {
-        if self.commits.is_empty() {
+        let len = self.commit_indices().len();
+        if len == 0 {
             return;
         }
         self.commit_selected =
-            (self.commit_selected as i32 + delta).clamp(0, self.commits.len() as i32 - 1) as usize;
+            (self.commit_selected as i32 + delta).clamp(0, len as i32 - 1) as usize;
         self.commit_scroll = 0;
         self.schedule_commit_detail(false);
     }
 
     pub fn select_commit(&mut self, index: usize) {
-        if self.commits.is_empty() {
+        let len = self.commit_indices().len();
+        if len == 0 {
             return;
         }
-        self.commit_selected = index.min(self.commits.len() - 1);
+        self.commit_selected = index.min(len - 1);
         self.commit_scroll = 0;
         self.schedule_commit_detail(false);
     }
@@ -4623,6 +4995,7 @@ impl App {
                     self.schedule_repo_extras(&repo, true);
                 }
             }
+            Page::Tags => self.fetch_tags(true),
             Page::Notifications => self.fetch_notifications(true),
             Page::Settings => self.refresh_cache_stats(),
             Page::Home => {
@@ -5025,6 +5398,28 @@ impl App {
                 action: Action::Navigate(Page::Settings),
             },
             PaletteItem {
+                label: "仓库标签".to_string(),
+                hint: "v · 查看 tag、复制名、下载源码包".to_string(),
+                action: Action::OpenTags,
+            },
+            PaletteItem {
+                label: "复制 SSH 克隆地址".to_string(),
+                hint: "u · git@github.com 地址".to_string(),
+                action: Action::CopySsh,
+            },
+            PaletteItem {
+                label: "复制仓库全名".to_string(),
+                hint: "N · owner/repo".to_string(),
+                action: Action::CopyFullName,
+            },
+            PaletteItem {
+                label: "复制发行版文件链接".to_string(),
+                hint: "y · 当前附带文件的下载地址".to_string(),
+                action: Action::CopyAssetUrl {
+                    asset: self.release_asset_selected,
+                },
+            },
+            PaletteItem {
                 label: "随机探索一个仓库".to_string(),
                 hint: "E · 打开命运选中的仓库".to_string(),
                 action: Action::RandomRepo,
@@ -5394,6 +5789,43 @@ impl App {
             format!("https://github.com/{}.git", repo.display_full_name())
         };
         self.copy_text(&url, "克隆地址喵~");
+    }
+
+    pub fn copy_ssh_clone(&mut self) {
+        let Some(repo) = self.effective_repo() else {
+            self.set_status(StatusKind::Info, "还没有选中仓库呢喵~");
+            return;
+        };
+        let url = if !repo.ssh_url.is_empty() {
+            repo.ssh_url.clone()
+        } else {
+            format!("git@github.com:{}.git", repo.display_full_name())
+        };
+        self.copy_text(&url, "SSH 克隆地址喵~");
+    }
+
+    pub fn copy_full_name(&mut self) {
+        let Some(repo) = self.effective_repo() else {
+            self.set_status(StatusKind::Info, "还没有选中仓库呢喵~");
+            return;
+        };
+        self.copy_text(&repo.display_full_name(), "仓库全名喵~");
+    }
+
+    pub fn copy_selected_asset_url(&mut self) {
+        if self.page != Page::ReleaseDetail {
+            self.set_status(StatusKind::Info, "先打开一个发行版详情页嘛喵~");
+            return;
+        }
+        let Some(release) = self.selected_release() else {
+            self.set_status(StatusKind::Info, "先挑一个发行版嘛喵~");
+            return;
+        };
+        let Some(asset) = release.assets.get(self.release_asset_selected) else {
+            self.set_status(StatusKind::Info, "这个发行版没有附带文件喵~");
+            return;
+        };
+        self.copy_text(&asset.browser_download_url, "文件下载地址喵~");
     }
 
     fn effective_repo(&self) -> Option<Repo> {
@@ -6121,6 +6553,19 @@ impl App {
             }
             return;
         }
+        if self.overlay == Some(Overlay::CancelRun) {
+            match key.code {
+                KeyCode::Esc | KeyCode::Char('q') => {
+                    if !self.cancel_loading {
+                        self.overlay = None;
+                        self.cancel_run = None;
+                    }
+                }
+                KeyCode::Enter => self.confirm_cancel_action_run(),
+                _ => {}
+            }
+            return;
+        }
         if self.overlay.is_some() {
             if matches!(
                 key.code,
@@ -6249,6 +6694,48 @@ impl App {
             return;
         }
 
+        if self.issue_filter_focus {
+            match key.code {
+                KeyCode::Enter | KeyCode::Esc => self.issue_filter_focus = false,
+                KeyCode::Tab => {
+                    self.issue_filter_focus = false;
+                    self.navigate_next_page();
+                }
+                KeyCode::Backspace => self.issue_filter.backspace(),
+                KeyCode::Delete => self.issue_filter.delete(),
+                KeyCode::Left => self.issue_filter.left(),
+                KeyCode::Right => self.issue_filter.right(),
+                KeyCode::Home => self.issue_filter.home(),
+                KeyCode::End => self.issue_filter.end(),
+                KeyCode::Char(ch) => self.issue_filter.insert(ch),
+                _ => {}
+            }
+            self.issue_selected = 0;
+            self.clamp_issue_selection();
+            return;
+        }
+
+        if self.commit_filter_focus {
+            match key.code {
+                KeyCode::Enter | KeyCode::Esc => self.commit_filter_focus = false,
+                KeyCode::Tab => {
+                    self.commit_filter_focus = false;
+                    self.navigate_next_page();
+                }
+                KeyCode::Backspace => self.commit_filter.backspace(),
+                KeyCode::Delete => self.commit_filter.delete(),
+                KeyCode::Left => self.commit_filter.left(),
+                KeyCode::Right => self.commit_filter.right(),
+                KeyCode::Home => self.commit_filter.home(),
+                KeyCode::End => self.commit_filter.end(),
+                KeyCode::Char(ch) => self.commit_filter.insert(ch),
+                _ => {}
+            }
+            self.commit_selected = 0;
+            self.schedule_commit_detail(false);
+            return;
+        }
+
         if self.settings_only {
             match key.code {
                 KeyCode::Esc => {
@@ -6304,6 +6791,60 @@ impl App {
             self.cycle_repo_pane();
             return;
         }
+        if self.page == Page::Tags {
+            match key.code {
+                KeyCode::Esc => self.go_back(),
+                KeyCode::Char('q') => self.quit(),
+                KeyCode::Char('j') | KeyCode::Down => self.move_tag_selection(1),
+                KeyCode::Char('k') | KeyCode::Up => self.move_tag_selection(-1),
+                KeyCode::Char('g') | KeyCode::Home => self.select_tag(0),
+                KeyCode::Char('G') | KeyCode::End => {
+                    self.select_tag(self.tags.len().saturating_sub(1))
+                }
+                KeyCode::Enter | KeyCode::Char('o') => self.open_selected_tag_page(),
+                KeyCode::Char('y') => self.copy_selected_tag_name(),
+                KeyCode::Char('z') => self.download_selected_tag_archive(true),
+                KeyCode::Char('Z') => self.download_selected_tag_archive(false),
+                KeyCode::Char('u') => self.copy_ssh_clone(),
+                KeyCode::Char('r') => self.fetch_tags(true),
+                _ => {}
+            }
+            return;
+        }
+        if self.page == Page::Actions {
+            match key.code {
+                KeyCode::Char('R') => {
+                    self.rerun_action_run();
+                    return;
+                }
+                KeyCode::Char('X') => {
+                    self.open_cancel_action_run();
+                    return;
+                }
+                _ => {}
+            }
+        }
+        if self.page.is_repo_page() {
+            match key.code {
+                KeyCode::Char('u') => {
+                    self.copy_ssh_clone();
+                    return;
+                }
+                KeyCode::Char('N') => {
+                    self.copy_full_name();
+                    return;
+                }
+                KeyCode::Char('v') if self.page == Page::Repo => {
+                    self.open_tags();
+                    return;
+                }
+                KeyCode::Char('y') if self.page == Page::ReleaseDetail => {
+                    self.copy_selected_asset_url();
+                    return;
+                }
+                _ => {}
+            }
+        }
         if self.page == Page::Issues {
             match key.code {
                 KeyCode::Char('n') => {
@@ -6346,6 +6887,12 @@ impl App {
             }
             KeyCode::Char('/') if matches!(self.page, Page::Search | Page::Trending) => {
                 self.focus_list_filter()
+            }
+            KeyCode::Char('/') if self.page == Page::Issues => {
+                self.issue_filter_focus = true;
+            }
+            KeyCode::Char('/') if self.page == Page::Commits => {
+                self.commit_filter_focus = true;
             }
             KeyCode::Char('/')
                 if self.page == Page::Repo && self.repo_pane == RepoPane::Releases =>
@@ -7135,6 +7682,7 @@ impl App {
                 self.repo_edit = None;
                 self.fork_repo = None;
                 self.delete_repo = None;
+                self.cancel_run = None;
             }
             Action::PrevListPage => self.prev_list_page(),
             Action::NextListPage => self.next_list_page(),
@@ -7204,6 +7752,29 @@ impl App {
             }
             Action::OpenCacheDir => self.open_cache_dir(),
             Action::OpenRepoLanguages => self.open_repo_languages(),
+            Action::OpenTags => self.open_tags(),
+            Action::OpenTagPage => self.open_selected_tag_page(),
+            Action::SelectTag(index) => self.select_tag(index),
+            Action::CopyTagName => self.copy_selected_tag_name(),
+            Action::DownloadTagZip => self.download_selected_tag_archive(true),
+            Action::DownloadTagTarball => self.download_selected_tag_archive(false),
+            Action::CopySsh => self.copy_ssh_clone(),
+            Action::CopyFullName => self.copy_full_name(),
+            Action::CopyAssetUrl { asset } => {
+                self.release_asset_selected = asset;
+                self.copy_selected_asset_url();
+            }
+            Action::FocusIssueFilter => {
+                self.issue_filter_focus = true;
+                self.list_filter_focus = false;
+            }
+            Action::FocusCommitFilter => {
+                self.commit_filter_focus = true;
+                self.list_filter_focus = false;
+            }
+            Action::RerunActionRun => self.rerun_action_run(),
+            Action::CancelActionRun => self.open_cancel_action_run(),
+            Action::ConfirmCancelRun => self.confirm_cancel_action_run(),
             Action::StartNewIssue => self.open_new_issue(),
             Action::FocusNewIssue(body) => self.new_issue_body_focus = body,
             Action::SubmitNewIssue => self.submit_new_issue(),
@@ -7576,6 +8147,59 @@ mod tests {
         let mut indices = vec![0, 1, 2];
         sort_star_indices(&repos, &mut indices, StarSort::Starred);
         assert_eq!(indices, vec![2, 1, 0]);
+    }
+
+    #[test]
+    fn issue_and_commit_filters_follow_selection() {
+        let dir = std::env::temp_dir().join(format!("gxt-filter-test-{}", std::process::id()));
+        let paths = Paths::for_test(dir.join("config"), dir.join("cache"));
+        let mut app = App::settings(paths, None);
+        app.issues = vec![
+            crate::model::Issue {
+                title: "crash on start".to_string(),
+                ..Default::default()
+            },
+            crate::model::Issue {
+                title: "docs typo".to_string(),
+                ..Default::default()
+            },
+        ];
+        app.issue_filter = TextInput::new("crash");
+        assert_eq!(app.issue_indices(), vec![0]);
+        assert_eq!(
+            app.selected_issue().map(|issue| issue.title),
+            Some("crash on start".to_string())
+        );
+        app.select_issue(9);
+        assert_eq!(app.issue_selected, 0);
+
+        app.commits = vec![
+            crate::model::Commit {
+                sha: "abcdef1234".to_string(),
+                commit: crate::model::CommitInfo {
+                    message: "fix parser".to_string(),
+                    ..Default::default()
+                },
+                ..Default::default()
+            },
+            crate::model::Commit {
+                sha: "1234567890".to_string(),
+                commit: crate::model::CommitInfo {
+                    message: "docs update".to_string(),
+                    ..Default::default()
+                },
+                ..Default::default()
+            },
+        ];
+        app.commit_filter = TextInput::new("parser");
+        assert_eq!(app.commit_indices(), vec![0]);
+        assert_eq!(
+            app.selected_commit().map(|commit| commit.sha),
+            Some("abcdef1234".to_string())
+        );
+        app.move_commit_selection(5);
+        assert_eq!(app.commit_selected, 0);
+        let _ = std::fs::remove_dir_all(dir);
     }
 
     #[test]

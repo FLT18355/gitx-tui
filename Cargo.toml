@@ -1,6 +1,6 @@
 [package]
 name = "gitx-tui"
-version = "0.3.8"
+version = "1.0.0"
 edition = "2024"
 rust-version = "1.88"
 description = "A terminal GitHub workspace for repositories, stars and releases"

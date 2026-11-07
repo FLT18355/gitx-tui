@@ -150,6 +150,10 @@ impl Repo {
     pub fn releases_cache_key(&self) -> String {
         format!("releases_{}", key_part(&self.display_full_name()))
     }
+
+    pub fn tags_cache_key(&self) -> String {
+        format!("tags_{}", key_part(&self.display_full_name()))
+    }
 }
 
 pub fn key_part(full_name: &str) -> String {
@@ -325,6 +329,31 @@ impl Release {
             .as_deref()
             .filter(|date| !date.is_empty())
             .unwrap_or(&self.created_at)
+    }
+}
+
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct TagCommit {
+    #[serde(default)]
+    pub sha: String,
+}
+
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct Tag {
+    #[serde(default)]
+    pub name: String,
+    #[serde(default)]
+    pub zipball_url: String,
+    #[serde(default)]
+    pub tarball_url: String,
+    #[serde(default)]
+    pub commit: TagCommit,
+}
+
+impl Tag {
+    pub fn short_sha(&self) -> &str {
+        let sha = self.commit.sha.as_str();
+        &sha[..sha.len().min(7)]
     }
 }
 

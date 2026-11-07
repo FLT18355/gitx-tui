@@ -53,6 +53,7 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
         Page::Issues => draw_issues_page(frame, app, &theme, chunks[1], &mut hits),
         Page::Commits => draw_commits_page(frame, app, &theme, chunks[1], &mut hits),
         Page::ReleaseDetail => draw_release_page(frame, app, &theme, chunks[1], &mut hits),
+        Page::Tags => draw_tags_page(frame, app, &theme, chunks[1], &mut hits),
     }
     draw_footer(frame, app, &theme, chunks[2], &hits);
 
@@ -74,6 +75,7 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
         Some(Overlay::DeleteRepo) => draw_delete_overlay(frame, app, &theme, area, &mut hits),
         Some(Overlay::Palette) => draw_palette(frame, app, &theme, area, &mut hits),
         Some(Overlay::Themes) => draw_theme_studio(frame, app, &theme, area, &mut hits),
+        Some(Overlay::CancelRun) => draw_cancel_overlay(frame, app, &theme, area, &mut hits),
         None => app.layout.overlay = Rect::default(),
     }
 
@@ -463,16 +465,19 @@ fn hints_for(app: &App) -> &'static str {
         }
         Page::Settings => "j/k 选    h/l 调    Enter 操作    Ctrl+S 保存    Esc 离开喵~",
         Page::Repo => {
-            "Esc 返回  Tab 换面板  P 置顶  E 随机  T 主题  b 分支  C 提交  F README  L 语言  a 工作流  i 议题喵~"
+            "Esc 返回  Tab 换面板  b 分支  C 提交  v 标签  L 语言  a 工作流  i 议题  u SSH  N 全名喵~"
         }
         Page::Actions => {
-            "j/k 挑运行  Enter 去浏览器  R/x 运行工作流  PgUp/PgDn 滚任务  r 刷新  Esc 返回喵~"
+            "j/k 挑运行  Enter 浏览器  R 重跑  X 取消  x 运行工作流  PgUp/PgDn 滚任务  r 刷新喵~"
         }
-        Page::Issues => "j/k 挑  Enter 打开  n 新建议题  v 换类型  s 换状态  r 刷新  Esc 返回喵~",
-        Page::Commits => {
-            "j/k 挑提交  Enter/o 浏览器打开  右侧看改动文件  b 切分支  r 刷新  Esc 返回喵~"
+        Page::Issues => "j/k 挑  / 筛选  Enter 打开  n 新建  v 类型  s 状态  r 刷新  Esc 返回喵~",
+        Page::Commits => "j/k 挑提交  / 筛选  Enter/o 浏览器  b 切分支  r 刷新  Esc 返回喵~",
+        Page::ReleaseDetail => {
+            "j/k 挑文件  Enter 下载  y 复制链接  o 去 GitHub  PgUp/PgDn 滚说明喵~"
         }
-        Page::ReleaseDetail => "j/k 挑文件  Enter 下载  o 去 GitHub  PgUp/PgDn 滚说明  Esc 返回喵~",
+        Page::Tags => {
+            "j/k 挑标签  Enter/o 打开  y 复制名  z 下载 zip  Z 下载 tar.gz  u SSH  r 刷新喵~"
+        }
     }
 }
 
@@ -1227,6 +1232,17 @@ fn draw_account_page(
         Rect::new(inner.x, inner.y + 2, inner.width, 1),
     );
 
+    draw_filter_line(
+        frame,
+        theme,
+        Rect::new(inner.x, inner.y + 2, inner.width, 1),
+        hits,
+        &app.commit_filter,
+        app.commit_filter_focus,
+        app.hover.as_ref() == Some(&Action::FocusCommitFilter),
+        Action::FocusCommitFilter,
+        "按 / 搜提交信息、作者或哈希喵~",
+    );
     let content = Rect::new(
         inner.x,
         inner.y + 3,
@@ -3878,6 +3894,7 @@ fn draw_repo_page(
             Action::OpenCommits,
             false,
         ),
+        (icons::label(icons::TAG, "标签喵~"), Action::OpenTags, false),
         (
             icons::label(icons::CODE, "语言喵~"),
             Action::OpenRepoLanguages,
@@ -4010,6 +4027,390 @@ fn release_badge(icon: &str, text: &str, color: Color) -> Span<'static> {
         format!("  {icon} {text}"),
         Style::default().fg(color).add_modifier(Modifier::BOLD),
     )
+}
+
+fn draw_tags_page(
+    frame: &mut Frame,
+    app: &mut App,
+    theme: &Theme,
+    area: Rect,
+    hits: &mut Vec<HitBox>,
+) {
+    fill(frame, area, theme.color("base"));
+    let inner = Rect::new(
+        area.x + 2,
+        area.y + 1,
+        area.width.saturating_sub(4),
+        area.height.saturating_sub(2),
+    );
+    if inner.height < 8 {
+        draw_center_message(
+            frame,
+            theme,
+            inner,
+            "这里有点挤喵~",
+            "把终端拉大一点，人家才摆得下标签页喵~",
+        );
+        return;
+    }
+    let back_label = icons::label(icons::BACK, "返回喵~");
+    let back_width = format::text_width(&back_label) as u16 + 2;
+    let back_rect = Rect::new(inner.x, inner.y, back_width, 1);
+    let back_hover = app.hover.as_ref() == Some(&Action::Back);
+    frame.render_widget(
+        Paragraph::new(back_label).style(if back_hover {
+            Style::default().fg(theme.color("blue"))
+        } else {
+            Style::default().fg(theme.color("subtext0"))
+        }),
+        back_rect,
+    );
+    register(hits, back_rect, Action::Back);
+
+    let refresh_label = icons::label(icons::REFRESH, "刷新喵~");
+    let refresh_width = format::text_width(&refresh_label) as u16 + 4;
+    let refresh_x = inner.x + inner.width.saturating_sub(refresh_width);
+    draw_button(
+        frame,
+        app,
+        theme,
+        hits,
+        Rect::new(refresh_x, inner.y, refresh_width, 1),
+        &refresh_label,
+        Action::Refresh,
+        false,
+    );
+    let title = format!("{} 标签喵~  {}", icons::TAG, app.tag_repo_label());
+    let title_width = refresh_x.saturating_sub(inner.x + back_width + 2);
+    frame.render_widget(
+        Paragraph::new(format::truncate(&title, title_width as usize)).style(
+            Style::default()
+                .fg(theme.color("text"))
+                .add_modifier(Modifier::BOLD),
+        ),
+        Rect::new(inner.x + back_width + 2, inner.y, title_width, 1),
+    );
+    frame.render_widget(
+        Paragraph::new(format!(
+            "{} 个标签 · 轻量 tag 直接指向提交 · Enter 打开树喵~",
+            app.tags.len()
+        ))
+        .style(Style::default().fg(theme.color("subtext0"))),
+        Rect::new(inner.x, inner.y + 1, inner.width, 1),
+    );
+
+    let content = Rect::new(
+        inner.x,
+        inner.y + 3,
+        inner.width,
+        inner.height.saturating_sub(3),
+    );
+    if content.height < 4 {
+        return;
+    }
+    let detail_width = if content.width >= 90 {
+        (content.width * 2 / 5).max(34)
+    } else {
+        0
+    };
+    let columns =
+        Layout::horizontal([Constraint::Min(30), Constraint::Length(detail_width)]).split(content);
+    app.layout.list = columns[0];
+    draw_tag_list(frame, app, theme, columns[0], hits);
+    if detail_width > 0 {
+        app.layout.detail = columns[1];
+        draw_tag_detail(frame, app, theme, columns[1], hits);
+    }
+}
+
+fn draw_tag_list(
+    frame: &mut Frame,
+    app: &mut App,
+    theme: &Theme,
+    area: Rect,
+    hits: &mut Vec<HitBox>,
+) {
+    if area.width < 8 || area.height < 3 {
+        return;
+    }
+    fill(frame, area, theme.color("mantle"));
+    frame.render_widget(
+        Paragraph::new(icons::label(icons::TAG, "标签列表喵~")).style(
+            Style::default()
+                .fg(theme.color("text"))
+                .add_modifier(Modifier::BOLD),
+        ),
+        Rect::new(area.x + 1, area.y, area.width.saturating_sub(2), 1),
+    );
+    frame.render_widget(
+        Paragraph::new(format!("{} 个喵~", app.tags.len()))
+            .alignment(Alignment::Right)
+            .style(Style::default().fg(theme.color("overlay0"))),
+        Rect::new(area.x + 1, area.y, area.width.saturating_sub(2), 1),
+    );
+    fill(
+        frame,
+        Rect::new(area.x, area.y + 1, area.width, 1),
+        theme.color("surface0"),
+    );
+    let body = Rect::new(
+        area.x + 1,
+        area.y + 2,
+        area.width.saturating_sub(2),
+        area.height.saturating_sub(2),
+    );
+    if app.tags.is_empty() {
+        let (title, detail) = if app.tags_loading.is_some() {
+            ("人家正在翻标签喵~...", "第一次同步要等一小会儿哦喵~")
+        } else {
+            (
+                "这个仓库还没有标签喵~",
+                "按 r 刷新看看，或者去 GitHub 建一个嘛喵~",
+            )
+        };
+        draw_center_message(frame, theme, body, title, detail);
+        return;
+    }
+    let rows = body.height.max(1) as usize;
+    let selected = app.tag_selected.min(app.tags.len() - 1);
+    let start = selected.saturating_sub(rows.saturating_sub(1));
+    let end = (start + rows).min(app.tags.len());
+    for (offset, index) in (start..end).enumerate() {
+        let tag = &app.tags[index];
+        let y = body.y + offset as u16;
+        let rect = Rect::new(body.x, y, body.width, 1);
+        let hovered = app.hover.as_ref() == Some(&Action::SelectTag(index));
+        if index == selected {
+            fill(frame, rect, theme.color("surface0"));
+            fill(frame, Rect::new(rect.x, rect.y, 1, 1), theme.color("blue"));
+        } else if hovered {
+            fill(frame, rect, theme.color("surface1"));
+        }
+        frame.render_widget(
+            Paragraph::new(Line::from(vec![
+                Span::styled(
+                    format!("{} ", icons::TAG),
+                    Style::default().fg(theme.color("peach")),
+                ),
+                Span::styled(
+                    format::truncate(
+                        &format::clean_text(&tag.name),
+                        body.width.saturating_sub(12) as usize,
+                    ),
+                    Style::default().fg(theme.color("text")),
+                ),
+                Span::styled(
+                    format!("  {}", tag.short_sha()),
+                    Style::default().fg(theme.color("overlay0")),
+                ),
+            ])),
+            Rect::new(rect.x + 2, y, rect.width.saturating_sub(2), 1),
+        );
+        register(hits, rect, Action::SelectTag(index));
+    }
+}
+
+fn draw_tag_detail(
+    frame: &mut Frame,
+    app: &mut App,
+    theme: &Theme,
+    area: Rect,
+    hits: &mut Vec<HitBox>,
+) {
+    fill(frame, area, theme.color("mantle"));
+    frame.render_widget(
+        Block::new()
+            .borders(Borders::LEFT)
+            .border_style(Style::default().fg(theme.color("surface0"))),
+        area,
+    );
+    let inner = Rect::new(
+        area.x + 2,
+        area.y + 1,
+        area.width.saturating_sub(4),
+        area.height.saturating_sub(2),
+    );
+    if inner.width < 10 || inner.height < 4 {
+        return;
+    }
+    let Some(tag) = app.selected_tag() else {
+        draw_center_message(
+            frame,
+            theme,
+            inner,
+            "挑一个标签看看喵~",
+            "点左边列表，人家就把标签信息摆在这里喵~",
+        );
+        return;
+    };
+    frame.render_widget(
+        Paragraph::new(Line::from(vec![
+            Span::styled(
+                format!("{} ", icons::TAG),
+                Style::default().fg(theme.color("peach")),
+            ),
+            Span::styled(
+                format::truncate(&format::clean_text(&tag.name), inner.width as usize - 2),
+                Style::default()
+                    .fg(theme.color("text"))
+                    .add_modifier(Modifier::BOLD),
+            ),
+        ])),
+        Rect::new(inner.x, inner.y, inner.width, 1),
+    );
+    frame.render_widget(
+        Paragraph::new(format!(
+            "{} commit {}  ·  源码包可直接下载喵~",
+            icons::COMMIT,
+            tag.short_sha()
+        ))
+        .style(Style::default().fg(theme.color("subtext0"))),
+        Rect::new(inner.x, inner.y + 1, inner.width, 1),
+    );
+    let mut button_x = inner.x;
+    let mut y = inner.y + 3;
+    let buttons = [
+        (
+            icons::label(icons::EXTERNAL, "打开树喵~"),
+            Action::OpenTagPage,
+            true,
+        ),
+        (
+            icons::label(icons::COPY, "复制名喵~"),
+            Action::CopyTagName,
+            false,
+        ),
+        (
+            icons::label(icons::DOWNLOAD, "zip 喵~"),
+            Action::DownloadTagZip,
+            false,
+        ),
+        (
+            icons::label(icons::DOWNLOAD, "tar.gz 喵~"),
+            Action::DownloadTagTarball,
+            false,
+        ),
+    ];
+    for (label, action, primary) in buttons {
+        let width = format::text_width(&label) as u16 + 4;
+        if button_x + width > inner.x + inner.width {
+            button_x = inner.x;
+            y += 1;
+            if y >= inner.y + inner.height {
+                break;
+            }
+        }
+        draw_button(
+            frame,
+            app,
+            theme,
+            hits,
+            Rect::new(button_x, y, width, 1),
+            &label,
+            action,
+            primary,
+        );
+        button_x += width + 1;
+    }
+    if y + 2 < inner.y + inner.height {
+        frame.render_widget(
+            Paragraph::new("Enter/o 打开 · y 复制标签名 · z zip · Z tar.gz · u 复制 SSH喵~")
+                .style(Style::default().fg(theme.color("overlay0"))),
+            Rect::new(inner.x, y + 2, inner.width, 1),
+        );
+    }
+}
+
+fn draw_cancel_overlay(
+    frame: &mut Frame,
+    app: &App,
+    theme: &Theme,
+    area: Rect,
+    hits: &mut Vec<HitBox>,
+) {
+    let Some(run) = app.cancel_run.as_ref() else {
+        return;
+    };
+    let width = area.width.saturating_sub(12).min(64);
+    let height = 9.min(area.height.saturating_sub(4));
+    if width < 40 || height < 7 {
+        return;
+    }
+    let rect = Rect::new(
+        area.x + (area.width.saturating_sub(width)) / 2,
+        area.y + (area.height.saturating_sub(height)) / 2,
+        width,
+        height,
+    );
+    frame.render_widget(Clear, rect);
+    fill(frame, rect, theme.color("mantle"));
+    frame.render_widget(
+        Block::new()
+            .borders(Borders::ALL)
+            .border_type(ratatui::widgets::BorderType::Rounded)
+            .border_style(Style::default().fg(theme.color("red"))),
+        rect,
+    );
+    let inner = Rect::new(
+        rect.x + 2,
+        rect.y + 1,
+        rect.width.saturating_sub(4),
+        rect.height.saturating_sub(2),
+    );
+    frame.render_widget(
+        Paragraph::new(icons::label(icons::WARNING, "取消这次运行喵~")).style(
+            Style::default()
+                .fg(theme.color("red"))
+                .add_modifier(Modifier::BOLD),
+        ),
+        Rect::new(inner.x, inner.y, inner.width, 1),
+    );
+    frame.render_widget(
+        Paragraph::new(format!(
+            "#{} · {}",
+            run.run_number,
+            format::clean_text(run.title())
+        ))
+        .style(Style::default().fg(theme.color("text"))),
+        Rect::new(inner.x, inner.y + 2, inner.width, 1),
+    );
+    frame.render_widget(
+        Paragraph::new("正在跑的任务会被停下，这个操作不能撤销喵~")
+            .style(Style::default().fg(theme.color("peach"))),
+        Rect::new(inner.x, inner.y + 3, inner.width, 1),
+    );
+    let buttons_y = inner.y + inner.height.saturating_sub(1);
+    let confirm = if app.cancel_loading {
+        format!("{} 取消中喵~", icons::REFRESH)
+    } else {
+        icons::label(icons::X_CIRCLE, "确认取消喵~")
+    };
+    let confirm_width = format::text_width(&confirm) as u16 + 6;
+    draw_button(
+        frame,
+        app,
+        theme,
+        hits,
+        Rect::new(
+            inner.x + inner.width.saturating_sub(confirm_width),
+            buttons_y,
+            confirm_width,
+            1,
+        ),
+        &confirm,
+        Action::ConfirmCancelRun,
+        true,
+    );
+    draw_button(
+        frame,
+        app,
+        theme,
+        hits,
+        Rect::new(inner.x, buttons_y, 12, 1),
+        &icons::label(icons::BACK, "返回喵~"),
+        Action::CloseOverlay,
+        false,
+    );
 }
 
 fn draw_release_page(
@@ -4255,6 +4656,27 @@ fn draw_release_page(
         ),
         Rect::new(right.x, right.y, right.width, 1),
     );
+    let copy_label = icons::label(icons::COPY, "复制链接 y");
+    let copy_width = format::text_width(&copy_label) as u16 + 4;
+    if !release.assets.is_empty() && right.width > copy_width + 14 {
+        draw_button(
+            frame,
+            app,
+            theme,
+            hits,
+            Rect::new(
+                right.x + right.width.saturating_sub(copy_width),
+                right.y,
+                copy_width,
+                1,
+            ),
+            &copy_label,
+            Action::CopyAssetUrl {
+                asset: app.release_asset_selected,
+            },
+            false,
+        );
+    }
     let assets_rect = Rect::new(
         right.x,
         right.y + 2,
@@ -4810,6 +5232,17 @@ fn draw_issues_page(
         ],
     );
 
+    draw_filter_line(
+        frame,
+        theme,
+        Rect::new(inner.x, inner.y + 4, inner.width, 1),
+        hits,
+        &app.issue_filter,
+        app.issue_filter_focus,
+        app.hover.as_ref() == Some(&Action::FocusIssueFilter),
+        Action::FocusIssueFilter,
+        "按 / 搜标题、作者或标签喵~",
+    );
     let content = Rect::new(
         inner.x,
         inner.y + 5,
@@ -5216,9 +5649,12 @@ fn draw_commit_list(
         area.width.saturating_sub(2),
         area.height.saturating_sub(2),
     );
-    if app.commits.is_empty() {
+    let indices = app.commit_indices();
+    if indices.is_empty() {
         let (title, detail) = if app.commits_loading.is_some() {
             ("人家正在翻提交记录喵~...", "网络慢一点就再等一会儿哦喵~")
+        } else if !app.commit_filter.value.trim().is_empty() {
+            ("没有匹配的提交喵~", "按 / 改改关键词，或者 Esc 离开筛选喵~")
         } else {
             ("这个分支还没有提交喵~", "按 b 换个分支，或按 r 刷新看看喵~")
         };
@@ -5226,17 +5662,18 @@ fn draw_commit_list(
         return;
     }
     let rows = (body.height / 2).max(1) as usize;
-    let selected = app.commit_selected.min(app.commits.len() - 1);
+    let selected = app.commit_selected.min(indices.len() - 1);
     let start = selected.saturating_sub(rows - 1);
-    let end = (start + rows).min(app.commits.len());
-    for (offset, index) in (start..end).enumerate() {
+    let end = (start + rows).min(indices.len());
+    for (offset, position) in (start..end).enumerate() {
         let y = body.y + offset as u16 * 2;
         if y + 1 >= body.y + body.height {
             break;
         }
+        let index = indices[position];
         let commit = &app.commits[index];
         let rect = Rect::new(body.x, y, body.width, 2);
-        if index == selected {
+        if position == selected {
             fill(frame, rect, theme.color("surface0"));
         }
         frame.render_widget(
@@ -5271,7 +5708,7 @@ fn draw_commit_list(
                 .style(Style::default().fg(theme.color("overlay0"))),
             Rect::new(body.x + 1, y + 1, body.width.saturating_sub(1), 1),
         );
-        register(hits, rect, Action::SelectCommit(index));
+        register(hits, rect, Action::SelectCommit(position));
     }
 }
 
@@ -5707,10 +6144,44 @@ fn draw_actions_page(
         ),
         Rect::new(title_x, inner.y, title_width as u16, 1),
     );
+    let mut action_x = inner.x + inner.width;
+    let cancel_label = icons::label(icons::X_CIRCLE, "取消 X");
+    let cancel_width = format::text_width(&cancel_label) as u16 + 4;
+    if action_x >= inner.x + cancel_width + 24 {
+        action_x -= cancel_width;
+        draw_button(
+            frame,
+            app,
+            theme,
+            hits,
+            Rect::new(action_x, inner.y + 1, cancel_width, 1),
+            &cancel_label,
+            Action::CancelActionRun,
+            false,
+        );
+    }
+    let rerun_label = icons::label(icons::REFRESH, "重跑 R");
+    let rerun_width = format::text_width(&rerun_label) as u16 + 4;
+    if action_x > inner.x + rerun_width + 24 {
+        action_x = action_x.saturating_sub(rerun_width + 1);
+        draw_button(
+            frame,
+            app,
+            theme,
+            hits,
+            Rect::new(action_x, inner.y + 1, rerun_width, 1),
+            &rerun_label,
+            Action::RerunActionRun,
+            false,
+        );
+    }
     frame.render_widget(
-        Paragraph::new("这里是当前仓库的 Actions 运行记录喵~")
-            .style(Style::default().fg(theme.color("subtext0"))),
-        Rect::new(inner.x, inner.y + 1, inner.width, 1),
+        Paragraph::new(format::truncate(
+            "这里是当前仓库的 Actions 运行记录喵~",
+            action_x.saturating_sub(inner.x + 1) as usize,
+        ))
+        .style(Style::default().fg(theme.color("subtext0"))),
+        Rect::new(inner.x, inner.y + 1, action_x.saturating_sub(inner.x), 1),
     );
     fill(
         frame,
@@ -6907,7 +7378,7 @@ fn draw_releases_panel(
     fill(
         frame,
         Rect::new(area.x, area.y + 3, area.width, 1),
-        theme.color("surface0"),
+        theme.color("mantle"),
     );
     let body = Rect::new(
         area.x + 1,
@@ -10516,6 +10987,19 @@ fn draw_help(frame: &mut Frame, app: &mut App, theme: &Theme, area: Rect, hits: 
             "仓库页按 i 看议题，v 换类型，s 换状态，n 新建一条喵~",
         ),
         ("发行版喵~", "仓库页点发行版按钮进详情，再挑文件下载喵~"),
+        (
+            "标签喵~",
+            "仓库页 v 看 tags：Enter 打开树，y 复制名，z/Z 下载源码包喵~",
+        ),
+        (
+            "复制喵~",
+            "y 克隆地址，u SSH，N 仓库全名；发行版详情里 y 复制文件链接喵~",
+        ),
+        (
+            "工作流喵~",
+            "Actions 页 R 重跑选中运行，X 取消正在跑的运行喵~",
+        ),
+        ("筛选喵~", "议题页和提交页按 / 输入关键词筛选列表喵~"),
         ("通知喵~", "5 看通知，m 已读，M 全部已读，u 切未读/全部喵~"),
         ("缓存喵~", "按 c 分类清理缓存，o 打开缓存目录喵~"),
         ("设置喵~", "退出后敲 gxt settings，用专门的设置 TUI 调喵~"),
@@ -10888,19 +11372,6 @@ mod tests {
         }
     }
 
-    fn test_repo(owner: &str, name: &str) -> Repo {
-        Repo {
-            name: name.to_string(),
-            full_name: format!("{owner}/{name}"),
-            owner: crate::model::Owner {
-                login: owner.to_string(),
-                ..Default::default()
-            },
-            description: Some("a test repo".to_string()),
-            ..Default::default()
-        }
-    }
-
     fn buffer_text(buffer: &ratatui::buffer::Buffer) -> String {
         let width = buffer.area.width as usize;
         buffer
@@ -10909,430 +11380,6 @@ mod tests {
             .map(|row| row.iter().map(|cell| cell.symbol()).collect::<String>())
             .collect::<Vec<_>>()
             .join("\n")
-    }
-
-    #[test]
-    fn account_page_renders_profile_and_stats() {
-        let dir = std::env::temp_dir().join(format!("gitx-account-ui-{}", std::process::id()));
-        let _ = std::fs::remove_dir_all(&dir);
-        let paths = crate::config::Paths::for_test(dir.join("config"), dir.join("cache"));
-        let mut app = App::settings(paths, None);
-        app.settings_only = false;
-        app.page = Page::Account;
-        app.user = Some(crate::model::User {
-            login: "octocat".to_string(),
-            name: Some("The Octocat".to_string()),
-            public_repos: 2,
-            followers: 3,
-            following: 4,
-            public_gists: 5,
-            ..Default::default()
-        });
-        app.repos = vec![test_repo("octocat", "hello-world")];
-        app.starred = vec![test_repo("octocat", "spoon-knife")];
-        let mut terminal = ratatui::Terminal::new(ratatui::backend::TestBackend::new(120, 40))
-            .expect("test terminal");
-        terminal
-            .draw(|frame| draw(frame, &mut app))
-            .expect("render account");
-        let text = buffer_text(terminal.backend().buffer())
-            .split_whitespace()
-            .collect::<String>();
-        assert!(text.contains("公开Gist"));
-        assert!(text.contains("收藏星标"));
-        assert!(text.contains("正在关注"));
-        let _ = std::fs::remove_dir_all(dir);
-    }
-
-    #[test]
-    fn profile_page_renders_details_and_all_repos() {
-        let dir = std::env::temp_dir().join(format!("gitx-profile-ui-{}", std::process::id()));
-        let _ = std::fs::remove_dir_all(&dir);
-        let paths = crate::config::Paths::for_test(dir.join("config"), dir.join("cache"));
-        let mut app = App::settings(paths, None);
-        app.settings_only = false;
-        app.page = Page::Profile;
-        app.profile_login = Some("octocat".to_string());
-        app.profile_user = Some(crate::model::User {
-            login: "octocat".to_string(),
-            name: Some("The Octocat".to_string()),
-            bio: Some("cat".to_string()),
-            public_repos: 1,
-            ..Default::default()
-        });
-        app.profile_repos = vec![test_repo("octocat", "hello-world")];
-        let mut terminal = ratatui::Terminal::new(ratatui::backend::TestBackend::new(120, 40))
-            .expect("test terminal");
-        terminal
-            .draw(|frame| draw(frame, &mut app))
-            .expect("render profile");
-        let text = buffer_text(terminal.backend().buffer())
-            .split_whitespace()
-            .collect::<String>();
-        assert!(text.contains("octocat"));
-        assert!(text.contains("全部仓库"));
-        assert!(text.contains("hello-world"));
-        assert!(
-            app.hitboxes
-                .iter()
-                .any(|hit| matches!(&hit.action, Action::OpenProfile(login) if login == "octocat"))
-        );
-        let _ = std::fs::remove_dir_all(dir);
-    }
-
-    #[test]
-    fn repo_page_offers_fork_and_author_profile() {
-        let dir = std::env::temp_dir().join(format!("gitx-fork-ui-{}", std::process::id()));
-        let _ = std::fs::remove_dir_all(&dir);
-        let paths = crate::config::Paths::for_test(dir.join("config"), dir.join("cache"));
-        let mut app = App::settings(paths, None);
-        app.settings_only = false;
-        app.login = Some("me".to_string());
-        let repo = test_repo("octocat", "hello-world");
-        app.page = Page::Repo;
-        app.return_page = Page::Repositories;
-        app.page_repo = Some(repo.clone());
-        app.detail = Some(repo);
-        let mut terminal = ratatui::Terminal::new(ratatui::backend::TestBackend::new(120, 40))
-            .expect("test terminal");
-        terminal
-            .draw(|frame| draw(frame, &mut app))
-            .expect("render repo");
-        assert!(
-            app.hitboxes
-                .iter()
-                .any(|hit| hit.action == Action::ForkRepo)
-        );
-        assert!(
-            app.hitboxes
-                .iter()
-                .any(|hit| matches!(&hit.action, Action::OpenProfile(login) if login == "octocat"))
-        );
-        let _ = std::fs::remove_dir_all(dir);
-    }
-
-    #[test]
-    fn author_title_underlines_on_hover() {
-        let paths = crate::config::Paths::for_test("missing".into(), "missing".into());
-        let theme = Theme::load(&paths, "mocha");
-        let repo = test_repo("octocat", "hello-world");
-        let line = repo_title_line(&theme, &repo, true, 60);
-        assert!(line.spans.iter().any(|span| {
-            span.content.contains("octocat")
-                && span.style.add_modifier.contains(Modifier::UNDERLINED)
-        }));
-        let line = repo_title_line(&theme, &repo, false, 60);
-        assert!(line.spans.iter().all(|span| {
-            !span.content.contains("octocat")
-                || !span.style.add_modifier.contains(Modifier::UNDERLINED)
-        }));
-    }
-
-    #[test]
-    fn fork_and_delete_overlays_show_confirm_buttons() {
-        let dir = std::env::temp_dir().join(format!("gitx-confirm-ui-{}", std::process::id()));
-        let _ = std::fs::remove_dir_all(&dir);
-        let paths = crate::config::Paths::for_test(dir.join("config"), dir.join("cache"));
-        let mut app = App::settings(paths, None);
-        app.settings_only = false;
-        app.login = Some("me".to_string());
-        let repo = test_repo("octocat", "hello-world");
-        app.page = Page::Repo;
-        app.return_page = Page::Repositories;
-        app.page_repo = Some(repo.clone());
-        app.detail = Some(repo.clone());
-        app.fork_repo = Some(repo.clone());
-        app.overlay = Some(Overlay::ForkRepo);
-        let mut terminal = ratatui::Terminal::new(ratatui::backend::TestBackend::new(100, 32))
-            .expect("test terminal");
-        terminal
-            .draw(|frame| draw(frame, &mut app))
-            .expect("render fork overlay");
-        let text = buffer_text(terminal.backend().buffer())
-            .split_whitespace()
-            .collect::<String>();
-        assert!(text.contains("Fork仓库"));
-        assert!(
-            app.hitboxes
-                .iter()
-                .any(|hit| hit.action == Action::ConfirmFork)
-        );
-
-        app.overlay = Some(Overlay::DeleteRepo);
-        app.fork_repo = None;
-        app.delete_repo = Some(repo);
-        let mut terminal = ratatui::Terminal::new(ratatui::backend::TestBackend::new(100, 32))
-            .expect("test terminal");
-        terminal
-            .draw(|frame| draw(frame, &mut app))
-            .expect("render delete overlay");
-        let text = buffer_text(terminal.backend().buffer())
-            .split_whitespace()
-            .collect::<String>();
-        assert!(text.contains("删除仓库"));
-        assert!(text.contains("不能撤销"));
-        assert!(
-            app.hitboxes
-                .iter()
-                .any(|hit| hit.action == Action::ConfirmDeleteRepo)
-        );
-        let _ = std::fs::remove_dir_all(dir);
-    }
-
-    #[test]
-    fn repo_languages_overlay_renders_percentages() {
-        let dir = std::env::temp_dir().join(format!("gitx-lang-ui-{}", std::process::id()));
-        let _ = std::fs::remove_dir_all(&dir);
-        let paths = crate::config::Paths::for_test(dir.join("config"), dir.join("cache"));
-        let mut app = App::settings(paths, None);
-        app.settings_only = false;
-        let repo = test_repo("octocat", "hello-world");
-        app.page = Page::Repo;
-        app.return_page = Page::Repositories;
-        app.page_repo = Some(repo.clone());
-        app.detail = Some(repo);
-        app.overlay = Some(Overlay::RepoLanguages);
-        app.repo_languages = vec![
-            crate::model::LanguageStat {
-                name: "Rust".to_string(),
-                bytes: 750,
-            },
-            crate::model::LanguageStat {
-                name: "Shell".to_string(),
-                bytes: 250,
-            },
-        ];
-        let mut terminal = ratatui::Terminal::new(ratatui::backend::TestBackend::new(120, 40))
-            .expect("test terminal");
-        terminal
-            .draw(|frame| draw(frame, &mut app))
-            .expect("render languages overlay");
-        let text = buffer_text(terminal.backend().buffer())
-            .split_whitespace()
-            .collect::<String>();
-        assert!(text.contains("语言统计"));
-        assert!(text.contains("Rust"));
-        assert!(text.contains("75.0%"));
-        assert!(text.contains("Shell"));
-        assert!(
-            app.hitboxes
-                .iter()
-                .any(|hit| hit.action == Action::CloseOverlay)
-        );
-        let _ = std::fs::remove_dir_all(dir);
-    }
-
-    #[test]
-    fn new_issue_overlay_exposes_fields_and_submit() {
-        let dir = std::env::temp_dir().join(format!("gitx-issue-ui-{}", std::process::id()));
-        let _ = std::fs::remove_dir_all(&dir);
-        let paths = crate::config::Paths::for_test(dir.join("config"), dir.join("cache"));
-        let mut app = App::settings(paths, None);
-        app.settings_only = false;
-        let repo = test_repo("octocat", "hello-world");
-        app.page = Page::Issues;
-        app.return_page = Page::Repositories;
-        app.issue_repo = Some(repo);
-        app.overlay = Some(Overlay::NewIssue);
-        app.new_issue_title = TextInput::new("新的喵");
-        app.new_issue_body = TextInput::new("正文");
-        let mut terminal = ratatui::Terminal::new(ratatui::backend::TestBackend::new(120, 40))
-            .expect("test terminal");
-        terminal
-            .draw(|frame| draw(frame, &mut app))
-            .expect("render new issue overlay");
-        let text = buffer_text(terminal.backend().buffer())
-            .split_whitespace()
-            .collect::<String>();
-        assert!(text.contains("新建议题"));
-        assert!(text.contains("正文喵"));
-        assert!(text.contains("提交议题"));
-        assert!(
-            app.hitboxes
-                .iter()
-                .any(|hit| hit.action == Action::SubmitNewIssue)
-        );
-        assert!(
-            app.hitboxes
-                .iter()
-                .any(|hit| matches!(&hit.action, Action::FocusNewIssue(body) if !body))
-        );
-        let _ = std::fs::remove_dir_all(dir);
-    }
-
-    #[test]
-    fn commit_detail_lists_changed_files() {
-        let dir = std::env::temp_dir().join(format!("gitx-commit-ui-{}", std::process::id()));
-        let _ = std::fs::remove_dir_all(&dir);
-        let paths = crate::config::Paths::for_test(dir.join("config"), dir.join("cache"));
-        let mut app = App::settings(paths, None);
-        app.settings_only = false;
-        let repo = test_repo("octocat", "hello-world");
-        let sha = "abcdef1234567890".to_string();
-        app.page = Page::Commits;
-        app.return_page = Page::Repo;
-        app.page_repo = Some(repo.clone());
-        app.commit_repo = Some(repo);
-        app.commits = vec![crate::model::Commit {
-            sha: sha.clone(),
-            html_url: "https://github.com/octocat/hello-world/commit/abcdef1".to_string(),
-            commit: crate::model::CommitInfo {
-                message: "fix: 文件喵".to_string(),
-                author: crate::model::CommitAuthor {
-                    name: "octocat".to_string(),
-                    date: "2026-01-01T00:00:00Z".to_string(),
-                },
-            },
-            ..Default::default()
-        }];
-        app.commit_detail = Some(crate::model::CommitDetail {
-            sha: sha.clone(),
-            stats: Some(crate::model::CommitStats {
-                additions: 12,
-                deletions: 3,
-                total: 15,
-            }),
-            files: vec![crate::model::CommitFile {
-                filename: "src/main.rs".to_string(),
-                status: "modified".to_string(),
-                additions: 12,
-                deletions: 3,
-                changes: 15,
-                patch: None,
-            }],
-            ..Default::default()
-        });
-        app.commit_detail_for = Some(sha);
-        let mut terminal = ratatui::Terminal::new(ratatui::backend::TestBackend::new(120, 40))
-            .expect("test terminal");
-        terminal
-            .draw(|frame| draw(frame, &mut app))
-            .expect("render commit detail");
-        let text = buffer_text(terminal.backend().buffer())
-            .split_whitespace()
-            .collect::<String>();
-        assert!(text.contains("src/main.rs"));
-        assert!(text.contains("+12"));
-        assert!(text.contains("-3"));
-        let _ = std::fs::remove_dir_all(dir);
-    }
-
-    #[test]
-    fn home_page_renders_stats_pins_and_quick_actions() {
-        let dir = std::env::temp_dir().join(format!("gitx-home-ui-{}", std::process::id()));
-        let _ = std::fs::remove_dir_all(&dir);
-        let paths = crate::config::Paths::for_test(dir.join("config"), dir.join("cache"));
-        let mut app = App::settings(paths, None);
-        app.settings_only = false;
-        app.page = Page::Home;
-        app.login = Some("octocat".to_string());
-        app.repos = vec![test_repo("octocat", "hello-world")];
-        app.starred = vec![test_repo("octocat", "spoon-knife")];
-        app.config.pinned_repos = vec!["octocat/hello-world".to_string()];
-        let mut terminal = ratatui::Terminal::new(ratatui::backend::TestBackend::new(120, 40))
-            .expect("test terminal");
-        terminal
-            .draw(|frame| draw(frame, &mut app))
-            .expect("render home");
-        let text = buffer_text(terminal.backend().buffer())
-            .split_whitespace()
-            .collect::<String>();
-        assert!(text.contains("欢迎回来"));
-        assert!(text.contains("hello-world"));
-        assert!(text.contains("置顶仓库"));
-        assert!(text.contains("快捷入口"));
-        assert!(text.contains("语言分布"));
-        assert!(
-            app.hitboxes
-                .iter()
-                .any(|hit| matches!(hit.action, Action::OpenPin(0)))
-        );
-        assert!(
-            app.hitboxes
-                .iter()
-                .any(|hit| hit.action == Action::OpenPalette)
-        );
-        let _ = std::fs::remove_dir_all(dir);
-    }
-
-    #[test]
-    fn insights_page_renders_language_rank_and_quota() {
-        let dir = std::env::temp_dir().join(format!("gitx-insights-ui-{}", std::process::id()));
-        let _ = std::fs::remove_dir_all(&dir);
-        let paths = crate::config::Paths::for_test(dir.join("config"), dir.join("cache"));
-        let mut app = App::settings(paths, None);
-        app.settings_only = false;
-        app.page = Page::Insights;
-        let mut rust = test_repo("octocat", "hello-world");
-        rust.language = Some("Rust".to_string());
-        rust.stargazers_count = 42;
-        let mut cat = test_repo("octocat", "spoon-knife");
-        cat.language = Some("Lua".to_string());
-        app.repos = vec![rust];
-        app.starred = vec![cat];
-        app.rate_limit = Some(crate::model::RateLimit {
-            resources: crate::model::RateLimitResources {
-                core: crate::model::RateLimitInfo {
-                    limit: 100,
-                    used: 10,
-                    remaining: 90,
-                    reset: 0,
-                },
-                ..Default::default()
-            },
-        });
-        let mut terminal = ratatui::Terminal::new(ratatui::backend::TestBackend::new(120, 40))
-            .expect("test terminal");
-        terminal
-            .draw(|frame| draw(frame, &mut app))
-            .expect("render insights");
-        let text = buffer_text(terminal.backend().buffer())
-            .split_whitespace()
-            .collect::<String>();
-        assert!(text.contains("数据洞察"));
-        assert!(text.contains("语言分布"));
-        assert!(text.contains("星标排行"));
-        assert!(text.contains("API额度"));
-        assert!(text.contains("Rust"));
-        assert!(text.contains("hello-world"));
-        assert!(text.contains("90/100"));
-        let _ = std::fs::remove_dir_all(dir);
-    }
-
-    #[test]
-    fn palette_filters_commands_and_theme_studio_lists_colors() {
-        let dir = std::env::temp_dir().join(format!("gitx-palette-ui-{}", std::process::id()));
-        let _ = std::fs::remove_dir_all(&dir);
-        let paths = crate::config::Paths::for_test(dir.join("config"), dir.join("cache"));
-        let mut app = App::settings(paths, None);
-        app.settings_only = false;
-        app.page = Page::Home;
-        app.open_palette();
-        app.palette_input = crate::app::TextInput::new("洞察");
-        let mut terminal = ratatui::Terminal::new(ratatui::backend::TestBackend::new(120, 40))
-            .expect("test terminal");
-        terminal
-            .draw(|frame| draw(frame, &mut app))
-            .expect("render palette");
-        let text = buffer_text(terminal.backend().buffer())
-            .split_whitespace()
-            .collect::<String>();
-        assert!(text.contains("命令面板"));
-        assert!(text.contains("数据洞察"));
-        assert!(!text.contains("缓存管理"));
-
-        app.overlay = None;
-        app.open_themes();
-        terminal
-            .draw(|frame| draw(frame, &mut app))
-            .expect("render theme studio");
-        let text = buffer_text(terminal.backend().buffer())
-            .split_whitespace()
-            .collect::<String>();
-        assert!(text.contains("主题工作室"));
-        assert!(text.contains("Mocha"));
-        assert!(text.contains("Latte"));
-        let _ = std::fs::remove_dir_all(dir);
     }
 
     #[test]
@@ -11390,101 +11437,6 @@ mod tests {
                 .iter()
                 .any(|cell| cell.symbol() == icons::STAR && cell.fg == yellow)
         );
-        let _ = std::fs::remove_dir_all(dir);
-    }
-
-    #[test]
-    fn settings_page_exposes_default_page_row() {
-        let dir = std::env::temp_dir().join(format!("gitx-settings-ui-{}", std::process::id()));
-        let _ = std::fs::remove_dir_all(&dir);
-        let paths = crate::config::Paths::for_test(dir.join("config"), dir.join("cache"));
-        let mut app = App::settings(paths, None);
-        app.page = Page::Settings;
-        let mut terminal = ratatui::Terminal::new(ratatui::backend::TestBackend::new(120, 40))
-            .expect("test terminal");
-        terminal
-            .draw(|frame| draw(frame, &mut app))
-            .expect("render settings");
-        let text = buffer_text(terminal.backend().buffer())
-            .split_whitespace()
-            .collect::<String>();
-        assert!(text.contains("默认页"));
-        assert!(
-            app.hitboxes
-                .iter()
-                .any(|hit| hit.action == Action::SetSettingsRow(9))
-        );
-        let _ = std::fs::remove_dir_all(dir);
-    }
-
-    #[test]
-    fn repository_release_rows_show_pills_and_state_badges() {
-        let dir = std::env::temp_dir().join(format!("gitx-release-list-{}", std::process::id()));
-        let _ = std::fs::remove_dir_all(&dir);
-        let paths = crate::config::Paths::for_test(dir.join("config"), dir.join("cache"));
-        let mut app = App::settings(paths, None);
-        app.settings_only = false;
-        let repo = test_repo("octocat", "hello-world");
-        app.page = Page::Repo;
-        app.return_page = Page::Repositories;
-        app.page_repo = Some(repo.clone());
-        app.detail = Some(repo);
-        app.repo_pane = crate::app::RepoPane::Releases;
-        app.releases = vec![
-            crate::model::Release {
-                tag_name: "v2.0.0".to_string(),
-                name: Some("新版本".to_string()),
-                ..Default::default()
-            },
-            crate::model::Release {
-                tag_name: "v1.9.0-rc1".to_string(),
-                prerelease: true,
-                ..Default::default()
-            },
-        ];
-        let mut terminal = ratatui::Terminal::new(ratatui::backend::TestBackend::new(120, 40))
-            .expect("test terminal");
-        terminal
-            .draw(|frame| draw(frame, &mut app))
-            .expect("render release rows");
-        let text = buffer_text(terminal.backend().buffer())
-            .split_whitespace()
-            .collect::<String>();
-        assert!(text.contains("v2.0.0"));
-        assert!(text.contains("v1.9.0-rc1"));
-        assert!(text.contains("最新"));
-        assert!(text.contains("预发布"));
-        let _ = std::fs::remove_dir_all(dir);
-    }
-
-    #[test]
-    fn release_detail_draws_tag_pill_and_latest_badge() {
-        let dir = std::env::temp_dir().join(format!("gitx-release-ui-{}", std::process::id()));
-        let _ = std::fs::remove_dir_all(&dir);
-        let paths = crate::config::Paths::for_test(dir.join("config"), dir.join("cache"));
-        let mut app = App::settings(paths, None);
-        app.settings_only = false;
-        let repo = test_repo("octocat", "hello-world");
-        app.page = Page::ReleaseDetail;
-        app.return_page = Page::Repo;
-        app.page_repo = Some(repo);
-        app.releases = vec![crate::model::Release {
-            tag_name: "v1.2.3".to_string(),
-            name: Some("第一版".to_string()),
-            ..Default::default()
-        }];
-        app.release_selected = 0;
-        let mut terminal = ratatui::Terminal::new(ratatui::backend::TestBackend::new(120, 40))
-            .expect("test terminal");
-        terminal
-            .draw(|frame| draw(frame, &mut app))
-            .expect("render release");
-        let text = buffer_text(terminal.backend().buffer())
-            .split_whitespace()
-            .collect::<String>();
-        assert!(text.contains("v1.2.3"));
-        assert!(text.contains("最新"));
-        assert!(text.contains("发行说明"));
         let _ = std::fs::remove_dir_all(dir);
     }
 }

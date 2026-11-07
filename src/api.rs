@@ -1,7 +1,7 @@
 use crate::format::base64_decode;
 use crate::model::{
     Branch, Commit, CommitDetail, Issue, IssueState, LanguageStat, Notification, RateLimit,
-    ReadmeContent, Release, Repo, SearchOutcome, SearchResponse, SearchSort, StarredRepo,
+    ReadmeContent, Release, Repo, SearchOutcome, SearchResponse, SearchSort, StarredRepo, Tag,
     TreeResponse, TrendingPeriod, User, Workflow, WorkflowJob, WorkflowJobsResponse,
     WorkflowListResponse, WorkflowRun, WorkflowRunsResponse,
 };
@@ -166,6 +166,15 @@ impl ApiClient {
 
     pub fn releases(&self, full_name: &str, private: bool) -> Result<Vec<Release>, String> {
         let url = format!("{API}/repos/{full_name}/releases?per_page=10");
+        if private {
+            self.get_json(&url, true)
+        } else {
+            self.get_public_with_fallback(&url)
+        }
+    }
+
+    pub fn tags(&self, full_name: &str, private: bool) -> Result<Vec<Tag>, String> {
+        let url = format!("{API}/repos/{full_name}/tags?per_page=100");
         if private {
             self.get_json(&url, true)
         } else {
@@ -383,6 +392,45 @@ impl ApiClient {
         } else {
             Err(status_message(status, &body))
         }
+    }
+
+    pub fn rerun_action_run(
+        &self,
+        full_name: &str,
+        run_id: u64,
+        private: bool,
+    ) -> Result<(), String> {
+        self.mutate_action_run(full_name, run_id, private, "rerun")
+    }
+
+    pub fn cancel_action_run(
+        &self,
+        full_name: &str,
+        run_id: u64,
+        private: bool,
+    ) -> Result<(), String> {
+        self.mutate_action_run(full_name, run_id, private, "cancel")
+    }
+
+    fn mutate_action_run(
+        &self,
+        full_name: &str,
+        run_id: u64,
+        _private: bool,
+        action: &str,
+    ) -> Result<(), String> {
+        let Some(token) = self.token.as_deref() else {
+            return Err("还没有登录 GitHub，动不了工作流喵~先运行 gh auth login 吧喵~".to_string());
+        };
+        let url = format!("{API}/repos/{full_name}/actions/runs/{run_id}/{action}");
+        let response = self
+            .agent
+            .post(&url)
+            .header("Accept", "application/vnd.github+json")
+            .header("X-GitHub-Api-Version", "2022-11-28")
+            .header("Authorization", format!("Bearer {token}"))
+            .send_empty();
+        self.finish_mutation(response)
     }
 
     pub fn search(&self, query: &str, sort: SearchSort) -> Result<SearchOutcome, String> {
