@@ -9193,7 +9193,7 @@ impl App {
                 Page::Repo => self.open_current(),
                 Page::Account => self.open_profile(),
                 Page::Actions => self.open_action_run(None),
-                Page::Issues => self.open_selected_issue_browser(),
+                Page::Issues => self.open_selected_issue(),
                 Page::Commits => self.open_selected_commit(),
                 Page::ReleaseDetail => self.download_selected_release_asset(),
                 Page::Notifications => self.open_selected_notification(),
@@ -10714,6 +10714,31 @@ mod tests {
         assert!(!should_schedule_selected_detail(Page::Home));
         assert!(!should_schedule_selected_detail(Page::Insights));
         assert!(!should_schedule_selected_detail(Page::Settings));
+    }
+
+    #[test]
+    fn issue_enter_opens_detail_page() {
+        let root = std::env::temp_dir().join(format!("gitx-issue-enter-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        let paths = Paths::for_test(root.join("config"), root.join("cache"));
+        let mut app = App::settings(paths, None);
+        app.settings_only = false;
+        app.page = Page::Issues;
+        app.issue_repo = Some(Repo {
+            name: "demo".to_string(),
+            full_name: "me/demo".to_string(),
+            ..Default::default()
+        });
+        app.issues = vec![Issue {
+            number: 3,
+            title: "打开详情".to_string(),
+            ..Default::default()
+        }];
+        app.issue_selected = 0;
+        app.handle_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
+        assert_eq!(app.page, Page::IssueDetail);
+        assert_eq!(app.issue_open_number, Some(3));
+        let _ = std::fs::remove_dir_all(root);
     }
 
     #[test]
