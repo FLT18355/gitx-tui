@@ -37,7 +37,7 @@ default_page = "home"
 | `show_readme` | 是否加载 README |
 | `download_dir` | 下载目录，支持 `~/` 开头 |
 | `pinned_repos` | 首页置顶仓库，`owner/name` 数组，最多 24 个 |
-| `default_page` | 启动页：`home`、`repositories`、`starred`、`search`、`trending`、`account`、`notifications`、`insights`，默认 `home` |
+| `default_page` | 启动页：`home`、`repositories`、`starred`、`search`、`trending`、`account`、`notifications`、`gists`、`insights`，默认 `home` |
 
 ## 主题
 

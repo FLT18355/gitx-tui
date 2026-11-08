@@ -1,6 +1,6 @@
 use crate::app::{
-    Action, App, HitBox, IssueKind, LayoutRects, Overlay, Page, RepoPane, StatusKind, TextInput,
-    TtlKind, cache_groups,
+    Action, App, CompareSide, CompareView, GistField, HitBox, IssueKind, LayoutRects, NetworkTab,
+    Overlay, Page, PullField, RepoPane, StatusKind, TextInput, TtlKind, cache_groups,
 };
 use crate::format;
 use crate::icons;
@@ -54,6 +54,11 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
         Page::Commits => draw_commits_page(frame, app, &theme, chunks[1], &mut hits),
         Page::ReleaseDetail => draw_release_page(frame, app, &theme, chunks[1], &mut hits),
         Page::Tags => draw_tags_page(frame, app, &theme, chunks[1], &mut hits),
+        Page::IssueDetail => draw_issue_thread_page(frame, app, &theme, chunks[1], &mut hits),
+        Page::Gists => draw_gists_page(frame, app, &theme, chunks[1], &mut hits),
+        Page::Compare => draw_compare_page(frame, app, &theme, chunks[1], &mut hits),
+        Page::Files => draw_file_page(frame, app, &theme, chunks[1], &mut hits),
+        Page::Network => draw_network_page(frame, app, &theme, chunks[1], &mut hits),
     }
     draw_footer(frame, app, &theme, chunks[2], &hits);
 
@@ -76,6 +81,10 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
         Some(Overlay::Palette) => draw_palette(frame, app, &theme, area, &mut hits),
         Some(Overlay::Themes) => draw_theme_studio(frame, app, &theme, area, &mut hits),
         Some(Overlay::CancelRun) => draw_cancel_overlay(frame, app, &theme, area, &mut hits),
+        Some(Overlay::NewGist) => draw_new_gist_overlay(frame, app, &theme, area, &mut hits),
+        Some(Overlay::DeleteGist) => draw_delete_gist_overlay(frame, app, &theme, area, &mut hits),
+        Some(Overlay::NewPull) => draw_new_pull_overlay(frame, app, &theme, area, &mut hits),
+        Some(Overlay::MergePr) => draw_merge_overlay(frame, app, &theme, area, &mut hits),
         None => app.layout.overlay = Rect::default(),
     }
 
@@ -183,6 +192,7 @@ fn draw_header(
             icons::label(icons::BELL, "通知喵~")
         },
         icons::label(icons::FLAME, "热门喵~"),
+        icons::label(icons::CODE, "Gist喵~"),
     ];
     let pages = [
         Page::Home,
@@ -192,6 +202,7 @@ fn draw_header(
         Page::Account,
         Page::Notifications,
         Page::Trending,
+        Page::Gists,
     ];
     let width_list: Vec<u16> = labels
         .iter()
@@ -478,6 +489,11 @@ fn hints_for(app: &App) -> &'static str {
         Page::Tags => {
             "j/k 挑标签  Enter/o 打开  y 复制名  z 下载 zip  Z 下载 tar.gz  u SSH  r 刷新喵~"
         }
+        Page::IssueDetail => "j/k 滚正文  c 评论  x 开关  M 合并  o 浏览器  r 刷新  Esc 返回喵~",
+        Page::Gists => "j/k 挑 Gist  Tab 换文件  n 新建  D 删除  y 复制  o 浏览器  r 刷新喵~",
+        Page::Compare => "j/k 挑  Tab 换 base/head  b 选分支  v 提交/文件  n 建 PR  r 对比喵~",
+        Page::Files => "j/k 滚动  h/l 横移  w 换行  y 复制路径  d 下载  o 浏览器  r 重读喵~",
+        Page::Network => "j/k 挑  Tab 换页  Enter 主页  f 关注/取关  o 浏览器  r 刷新  Esc 返回喵~",
     }
 }
 
@@ -10910,7 +10926,7 @@ fn draw_theme_studio(
 
 fn draw_help(frame: &mut Frame, app: &mut App, theme: &Theme, area: Rect, hits: &mut Vec<HitBox>) {
     let width = area.width.saturating_sub(10).min(76);
-    let height = area.height.saturating_sub(6).min(22);
+    let height = area.height.saturating_sub(4).min(28);
     let rect = Rect::new(
         area.x + (area.width.saturating_sub(width)) / 2,
         area.y + (area.height.saturating_sub(height)) / 2,
@@ -10934,7 +10950,7 @@ fn draw_help(frame: &mut Frame, app: &mut App, theme: &Theme, area: Rect, hits: 
     let lines = [
         (
             "换页喵~",
-            "0 首页  1 仓库  2 收藏  3 搜索  4 账号  5 通知  6 热门  9 洞察  Tab 切页喵~",
+            "0 首页  1 仓库  2 收藏  3 搜索  4 账号  5 通知  6 热门  7 Gist  9 洞察  Tab 切页喵~",
         ),
         (
             "命令喵~",
@@ -10984,7 +11000,23 @@ fn draw_help(frame: &mut Frame, app: &mut App, theme: &Theme, area: Rect, hits: 
         ),
         (
             "议题喵~",
-            "仓库页按 i 看议题，v 换类型，s 换状态，n 新建一条喵~",
+            "仓库页 i 看列表，v 换类型，s 换状态，n 新建；Enter 进详情，c 评论，x 开关，M 合并喵~",
+        ),
+        (
+            "Gist喵~",
+            "7 打开 Gist 工作台，n 新建，D 删除，Tab 换文件，y 复制地址喵~",
+        ),
+        (
+            "对比喵~",
+            "仓库页 m 对比分支，b 选 base/head，v 换提交/文件，n 建 PR喵~",
+        ),
+        (
+            "文件喵~",
+            "仓库树里 Enter 打开文件，w 换行，h/l 横移，y 复制路径，d 下载喵~",
+        ),
+        (
+            "社交喵~",
+            "账号或主页按 n 看粉丝、关注和组织，f 关注/取关喵~",
         ),
         ("发行版喵~", "仓库页点发行版按钮进详情，再挑文件下载喵~"),
         (
@@ -11044,6 +11076,2430 @@ fn draw_help(frame: &mut Frame, app: &mut App, theme: &Theme, area: Rect, hits: 
         false,
     );
     app.layout.overlay = rect;
+}
+
+fn draw_issue_thread_page(
+    frame: &mut Frame,
+    app: &mut App,
+    theme: &Theme,
+    area: Rect,
+    hits: &mut Vec<HitBox>,
+) {
+    fill(frame, area, theme.color("base"));
+    let inner = Rect::new(
+        area.x + 2,
+        area.y + 1,
+        area.width.saturating_sub(4),
+        area.height.saturating_sub(2),
+    );
+    if inner.height < 10 || inner.width < 30 {
+        draw_center_message(
+            frame,
+            theme,
+            inner,
+            "这里有点挤喵~",
+            "把终端拉大一点，人家才摆得下议题详情喵~",
+        );
+        return;
+    }
+    let Some(issue) = app.issue_open.clone() else {
+        draw_center_message(
+            frame,
+            theme,
+            inner,
+            "没有议题喵~",
+            "先回议题列表挑一个嘛喵~",
+        );
+        return;
+    };
+
+    let back = icons::label(icons::BACK, "返回喵~");
+    let back_width = format::text_width(&back) as u16 + 2;
+    let back_rect = Rect::new(inner.x, inner.y, back_width, 1);
+    frame.render_widget(
+        Paragraph::new(back).style(Style::default().fg(
+            if app.hover.as_ref() == Some(&Action::Back) {
+                theme.color("blue")
+            } else {
+                theme.color("subtext0")
+            },
+        )),
+        back_rect,
+    );
+    register(hits, back_rect, Action::Back);
+
+    let (state_icon, color) = issue_status_icon(&issue);
+    let title = format!(
+        "{} #{} · {} · {}",
+        state_icon,
+        issue.number,
+        issue.kind_label(),
+        issue.state_label()
+    );
+    let title_x = inner.x + back_width + 2;
+    frame.render_widget(
+        Paragraph::new(title).style(
+            Style::default()
+                .fg(theme.color(color))
+                .add_modifier(Modifier::BOLD),
+        ),
+        Rect::new(
+            title_x,
+            inner.y,
+            inner.width.saturating_sub(back_width + 2),
+            1,
+        ),
+    );
+
+    let refresh = icons::label(icons::REFRESH, "刷新喵~");
+    let refresh_width = format::text_width(&refresh) as u16 + 4;
+    let refresh_x = inner.x + inner.width.saturating_sub(refresh_width);
+    draw_button(
+        frame,
+        app,
+        theme,
+        hits,
+        Rect::new(refresh_x, inner.y, refresh_width, 1),
+        &refresh,
+        Action::Refresh,
+        false,
+    );
+    let browser = icons::label(icons::EXTERNAL, "浏览器喵~");
+    let browser_width = format::text_width(&browser) as u16 + 4;
+    let browser_x = refresh_x.saturating_sub(browser_width + 1);
+    if browser_x > title_x + 20 {
+        draw_button(
+            frame,
+            app,
+            theme,
+            hits,
+            Rect::new(browser_x, inner.y, browser_width, 1),
+            &browser,
+            Action::OpenExternal(issue.html_url.clone()),
+            false,
+        );
+    }
+    let state_label = if issue.state == "open" {
+        icons::label(icons::X_CIRCLE, "关闭喵~")
+    } else {
+        icons::label(icons::CHECK_CIRCLE, "重新打开喵~")
+    };
+    let state_width = format::text_width(&state_label) as u16 + 4;
+    let state_x = browser_x.saturating_sub(state_width + 1);
+    if state_x > title_x + 12 {
+        draw_button(
+            frame,
+            app,
+            theme,
+            hits,
+            Rect::new(state_x, inner.y, state_width, 1),
+            &state_label,
+            Action::ToggleIssueState,
+            false,
+        );
+    }
+    if issue.is_pull_request() {
+        let merge = icons::label(icons::PULL, "合并喵~");
+        let merge_width = format::text_width(&merge) as u16 + 4;
+        let merge_x = state_x.saturating_sub(merge_width + 1);
+        if merge_x > title_x + 12 {
+            draw_button(
+                frame,
+                app,
+                theme,
+                hits,
+                Rect::new(merge_x, inner.y, merge_width, 1),
+                &merge,
+                Action::MergePull,
+                true,
+            );
+        }
+    }
+
+    let subtitle = format!(
+        "by {} · 创建于 {} · {} 条评论{}",
+        if issue.author().is_empty() {
+            "未知"
+        } else {
+            issue.author()
+        },
+        format::relative_time(&issue.created_at),
+        issue.comments,
+        if app.issue_detail_loading.is_some() {
+            " · 刷新中喵~"
+        } else {
+            ""
+        }
+    );
+    frame.render_widget(
+        Paragraph::new(format::truncate(&subtitle, inner.width as usize))
+            .style(Style::default().fg(theme.color("subtext0"))),
+        Rect::new(inner.x, inner.y + 1, inner.width, 1),
+    );
+    frame.render_widget(
+        Paragraph::new(format::truncate(
+            &format::clean_text(&issue.title),
+            inner.width as usize,
+        ))
+        .style(
+            Style::default()
+                .fg(theme.color("text"))
+                .add_modifier(Modifier::BOLD),
+        ),
+        Rect::new(inner.x, inner.y + 2, inner.width, 1),
+    );
+
+    let composer_height = if app.issue_comment_focus { 5 } else { 1 };
+    let content = Rect::new(
+        inner.x,
+        inner.y + 3,
+        inner.width,
+        inner.height.saturating_sub(3 + composer_height + 1),
+    );
+    if content.height < 3 {
+        return;
+    }
+    let side_width = if content.width >= 100 {
+        (content.width / 3).max(28)
+    } else {
+        0
+    };
+    let columns =
+        Layout::horizontal([Constraint::Min(30), Constraint::Length(side_width)]).split(content);
+    app.layout.list = columns[0];
+    app.layout.detail = columns[1];
+    draw_issue_thread(frame, app, theme, columns[0], &issue);
+    if side_width > 0 {
+        draw_issue_side(frame, app, theme, columns[1], &issue);
+    }
+
+    let composer_y = inner.y + inner.height.saturating_sub(composer_height);
+    draw_issue_composer(
+        frame,
+        app,
+        theme,
+        hits,
+        Rect::new(inner.x, composer_y, inner.width, composer_height),
+    );
+}
+
+fn draw_issue_thread(frame: &mut Frame, app: &mut App, theme: &Theme, area: Rect, issue: &Issue) {
+    if area.width < 12 || area.height < 3 {
+        return;
+    }
+    fill(frame, area, theme.color("mantle"));
+    let body = Rect::new(
+        area.x + 1,
+        area.y + 1,
+        area.width.saturating_sub(2),
+        area.height.saturating_sub(2),
+    );
+    let width = body.width.max(8) as usize;
+    let mut lines: Vec<Line<'static>> = Vec::new();
+    lines.push(Line::from(vec![
+        Span::styled(
+            format!("{} ", icons::COMMENT),
+            Style::default().fg(theme.color("blue")),
+        ),
+        Span::styled(
+            format!(
+                "{} 的正文喵~",
+                if issue.author().is_empty() {
+                    "未知"
+                } else {
+                    issue.author()
+                }
+            ),
+            Style::default()
+                .fg(theme.color("text"))
+                .add_modifier(Modifier::BOLD),
+        ),
+    ]));
+    lines.extend(markdown_lines(issue.body_text(), width, theme));
+    if app.issue_comments.is_empty() {
+        lines.push(Line::from(""));
+        let note = if app.issue_comments_loading.is_some() {
+            format!("{} 人家正在翻评论喵~...", app.spinner())
+        } else {
+            "还没有人评论喵~".to_string()
+        };
+        lines.push(Line::from(Span::styled(
+            note,
+            Style::default().fg(theme.color("overlay0")),
+        )));
+    } else {
+        for (index, comment) in app.issue_comments.iter().enumerate() {
+            lines.push(Line::from(""));
+            lines.push(horizontal_rule(width, theme));
+            lines.push(Line::from(vec![
+                Span::styled(
+                    format!("{} ", icons::COMMENT),
+                    Style::default().fg(theme.color("mauve")),
+                ),
+                Span::styled(
+                    format!(
+                        "{} · 第 {} 条评论喵~",
+                        if comment.author().is_empty() {
+                            "未知"
+                        } else {
+                            comment.author()
+                        },
+                        index + 1
+                    ),
+                    Style::default()
+                        .fg(theme.color("text"))
+                        .add_modifier(Modifier::BOLD),
+                ),
+                Span::styled(
+                    format!(" · {}", format::relative_time(&comment.created_at)),
+                    Style::default().fg(theme.color("overlay0")),
+                ),
+            ]));
+            lines.extend(markdown_lines(comment.body_text(), width, theme));
+        }
+    }
+    app.issue_scroll_max = lines.len().saturating_sub(body.height as usize) as u16;
+    app.issue_scroll = app.issue_scroll.min(app.issue_scroll_max);
+    frame.render_widget(
+        Paragraph::new(Text::from(lines)).scroll((app.issue_scroll, 0)),
+        body,
+    );
+}
+
+fn draw_issue_side(frame: &mut Frame, app: &mut App, theme: &Theme, area: Rect, issue: &Issue) {
+    if area.width < 10 || area.height < 3 {
+        return;
+    }
+    fill(frame, area, theme.color("mantle"));
+    frame.render_widget(
+        Block::new()
+            .borders(Borders::LEFT)
+            .border_style(Style::default().fg(theme.color("surface0"))),
+        area,
+    );
+    let inner = Rect::new(
+        area.x + 2,
+        area.y + 1,
+        area.width.saturating_sub(4),
+        area.height.saturating_sub(2),
+    );
+    let mut rows: Vec<(String, Color)> = Vec::new();
+    rows.push((format!("{} 状态喵~", icons::INFO), theme.color("overlay0")));
+    rows.push((
+        format!(
+            "{} · {}",
+            issue.state_label(),
+            if issue.is_pull_request() {
+                "合并请求"
+            } else {
+                "议题"
+            }
+        ),
+        theme.color(issue_status_icon(issue).1),
+    ));
+    if issue.is_pull_request() {
+        rows.push((
+            if issue.is_merged() {
+                "已合并喵~".to_string()
+            } else {
+                "还没合并喵~".to_string()
+            },
+            theme.color("subtext0"),
+        ));
+    }
+    rows.push((String::new(), theme.color("base")));
+    rows.push((format!("{} 标签喵~", icons::TAG), theme.color("overlay0")));
+    if issue.labels.is_empty() {
+        rows.push(("没有标签喵~".to_string(), theme.color("overlay0")));
+    } else {
+        for label in issue.labels.iter().take(6) {
+            rows.push((
+                format!("· {}", format::clean_text(&label.name)),
+                issue_label_color(&label.color),
+            ));
+        }
+    }
+    rows.push((String::new(), theme.color("base")));
+    rows.push((
+        format!("{} 评论喵~", icons::COMMENT),
+        theme.color("overlay0"),
+    ));
+    rows.push((
+        format!(
+            "{} 条 · {} 个文件改动",
+            issue.comments,
+            app.issue_pr_files.len()
+        ),
+        theme.color("subtext0"),
+    ));
+    if issue.is_pull_request() && !app.issue_pr_files.is_empty() {
+        rows.push((String::new(), theme.color("base")));
+        rows.push((
+            format!("{} 改动文件喵~", icons::CODE),
+            theme.color("overlay0"),
+        ));
+        for file in app.issue_pr_files.iter().take(10) {
+            rows.push((
+                format!(
+                    "{} +{} -{}",
+                    format::truncate(&file.filename, inner.width.saturating_sub(10) as usize),
+                    file.additions,
+                    file.deletions
+                ),
+                theme.color("subtext0"),
+            ));
+        }
+        if app.issue_pr_files.len() > 10 {
+            rows.push((
+                format!("还有 {} 个喵~", app.issue_pr_files.len() - 10),
+                theme.color("overlay0"),
+            ));
+        }
+    }
+    for (index, (text, color)) in rows.iter().take(inner.height as usize).enumerate() {
+        frame.render_widget(
+            Paragraph::new(format::truncate(text, inner.width as usize))
+                .style(Style::default().fg(*color)),
+            Rect::new(inner.x, inner.y + index as u16, inner.width, 1),
+        );
+    }
+}
+
+fn draw_issue_composer(
+    frame: &mut Frame,
+    app: &mut App,
+    theme: &Theme,
+    hits: &mut Vec<HitBox>,
+    area: Rect,
+) {
+    if area.height == 0 || area.width < 12 {
+        return;
+    }
+    if !app.issue_comment_focus {
+        let hint = format!(
+            "{} 按 c 写评论喵~  Ctrl+S 发送  Esc 返回喵~",
+            icons::COMMENT
+        );
+        frame.render_widget(
+            Paragraph::new(format::truncate(&hint, area.width as usize))
+                .style(Style::default().fg(theme.color("overlay0"))),
+            Rect::new(area.x, area.y, area.width, 1),
+        );
+        register(hits, area, Action::FocusIssueComment);
+        return;
+    }
+    let block = Block::new()
+        .borders(Borders::ALL)
+        .border_style(Style::default().fg(theme.color("blue")));
+    let inner = block.inner(area);
+    frame.render_widget(block, area);
+    let width = inner.width.max(1) as usize;
+    let height = inner.height as usize;
+    let (lines, cursor_row, cursor_column) = format::multiline_layout(
+        &app.issue_comment_input.value,
+        app.issue_comment_input.cursor,
+        width,
+    );
+    let start = cursor_row.saturating_sub(height.saturating_sub(1));
+    let visible: Vec<Line> = if app.issue_comment_input.is_empty() {
+        vec![Line::from(Span::styled(
+            "写点评论喵~ Ctrl+S 发送",
+            Style::default().fg(theme.color("overlay0")),
+        ))]
+    } else {
+        lines
+            .iter()
+            .skip(start)
+            .take(height)
+            .map(|line| {
+                Line::from(Span::styled(
+                    line.clone(),
+                    Style::default().fg(theme.color("text")),
+                ))
+            })
+            .collect()
+    };
+    frame.render_widget(Paragraph::new(visible), inner);
+    if !app.issue_comment_saving && height > 0 {
+        let row = cursor_row.saturating_sub(start).min(height - 1);
+        let column = cursor_column.min(width.saturating_sub(1));
+        frame.set_cursor_position(Position::new(inner.x + column as u16, inner.y + row as u16));
+    }
+    register(hits, inner, Action::FocusIssueComment);
+    let submit = if app.issue_comment_saving {
+        format!("{} 发送中...", app.spinner())
+    } else {
+        icons::label(icons::COMMENT, "发送喵~")
+    };
+    let submit_width = format::text_width(&submit) as u16 + 4;
+    draw_button(
+        frame,
+        app,
+        theme,
+        hits,
+        Rect::new(
+            area.x + area.width.saturating_sub(submit_width + 1),
+            area.y + area.height.saturating_sub(1),
+            submit_width,
+            1,
+        ),
+        &submit,
+        Action::SubmitIssueComment,
+        true,
+    );
+}
+
+fn draw_gists_page(
+    frame: &mut Frame,
+    app: &mut App,
+    theme: &Theme,
+    area: Rect,
+    hits: &mut Vec<HitBox>,
+) {
+    fill(frame, area, theme.color("base"));
+    let inner = Rect::new(
+        area.x + 2,
+        area.y + 1,
+        area.width.saturating_sub(4),
+        area.height.saturating_sub(2),
+    );
+    if inner.height < 10 || inner.width < 34 {
+        draw_center_message(
+            frame,
+            theme,
+            inner,
+            "这里有点挤喵~",
+            "把终端拉大一点，人家才摆得下 Gist 工作台喵~",
+        );
+        return;
+    }
+    let back = icons::label(icons::BACK, "返回喵~");
+    let back_width = format::text_width(&back) as u16 + 2;
+    let back_rect = Rect::new(inner.x, inner.y, back_width, 1);
+    frame.render_widget(
+        Paragraph::new(back).style(Style::default().fg(
+            if app.hover.as_ref() == Some(&Action::Back) {
+                theme.color("blue")
+            } else {
+                theme.color("subtext0")
+            },
+        )),
+        back_rect,
+    );
+    register(hits, back_rect, Action::Back);
+    let title = format!("{} Gist 工作台喵~  {} 个", icons::CODE, app.gists.len());
+    let title_width = inner.width.saturating_sub(back_width + 2 + 26);
+    frame.render_widget(
+        Paragraph::new(format::truncate(&title, title_width as usize)).style(
+            Style::default()
+                .fg(theme.color("text"))
+                .add_modifier(Modifier::BOLD),
+        ),
+        Rect::new(inner.x + back_width + 2, inner.y, title_width, 1),
+    );
+    let refresh = icons::label(icons::REFRESH, "刷新喵~");
+    let refresh_width = format::text_width(&refresh) as u16 + 4;
+    let refresh_x = inner.x + inner.width.saturating_sub(refresh_width);
+    draw_button(
+        frame,
+        app,
+        theme,
+        hits,
+        Rect::new(refresh_x, inner.y, refresh_width, 1),
+        &refresh,
+        Action::RefreshGists,
+        false,
+    );
+    let new_label = icons::label(icons::COMMENT, "新建喵~");
+    let new_width = format::text_width(&new_label) as u16 + 4;
+    let new_x = refresh_x.saturating_sub(new_width + 1);
+    if new_x > inner.x + back_width + 12 {
+        draw_button(
+            frame,
+            app,
+            theme,
+            hits,
+            Rect::new(new_x, inner.y, new_width, 1),
+            &new_label,
+            Action::StartNewGist,
+            true,
+        );
+    }
+    frame.render_widget(
+        Paragraph::new("自己的代码片段喵~ n 新建 · Tab 换文件 · D 删除 · y 复制地址喵~")
+            .style(Style::default().fg(theme.color("subtext0"))),
+        Rect::new(inner.x, inner.y + 1, inner.width, 1),
+    );
+    let content = Rect::new(
+        inner.x,
+        inner.y + 3,
+        inner.width,
+        inner.height.saturating_sub(3),
+    );
+    if content.height < 3 {
+        return;
+    }
+    let detail_width = if content.width >= 96 {
+        content.width * 3 / 5
+    } else {
+        0
+    };
+    let columns =
+        Layout::horizontal([Constraint::Min(30), Constraint::Length(detail_width)]).split(content);
+    app.layout.list = columns[0];
+    draw_gist_list(frame, app, theme, columns[0], hits);
+    if detail_width > 0 {
+        app.layout.detail = columns[1];
+        draw_gist_detail(frame, app, theme, columns[1], hits);
+    }
+}
+
+fn draw_gist_list(
+    frame: &mut Frame,
+    app: &mut App,
+    theme: &Theme,
+    area: Rect,
+    hits: &mut Vec<HitBox>,
+) {
+    if area.width < 8 || area.height < 3 {
+        return;
+    }
+    fill(frame, area, theme.color("mantle"));
+    frame.render_widget(
+        Paragraph::new(icons::label(icons::CODE, "片段列表喵~")).style(
+            Style::default()
+                .fg(theme.color("text"))
+                .add_modifier(Modifier::BOLD),
+        ),
+        Rect::new(area.x + 1, area.y, area.width.saturating_sub(2), 1),
+    );
+    fill(
+        frame,
+        Rect::new(area.x, area.y + 1, area.width, 1),
+        theme.color("surface0"),
+    );
+    let body = Rect::new(
+        area.x + 1,
+        area.y + 2,
+        area.width.saturating_sub(2),
+        area.height.saturating_sub(2),
+    );
+    if app.gists.is_empty() {
+        let (title, detail) = if app.gists_loading {
+            ("人家正在搬 Gist 喵~...", "第一次同步要等一小会儿喵~")
+        } else if let Some(error) = app.gist_error.as_deref() {
+            ("Gist 没取到喵~", error)
+        } else {
+            ("还没有 Gist 喵~", "按 n 建一个小片段嘛喵~")
+        };
+        draw_center_message(frame, theme, body, title, detail);
+        return;
+    }
+    let rows = (body.height / 2).max(1) as usize;
+    let selected = app.gist_selected.min(app.gists.len() - 1);
+    let start = selected.saturating_sub(rows - 1);
+    let end = (start + rows).min(app.gists.len());
+    for (offset, index) in (start..end).enumerate() {
+        let y = body.y + offset as u16 * 2;
+        if y + 1 >= body.y + body.height {
+            break;
+        }
+        let gist = &app.gists[index];
+        let rect = Rect::new(body.x, y, body.width, 2);
+        if index == selected {
+            fill(frame, rect, theme.color("surface0"));
+        }
+        let icon = if gist.public {
+            icons::GLOBE
+        } else {
+            icons::LOCK
+        };
+        let title = Line::from(vec![
+            Span::styled(
+                format!("{icon} "),
+                Style::default().fg(theme.color(if gist.public { "green" } else { "peach" })),
+            ),
+            Span::styled(
+                format::truncate(
+                    &format::clean_text(gist.description_text()),
+                    body.width.saturating_sub(3) as usize,
+                ),
+                Style::default().fg(theme.color("text")),
+            ),
+        ]);
+        frame.render_widget(
+            Paragraph::new(title),
+            Rect::new(body.x + 1, y, body.width.saturating_sub(1), 1),
+        );
+        let files = gist.file_names();
+        let meta = format!(
+            "   {} · {} 个文件 · {}{}",
+            gist.visibility(),
+            files.len(),
+            format::relative_time(&gist.updated_at),
+            gist.primary_file()
+                .map(|file| format!(" · {}", format::truncate(&file.filename, 24)))
+                .unwrap_or_default()
+        );
+        frame.render_widget(
+            Paragraph::new(format::truncate(&meta, body.width as usize))
+                .style(Style::default().fg(theme.color("overlay0"))),
+            Rect::new(body.x + 1, y + 1, body.width.saturating_sub(1), 1),
+        );
+        register(hits, rect, Action::SelectGist(index));
+    }
+}
+
+fn draw_gist_detail(
+    frame: &mut Frame,
+    app: &mut App,
+    theme: &Theme,
+    area: Rect,
+    hits: &mut Vec<HitBox>,
+) {
+    fill(frame, area, theme.color("mantle"));
+    frame.render_widget(
+        Block::new()
+            .borders(Borders::LEFT)
+            .border_style(Style::default().fg(theme.color("surface0"))),
+        area,
+    );
+    let inner = Rect::new(
+        area.x + 2,
+        area.y + 1,
+        area.width.saturating_sub(4),
+        area.height.saturating_sub(2),
+    );
+    if inner.width < 12 || inner.height < 4 {
+        return;
+    }
+    let Some(gist) = app.gist_detail.clone().or_else(|| app.selected_gist()) else {
+        draw_center_message(
+            frame,
+            theme,
+            area,
+            "挑一个 Gist 看看喵~",
+            "右边会显示文件内容喵~",
+        );
+        return;
+    };
+    if app.gist_detail_loading.is_some() {
+        frame.render_widget(
+            Paragraph::new(format!("{} 人家正在读文件内容喵~...", app.spinner()))
+                .style(Style::default().fg(theme.color("peach"))),
+            Rect::new(inner.x, inner.y, inner.width, 1),
+        );
+    } else {
+        frame.render_widget(
+            Paragraph::new(format::truncate(
+                &format::clean_text(gist.description_text()),
+                inner.width.saturating_sub(22) as usize,
+            ))
+            .style(
+                Style::default()
+                    .fg(theme.color("text"))
+                    .add_modifier(Modifier::BOLD),
+            ),
+            Rect::new(inner.x, inner.y, inner.width.saturating_sub(22), 1),
+        );
+    }
+    let open = icons::label(icons::EXTERNAL, "打开喵~");
+    let open_width = format::text_width(&open) as u16 + 4;
+    let open_x = inner.x + inner.width.saturating_sub(open_width);
+    draw_button(
+        frame,
+        app,
+        theme,
+        hits,
+        Rect::new(open_x, inner.y, open_width, 1),
+        &open,
+        Action::OpenExternal(gist.html_url.clone()),
+        false,
+    );
+    let copy = icons::label(icons::COPY, "复制喵~");
+    let copy_width = format::text_width(&copy) as u16 + 4;
+    let copy_x = open_x.saturating_sub(copy_width + 1);
+    if copy_x > inner.x + 12 {
+        draw_button(
+            frame,
+            app,
+            theme,
+            hits,
+            Rect::new(copy_x, inner.y, copy_width, 1),
+            &copy,
+            Action::CopyGistUrl,
+            false,
+        );
+    }
+    if copy_x > inner.x + 20 {
+        let delete = icons::label(icons::TRASH, "删除喵~");
+        let delete_width = format::text_width(&delete) as u16 + 4;
+        let delete_x = copy_x.saturating_sub(delete_width + 1);
+        if delete_x > inner.x + 12 {
+            draw_button(
+                frame,
+                app,
+                theme,
+                hits,
+                Rect::new(delete_x, inner.y, delete_width, 1),
+                &delete,
+                Action::DeleteGist,
+                false,
+            );
+        }
+    }
+    let files = app.gist_file_names();
+    let mut x = inner.x;
+    for (index, name) in files.iter().enumerate() {
+        let label = format!("{} {}", icons::FILE, format::truncate(name, 20));
+        let width = format::text_width(&label) as u16 + 3;
+        if x + width > inner.x + inner.width {
+            break;
+        }
+        let rect = Rect::new(x, inner.y + 1, width, 1);
+        let active = index == app.gist_file_selected;
+        fill(
+            frame,
+            rect,
+            if active {
+                theme.color("surface1")
+            } else {
+                theme.color("base")
+            },
+        );
+        frame.render_widget(
+            Paragraph::new(format!(" {label}")).style(if active {
+                Style::default()
+                    .fg(theme.color("blue"))
+                    .add_modifier(Modifier::BOLD)
+            } else {
+                Style::default().fg(theme.color("subtext0"))
+            }),
+            rect,
+        );
+        register(hits, rect, Action::SelectGistFile(index));
+        x += width + 1;
+    }
+    let meta = format!(
+        "{} · {} · {} 个文件 · {}",
+        gist.visibility(),
+        gist.owner
+            .as_ref()
+            .map(|owner| owner.login.as_str())
+            .filter(|login| !login.is_empty())
+            .unwrap_or("自己"),
+        files.len(),
+        format::relative_time(&gist.updated_at)
+    );
+    frame.render_widget(
+        Paragraph::new(format::truncate(&meta, inner.width as usize))
+            .style(Style::default().fg(theme.color("overlay0"))),
+        Rect::new(inner.x, inner.y + 2, inner.width, 1),
+    );
+    let body = Rect::new(
+        inner.x,
+        inner.y + 3,
+        inner.width,
+        inner.height.saturating_sub(3),
+    );
+    if body.height < 2 {
+        return;
+    }
+    let Some(file) = app.current_gist_file() else {
+        draw_center_message(
+            frame,
+            theme,
+            body,
+            "这个 Gist 没有文件喵~",
+            "等详情加载完再看看嘛喵~",
+        );
+        return;
+    };
+    let is_markdown = file.filename.to_ascii_lowercase().ends_with(".md")
+        || file.filename.to_ascii_lowercase().ends_with(".markdown");
+    let lines: Vec<Line> = if is_markdown {
+        markdown_lines(
+            file.content.as_deref().unwrap_or(""),
+            body.width as usize,
+            theme,
+        )
+    } else {
+        let width = body.width.saturating_sub(6).max(8) as usize;
+        let lang = file
+            .filename
+            .rsplit('.')
+            .next()
+            .unwrap_or("")
+            .to_ascii_lowercase();
+        file.content
+            .as_deref()
+            .unwrap_or("（内容被 GitHub 截断了，按 o 去网页看喵~）")
+            .lines()
+            .enumerate()
+            .map(|(index, line)| {
+                let mut spans = vec![Span::styled(
+                    format!("{:>4} ", index + 1),
+                    Style::default().fg(theme.color("overlay0")),
+                )];
+                for (text, style) in code_segments(line, &lang, theme) {
+                    spans.push(Span::styled(format::truncate(&text, width), style));
+                }
+                Line::from(spans)
+            })
+            .collect()
+    };
+    app.gist_scroll_max = lines.len().saturating_sub(body.height as usize) as u16;
+    app.gist_scroll = app.gist_scroll.min(app.gist_scroll_max);
+    frame.render_widget(
+        Paragraph::new(Text::from(lines)).scroll((app.gist_scroll, 0)),
+        body,
+    );
+    if file.truncated {
+        frame.render_widget(
+            Paragraph::new("内容被截断了，按 o 去网页看完整版喵~")
+                .alignment(Alignment::Center)
+                .style(Style::default().fg(theme.color("peach"))),
+            Rect::new(
+                body.x,
+                body.y + body.height.saturating_sub(1),
+                body.width,
+                1,
+            ),
+        );
+    }
+}
+
+fn draw_compare_page(
+    frame: &mut Frame,
+    app: &mut App,
+    theme: &Theme,
+    area: Rect,
+    hits: &mut Vec<HitBox>,
+) {
+    fill(frame, area, theme.color("base"));
+    let inner = Rect::new(
+        area.x + 2,
+        area.y + 1,
+        area.width.saturating_sub(4),
+        area.height.saturating_sub(2),
+    );
+    if inner.height < 10 || inner.width < 40 {
+        draw_center_message(
+            frame,
+            theme,
+            inner,
+            "这里有点挤喵~",
+            "把终端拉大一点，人家才摆得下分支对比喵~",
+        );
+        return;
+    }
+    let back = icons::label(icons::BACK, "返回喵~");
+    let back_width = format::text_width(&back) as u16 + 2;
+    let back_rect = Rect::new(inner.x, inner.y, back_width, 1);
+    frame.render_widget(
+        Paragraph::new(back).style(Style::default().fg(
+            if app.hover.as_ref() == Some(&Action::Back) {
+                theme.color("blue")
+            } else {
+                theme.color("subtext0")
+            },
+        )),
+        back_rect,
+    );
+    register(hits, back_rect, Action::Back);
+    let repo = app
+        .compare_repo
+        .as_ref()
+        .map(Repo::display_full_name)
+        .unwrap_or_else(|| "还没有选仓库".to_string());
+    let title = format!("{} 分支对比喵~  {repo}", icons::BRANCH);
+    frame.render_widget(
+        Paragraph::new(format::truncate(
+            &title,
+            inner.width.saturating_sub(back_width + 30) as usize,
+        ))
+        .style(
+            Style::default()
+                .fg(theme.color("text"))
+                .add_modifier(Modifier::BOLD),
+        ),
+        Rect::new(
+            inner.x + back_width + 2,
+            inner.y,
+            inner.width.saturating_sub(back_width + 2),
+            1,
+        ),
+    );
+    let refresh = icons::label(icons::REFRESH, "对比喵~");
+    let refresh_width = format::text_width(&refresh) as u16 + 4;
+    let refresh_x = inner.x + inner.width.saturating_sub(refresh_width);
+    draw_button(
+        frame,
+        app,
+        theme,
+        hits,
+        Rect::new(refresh_x, inner.y, refresh_width, 1),
+        &refresh,
+        Action::RefreshCompare,
+        false,
+    );
+    let pr = icons::label(icons::PULL, "建 PR 喵~");
+    let pr_width = format::text_width(&pr) as u16 + 4;
+    let pr_x = refresh_x.saturating_sub(pr_width + 1);
+    if pr_x > inner.x + back_width + 14 {
+        draw_button(
+            frame,
+            app,
+            theme,
+            hits,
+            Rect::new(pr_x, inner.y, pr_width, 1),
+            &pr,
+            Action::StartNewPull,
+            true,
+        );
+    }
+    let chip_y = inner.y + 2;
+    draw_compare_side_chip(
+        frame,
+        app,
+        theme,
+        hits,
+        Rect::new(inner.x, chip_y, 28.min(inner.width), 1),
+        CompareSide::Base,
+        &app.compare_base,
+    );
+    let head_x = inner.x + 30;
+    if head_x + 20 < inner.x + inner.width {
+        draw_compare_side_chip(
+            frame,
+            app,
+            theme,
+            hits,
+            Rect::new(head_x, chip_y, 28.min(inner.width.saturating_sub(30)), 1),
+            CompareSide::Head,
+            &app.compare_head,
+        );
+    }
+    let view_label = format!(
+        "{} {}喵~",
+        icons::CODE,
+        match app.compare_view {
+            CompareView::Commits => "看文件",
+            CompareView::Files => "看提交",
+        }
+    );
+    let view_width = format::text_width(&view_label) as u16 + 4;
+    let view_x = inner.x + inner.width.saturating_sub(view_width);
+    if view_x > inner.x + 34 {
+        draw_button(
+            frame,
+            app,
+            theme,
+            hits,
+            Rect::new(view_x, inner.y + 2, view_width, 1),
+            &view_label,
+            Action::ToggleCompareView,
+            false,
+        );
+    }
+    let summary = if let Some(result) = app.compare_result.as_ref() {
+        format!(
+            "领先 {} · 落后 {} · {} 个提交 · {} 个文件 · {} 喵~",
+            result.ahead_by,
+            result.behind_by,
+            result.total_commits,
+            result.files.len(),
+            if result.status == "identical" {
+                "两个分支一样"
+            } else {
+                "有差异"
+            }
+        )
+    } else if app.compare_loading {
+        format!("{} 人家正在比较喵~...", app.spinner())
+    } else {
+        "按 Enter 或 r 开始对比喵~".to_string()
+    };
+    frame.render_widget(
+        Paragraph::new(format::truncate(&summary, inner.width as usize))
+            .style(Style::default().fg(theme.color("subtext0"))),
+        Rect::new(inner.x, inner.y + 1, inner.width, 1),
+    );
+    if let Some(url) = app.pull_created.as_ref() {
+        frame.render_widget(
+            Paragraph::new(format::truncate(
+                &format!("{} 刚建好的 PR：{url}", icons::CHECK),
+                inner.width as usize,
+            ))
+            .style(Style::default().fg(theme.color("green"))),
+            Rect::new(inner.x, inner.y + 3, inner.width, 1),
+        );
+    }
+    if let Some(error) = app.compare_error.as_ref() {
+        frame.render_widget(
+            Paragraph::new(format::truncate(error, inner.width as usize))
+                .style(Style::default().fg(theme.color("red"))),
+            Rect::new(inner.x, inner.y + 3, inner.width, 1),
+        );
+    }
+    let content_y = inner.y + 4;
+    let content = Rect::new(
+        inner.x,
+        content_y,
+        inner.width,
+        inner.height.saturating_sub(content_y - inner.y),
+    );
+    if content.height < 4 {
+        return;
+    }
+    let Some(result) = app.compare_result.clone() else {
+        draw_center_message(
+            frame,
+            theme,
+            content,
+            "还没有对比结果喵~",
+            "按 b 选 base / head，再按 Enter 对比喵~",
+        );
+        return;
+    };
+    let detail_width = if content.width >= 90 {
+        content.width / 2
+    } else {
+        0
+    };
+    let columns =
+        Layout::horizontal([Constraint::Min(30), Constraint::Length(detail_width)]).split(content);
+    app.layout.list = columns[0];
+    if detail_width > 0 {
+        app.layout.detail = columns[1];
+    }
+    draw_compare_list(frame, app, theme, columns[0], hits, &result);
+    if detail_width > 0 {
+        draw_compare_detail(frame, app, theme, columns[1], &result);
+    }
+}
+
+fn draw_compare_side_chip(
+    frame: &mut Frame,
+    app: &App,
+    theme: &Theme,
+    hits: &mut Vec<HitBox>,
+    area: Rect,
+    side: CompareSide,
+    branch: &str,
+) {
+    if area.width < 8 {
+        return;
+    }
+    let active = app.compare_focus == side;
+    let label = format!(
+        "{} {}: {}",
+        if active { icons::CHEVRON_RIGHT } else { " " },
+        match side {
+            CompareSide::Base => "base",
+            CompareSide::Head => "head",
+        },
+        if branch.is_empty() {
+            "选分支"
+        } else {
+            branch
+        }
+    );
+    fill(
+        frame,
+        area,
+        if active {
+            theme.color("surface1")
+        } else {
+            theme.color("surface0")
+        },
+    );
+    frame.render_widget(
+        Paragraph::new(format::truncate(&label, area.width as usize)).style(if active {
+            Style::default()
+                .fg(theme.color("blue"))
+                .add_modifier(Modifier::BOLD)
+        } else {
+            Style::default().fg(theme.color("subtext0"))
+        }),
+        area,
+    );
+    register(hits, area, Action::PickCompareBranch(side));
+}
+
+fn draw_compare_list(
+    frame: &mut Frame,
+    app: &mut App,
+    theme: &Theme,
+    area: Rect,
+    hits: &mut Vec<HitBox>,
+    result: &crate::model::CompareResult,
+) {
+    if area.width < 8 || area.height < 3 {
+        return;
+    }
+    fill(frame, area, theme.color("mantle"));
+    let (title, count) = match app.compare_view {
+        CompareView::Commits => (icons::label(icons::COMMIT, "提交喵~"), result.commits.len()),
+        CompareView::Files => (icons::label(icons::FILE, "文件喵~"), result.files.len()),
+    };
+    frame.render_widget(
+        Paragraph::new(title).style(
+            Style::default()
+                .fg(theme.color("text"))
+                .add_modifier(Modifier::BOLD),
+        ),
+        Rect::new(area.x + 1, area.y, area.width.saturating_sub(12), 1),
+    );
+    frame.render_widget(
+        Paragraph::new(format!("{count} 条 · v 切换喵~"))
+            .alignment(Alignment::Right)
+            .style(Style::default().fg(theme.color("overlay0"))),
+        Rect::new(area.x + 1, area.y, area.width.saturating_sub(2), 1),
+    );
+    fill(
+        frame,
+        Rect::new(area.x, area.y + 1, area.width, 1),
+        theme.color("surface0"),
+    );
+    let body = Rect::new(
+        area.x + 1,
+        area.y + 2,
+        area.width.saturating_sub(2),
+        area.height.saturating_sub(2),
+    );
+    let count = match app.compare_view {
+        CompareView::Commits => result.commits.len(),
+        CompareView::Files => result.files.len(),
+    };
+    if count == 0 {
+        draw_center_message(
+            frame,
+            theme,
+            body,
+            "这里没有东西喵~",
+            "换一对分支，或者按 v 看看另一边喵~",
+        );
+        return;
+    }
+    let rows = body.height.max(1) as usize;
+    let selected = app.compare_selected.min(count - 1);
+    let start = selected.saturating_sub(rows - 1);
+    let end = (start + rows).min(count);
+    for (offset, index) in (start..end).enumerate() {
+        let y = body.y + offset as u16;
+        let rect = Rect::new(body.x, y, body.width, 1);
+        if index == selected {
+            fill(frame, rect, theme.color("surface0"));
+        }
+        match app.compare_view {
+            CompareView::Commits => {
+                let commit = &result.commits[index];
+                frame.render_widget(
+                    Paragraph::new(Line::from(vec![
+                        Span::styled(
+                            format!("{} ", icons::COMMIT),
+                            Style::default().fg(theme.color("blue")),
+                        ),
+                        Span::styled(
+                            format!("{} ", commit.short_sha()),
+                            Style::default().fg(theme.color("mauve")),
+                        ),
+                        Span::styled(
+                            format::truncate(
+                                &format::clean_text(commit.summary()),
+                                body.width.saturating_sub(12) as usize,
+                            ),
+                            Style::default().fg(theme.color("text")),
+                        ),
+                    ])),
+                    rect,
+                );
+            }
+            CompareView::Files => {
+                let file = &result.files[index];
+                frame.render_widget(
+                    Paragraph::new(Line::from(vec![
+                        Span::styled(
+                            format!("{} ", icons::FILE),
+                            Style::default().fg(theme.color("blue")),
+                        ),
+                        Span::styled(
+                            format::truncate(
+                                &file.filename,
+                                body.width.saturating_sub(16) as usize,
+                            ),
+                            Style::default().fg(theme.color("text")),
+                        ),
+                        Span::styled(
+                            format!(" +{} ", file.additions),
+                            Style::default().fg(theme.color("green")),
+                        ),
+                        Span::styled(
+                            format!("-{}", file.deletions),
+                            Style::default().fg(theme.color("red")),
+                        ),
+                    ])),
+                    rect,
+                );
+            }
+        }
+        register(hits, rect, Action::SelectCompareRow(index));
+    }
+}
+
+fn draw_compare_detail(
+    frame: &mut Frame,
+    app: &mut App,
+    theme: &Theme,
+    area: Rect,
+    result: &crate::model::CompareResult,
+) {
+    fill(frame, area, theme.color("mantle"));
+    frame.render_widget(
+        Block::new()
+            .borders(Borders::LEFT)
+            .border_style(Style::default().fg(theme.color("surface0"))),
+        area,
+    );
+    let inner = Rect::new(
+        area.x + 2,
+        area.y + 1,
+        area.width.saturating_sub(4),
+        area.height.saturating_sub(2),
+    );
+    if inner.height < 2 || inner.width < 8 {
+        return;
+    }
+    let mut lines: Vec<Line> = Vec::new();
+    match app.compare_view {
+        CompareView::Commits => {
+            let Some(commit) = result.commits.get(app.compare_selected) else {
+                return;
+            };
+            lines.push(Line::from(Span::styled(
+                format!(
+                    "{} {} · {}",
+                    icons::COMMIT,
+                    commit.short_sha(),
+                    commit.author_name()
+                ),
+                Style::default()
+                    .fg(theme.color("blue"))
+                    .add_modifier(Modifier::BOLD),
+            )));
+            lines.push(Line::from(Span::styled(
+                format::relative_time(&commit.commit.author.date),
+                Style::default().fg(theme.color("overlay0")),
+            )));
+            lines.push(Line::from(""));
+            for line in commit.commit.message.lines() {
+                for wrapped in
+                    format::wrap_text(&format::clean_text(line), inner.width as usize, 20)
+                {
+                    lines.push(Line::from(Span::styled(
+                        wrapped,
+                        Style::default().fg(theme.color("text")),
+                    )));
+                }
+            }
+        }
+        CompareView::Files => {
+            let Some(file) = result.files.get(app.compare_selected) else {
+                return;
+            };
+            lines.push(Line::from(Span::styled(
+                format!(
+                    "{} {} · +{} -{}",
+                    icons::FILE,
+                    format::truncate(&file.filename, inner.width.saturating_sub(16) as usize),
+                    file.additions,
+                    file.deletions
+                ),
+                Style::default()
+                    .fg(theme.color("blue"))
+                    .add_modifier(Modifier::BOLD),
+            )));
+            lines.push(Line::from(Span::styled(
+                format!("状态：{}喵~", file.status),
+                Style::default().fg(theme.color("overlay0")),
+            )));
+            lines.push(Line::from(""));
+            match file.patch.as_deref().filter(|patch| !patch.is_empty()) {
+                Some(patch) => {
+                    for line in patch.lines() {
+                        let color = if line.starts_with("+++") || line.starts_with("---") {
+                            theme.color("overlay0")
+                        } else if line.starts_with('+') {
+                            theme.color("green")
+                        } else if line.starts_with('-') {
+                            theme.color("red")
+                        } else if line.starts_with("@@") {
+                            theme.color("blue")
+                        } else {
+                            theme.color("subtext0")
+                        };
+                        lines.push(Line::from(Span::styled(
+                            format::truncate(line, inner.width as usize),
+                            Style::default().fg(color),
+                        )));
+                    }
+                }
+                None => lines.push(Line::from(Span::styled(
+                    "这个文件没有可显示的 diff 喵~",
+                    Style::default().fg(theme.color("overlay0")),
+                ))),
+            }
+        }
+    }
+    app.compare_scroll_max = lines.len().saturating_sub(inner.height as usize) as u16;
+    app.compare_scroll = app.compare_scroll.min(app.compare_scroll_max);
+    frame.render_widget(
+        Paragraph::new(Text::from(lines)).scroll((app.compare_scroll, 0)),
+        inner,
+    );
+}
+
+fn draw_file_page(
+    frame: &mut Frame,
+    app: &mut App,
+    theme: &Theme,
+    area: Rect,
+    hits: &mut Vec<HitBox>,
+) {
+    fill(frame, area, theme.color("base"));
+    let inner = Rect::new(
+        area.x + 2,
+        area.y + 1,
+        area.width.saturating_sub(4),
+        area.height.saturating_sub(2),
+    );
+    if inner.height < 8 || inner.width < 30 {
+        draw_center_message(
+            frame,
+            theme,
+            inner,
+            "这里有点挤喵~",
+            "把终端拉大一点，人家才摆得下文件预览喵~",
+        );
+        return;
+    }
+    let back = icons::label(icons::BACK, "返回喵~");
+    let back_width = format::text_width(&back) as u16 + 2;
+    let back_rect = Rect::new(inner.x, inner.y, back_width, 1);
+    frame.render_widget(
+        Paragraph::new(back).style(Style::default().fg(
+            if app.hover.as_ref() == Some(&Action::Back) {
+                theme.color("blue")
+            } else {
+                theme.color("subtext0")
+            },
+        )),
+        back_rect,
+    );
+    register(hits, back_rect, Action::Back);
+    let title = format!(
+        "{} {}喵~",
+        file_icon(&app.file_path),
+        format::truncate(
+            &app.file_path,
+            inner.width.saturating_sub(back_width + 24) as usize
+        )
+    );
+    frame.render_widget(
+        Paragraph::new(title).style(
+            Style::default()
+                .fg(theme.color("text"))
+                .add_modifier(Modifier::BOLD),
+        ),
+        Rect::new(
+            inner.x + back_width + 2,
+            inner.y,
+            inner.width.saturating_sub(back_width + 2),
+            1,
+        ),
+    );
+    let refresh = icons::label(icons::REFRESH, "重读喵~");
+    let refresh_width = format::text_width(&refresh) as u16 + 4;
+    let refresh_x = inner.x + inner.width.saturating_sub(refresh_width);
+    draw_button(
+        frame,
+        app,
+        theme,
+        hits,
+        Rect::new(refresh_x, inner.y, refresh_width, 1),
+        &refresh,
+        Action::Refresh,
+        false,
+    );
+    let browser = icons::label(icons::EXTERNAL, "浏览器喵~");
+    let browser_width = format::text_width(&browser) as u16 + 4;
+    let browser_x = refresh_x.saturating_sub(browser_width + 1);
+    if browser_x > inner.x + back_width + 20
+        && let Some(url) = app
+            .file_view
+            .as_ref()
+            .map(|file| file.html_url.clone())
+            .filter(|url| !url.is_empty())
+    {
+        draw_button(
+            frame,
+            app,
+            theme,
+            hits,
+            Rect::new(browser_x, inner.y, browser_width, 1),
+            &browser,
+            Action::OpenExternal(url),
+            false,
+        );
+    }
+    let meta = format!(
+        "{} 分支 · {} · {} 行{}",
+        icons::BRANCH,
+        app.file_branch,
+        app.file_view
+            .as_ref()
+            .map(|file| file.line_count())
+            .unwrap_or(0),
+        app.file_view
+            .as_ref()
+            .map(|file| format!(" · {}", format::format_size(file.size)))
+            .unwrap_or_default()
+    );
+    frame.render_widget(
+        Paragraph::new(format::truncate(&meta, inner.width as usize))
+            .style(Style::default().fg(theme.color("subtext0"))),
+        Rect::new(inner.x, inner.y + 1, inner.width, 1),
+    );
+    let tools_y = inner.y + 2;
+    draw_sort_chips(
+        frame,
+        app,
+        theme,
+        hits,
+        Rect::new(inner.x, tools_y, inner.width, 1),
+        &icons::label(icons::CODE, "工具喵~"),
+        &[
+            (
+                if app.file_wrap {
+                    "换行：开喵~"
+                } else {
+                    "换行：关喵~"
+                },
+                Action::ToggleFileWrap,
+                app.file_wrap,
+            ),
+            ("复制路径喵~", Action::CopyFilePath, false),
+            ("下载喵~", Action::DownloadFile, false),
+        ],
+    );
+    let body = Rect::new(
+        inner.x,
+        inner.y + 4,
+        inner.width,
+        inner.height.saturating_sub(4),
+    );
+    if body.height < 2 {
+        return;
+    }
+    if app.file_loading.is_some() {
+        frame.render_widget(
+            Paragraph::new(format!("{} 人家正在读文件喵~...", app.spinner()))
+                .style(Style::default().fg(theme.color("peach"))),
+            Rect::new(body.x, body.y, body.width, 1),
+        );
+        return;
+    }
+    let Some(file) = app.file_view.as_ref() else {
+        draw_center_message(
+            frame,
+            theme,
+            body,
+            "文件还没读出来喵~",
+            app.file_error
+                .as_deref()
+                .unwrap_or("按 r 再读一次，或者按 o 去浏览器喵~"),
+        );
+        return;
+    };
+    let number_width = file.line_count().to_string().len().max(3) as u16;
+    let code_width = body.width.saturating_sub(number_width + 2).max(8) as usize;
+    let lang = file
+        .name
+        .rsplit('.')
+        .next()
+        .unwrap_or("")
+        .to_ascii_lowercase();
+    let mut lines: Vec<Line<'static>> = Vec::new();
+    let mut widest = 0usize;
+    for (index, source) in file.content.lines().enumerate() {
+        let prefix = format!("{:>width$} ", index + 1, width = number_width as usize);
+        widest = widest.max(format::text_width(source));
+        if app.file_wrap {
+            let segments = code_segments(source, &lang, theme);
+            let wrapped = prefixed_lines(
+                &[Span::styled(
+                    prefix,
+                    Style::default().fg(theme.color("overlay0")),
+                )],
+                &segments,
+                body.width as usize,
+                usize::MAX,
+            );
+            lines.extend(wrapped);
+        } else {
+            let mut spans = vec![Span::styled(
+                prefix,
+                Style::default().fg(theme.color("overlay0")),
+            )];
+            for (text, style) in code_segments(source, &lang, theme) {
+                spans.push(Span::styled(text, style));
+            }
+            lines.push(Line::from(spans));
+        }
+    }
+    if file.content.is_empty() {
+        lines.push(Line::from(Span::styled(
+            "（空文件喵~）",
+            Style::default().fg(theme.color("overlay0")),
+        )));
+    }
+    app.file_scroll_max = lines.len().saturating_sub(body.height as usize) as u16;
+    app.file_scroll = app.file_scroll.min(app.file_scroll_max);
+    app.file_h_max = widest.saturating_sub(code_width).min(u16::MAX as usize) as u16;
+    app.file_h_scroll = app.file_h_scroll.min(app.file_h_max);
+    let horizontal = if app.file_wrap { 0 } else { app.file_h_scroll };
+    frame.render_widget(
+        Paragraph::new(Text::from(lines)).scroll((app.file_scroll, horizontal)),
+        body,
+    );
+    if !app.file_wrap && app.file_h_max > 0 {
+        frame.render_widget(
+            Paragraph::new(format!(
+                "h/l 横向滚动 · {}%",
+                (app.file_h_scroll as u32 * 100) / (app.file_h_max as u32).max(1)
+            ))
+            .alignment(Alignment::Right)
+            .style(Style::default().fg(theme.color("overlay0"))),
+            Rect::new(
+                body.x,
+                body.y + body.height.saturating_sub(1),
+                body.width,
+                1,
+            ),
+        );
+    }
+}
+
+fn draw_network_page(
+    frame: &mut Frame,
+    app: &mut App,
+    theme: &Theme,
+    area: Rect,
+    hits: &mut Vec<HitBox>,
+) {
+    fill(frame, area, theme.color("base"));
+    let inner = Rect::new(
+        area.x + 2,
+        area.y + 1,
+        area.width.saturating_sub(4),
+        area.height.saturating_sub(2),
+    );
+    if inner.height < 10 || inner.width < 34 {
+        draw_center_message(
+            frame,
+            theme,
+            inner,
+            "这里有点挤喵~",
+            "把终端拉大一点，人家才摆得下社交网络喵~",
+        );
+        return;
+    }
+    let back = icons::label(icons::BACK, "返回喵~");
+    let back_width = format::text_width(&back) as u16 + 2;
+    let back_rect = Rect::new(inner.x, inner.y, back_width, 1);
+    frame.render_widget(
+        Paragraph::new(back).style(Style::default().fg(
+            if app.hover.as_ref() == Some(&Action::Back) {
+                theme.color("blue")
+            } else {
+                theme.color("subtext0")
+            },
+        )),
+        back_rect,
+    );
+    register(hits, back_rect, Action::Back);
+    let login = app.network_login.as_deref().unwrap_or("?");
+    let title = format!("{} @{login} 的社交圈喵~", icons::NETWORK);
+    frame.render_widget(
+        Paragraph::new(format::truncate(
+            &title,
+            inner.width.saturating_sub(back_width + 26) as usize,
+        ))
+        .style(
+            Style::default()
+                .fg(theme.color("text"))
+                .add_modifier(Modifier::BOLD),
+        ),
+        Rect::new(
+            inner.x + back_width + 2,
+            inner.y,
+            inner.width.saturating_sub(back_width + 2),
+            1,
+        ),
+    );
+    let refresh = icons::label(icons::REFRESH, "刷新喵~");
+    let refresh_width = format::text_width(&refresh) as u16 + 4;
+    let refresh_x = inner.x + inner.width.saturating_sub(refresh_width);
+    draw_button(
+        frame,
+        app,
+        theme,
+        hits,
+        Rect::new(refresh_x, inner.y, refresh_width, 1),
+        &refresh,
+        Action::Refresh,
+        false,
+    );
+    if app.network_tab != NetworkTab::Orgs {
+        let follow_label = match app.network_following {
+            Some(true) => icons::label(icons::X_CIRCLE, "取关喵~"),
+            Some(false) => icons::label(icons::USER, "关注喵~"),
+            None => icons::label(icons::USER, "关注/取关喵~"),
+        };
+        let follow_width = format::text_width(&follow_label) as u16 + 4;
+        let follow_x = refresh_x.saturating_sub(follow_width + 1);
+        if follow_x > inner.x + back_width + 14 {
+            draw_button(
+                frame,
+                app,
+                theme,
+                hits,
+                Rect::new(follow_x, inner.y, follow_width, 1),
+                &follow_label,
+                Action::ToggleFollow,
+                false,
+            );
+        }
+    }
+    frame.render_widget(
+        Paragraph::new("Tab 换页 · j/k 挑 · Enter 主页 · f 关注 · o 浏览器喵~")
+            .style(Style::default().fg(theme.color("subtext0"))),
+        Rect::new(inner.x, inner.y + 1, inner.width, 1),
+    );
+    draw_sort_chips(
+        frame,
+        app,
+        theme,
+        hits,
+        Rect::new(inner.x, inner.y + 2, inner.width, 1),
+        &icons::label(icons::NETWORK, "圈子喵~"),
+        &[
+            (
+                NetworkTab::Followers.label(),
+                Action::SetNetworkTab(NetworkTab::Followers),
+                app.network_tab == NetworkTab::Followers,
+            ),
+            (
+                NetworkTab::Following.label(),
+                Action::SetNetworkTab(NetworkTab::Following),
+                app.network_tab == NetworkTab::Following,
+            ),
+            (
+                NetworkTab::Orgs.label(),
+                Action::SetNetworkTab(NetworkTab::Orgs),
+                app.network_tab == NetworkTab::Orgs,
+            ),
+        ],
+    );
+    let body = Rect::new(
+        inner.x,
+        inner.y + 4,
+        inner.width,
+        inner.height.saturating_sub(4),
+    );
+    if body.height < 3 {
+        return;
+    }
+    if app.network_loading == Some(app.network_tab) {
+        frame.render_widget(
+            Paragraph::new(format!(
+                "{} 人家正在翻 {} 喵~...",
+                app.spinner(),
+                app.network_tab.label()
+            ))
+            .style(Style::default().fg(theme.color("peach"))),
+            Rect::new(body.x, body.y, body.width, 1),
+        );
+        return;
+    }
+    let count = app.network_row_count();
+    if count == 0 {
+        draw_center_message(
+            frame,
+            theme,
+            body,
+            "这个圈子空空的喵~",
+            "按 r 刷新，或者按 Tab 看看别的页喵~",
+        );
+        return;
+    }
+    let rows = (body.height / 2).max(1) as usize;
+    let selected = app.network_selected.min(count - 1);
+    let start = selected.saturating_sub(rows - 1);
+    let end = (start + rows).min(count);
+    for (offset, index) in (start..end).enumerate() {
+        let y = body.y + offset as u16 * 2;
+        if y + 1 >= body.y + body.height {
+            break;
+        }
+        let rect = Rect::new(body.x, y, body.width, 2);
+        if index == selected {
+            fill(frame, rect, theme.color("surface0"));
+        }
+        match app.network_tab {
+            NetworkTab::Orgs => {
+                let org = &app.network_orgs[index];
+                frame.render_widget(
+                    Paragraph::new(Line::from(vec![
+                        Span::styled(
+                            format!("{} ", icons::NETWORK),
+                            Style::default().fg(theme.color("mauve")),
+                        ),
+                        Span::styled(
+                            format!("@{}", org.login),
+                            Style::default()
+                                .fg(theme.color("text"))
+                                .add_modifier(Modifier::BOLD),
+                        ),
+                    ])),
+                    Rect::new(body.x + 1, y, body.width.saturating_sub(1), 1),
+                );
+                frame.render_widget(
+                    Paragraph::new(format::truncate(
+                        org.description
+                            .as_deref()
+                            .filter(|text| !text.trim().is_empty())
+                            .unwrap_or("（没有写简介喵~）"),
+                        body.width.saturating_sub(3) as usize,
+                    ))
+                    .style(Style::default().fg(theme.color("overlay0"))),
+                    Rect::new(body.x + 1, y + 1, body.width.saturating_sub(1), 1),
+                );
+            }
+            _ => {
+                let user = &app.network_users[index];
+                let following = app.network_known_following.contains(&user.login);
+                let badge = if following { "已关注" } else { "" };
+                frame.render_widget(
+                    Paragraph::new(Line::from(vec![
+                        Span::styled(
+                            format!("{} ", icons::USER),
+                            Style::default().fg(theme.color("blue")),
+                        ),
+                        Span::styled(
+                            format!("@{}", user.login),
+                            Style::default()
+                                .fg(theme.color("text"))
+                                .add_modifier(Modifier::BOLD),
+                        ),
+                        Span::styled(
+                            format!("  {}", user.display_name()),
+                            Style::default().fg(theme.color("subtext0")),
+                        ),
+                        Span::styled(
+                            if badge.is_empty() {
+                                String::new()
+                            } else {
+                                format!("  · {badge}")
+                            },
+                            Style::default().fg(theme.color("green")),
+                        ),
+                    ])),
+                    Rect::new(body.x + 1, y, body.width.saturating_sub(1), 1),
+                );
+                let meta = format!(
+                    "   {} 粉丝 · {} 关注 · {}{}",
+                    format::human_count(user.followers),
+                    format::human_count(user.following),
+                    user.public_repos,
+                    user.bio
+                        .as_deref()
+                        .filter(|bio| !bio.trim().is_empty())
+                        .map(|bio| format!(" · {}", format::truncate(bio, 40)))
+                        .unwrap_or_default()
+                );
+                frame.render_widget(
+                    Paragraph::new(format::truncate(&meta, body.width as usize))
+                        .style(Style::default().fg(theme.color("overlay0"))),
+                    Rect::new(body.x + 1, y + 1, body.width.saturating_sub(1), 1),
+                );
+            }
+        }
+        register(hits, rect, Action::SelectNetwork(index));
+    }
+}
+
+fn overlay_panel(
+    frame: &mut Frame,
+    theme: &Theme,
+    area: Rect,
+    width: u16,
+    height: u16,
+    title: &str,
+) -> (Rect, Rect) {
+    let width = area.width.saturating_sub(8).min(width).max(30);
+    let height = area.height.saturating_sub(6).min(height).max(8);
+    let rect = Rect::new(
+        area.x + (area.width.saturating_sub(width)) / 2,
+        area.y + (area.height.saturating_sub(height)) / 2,
+        width,
+        height,
+    );
+    frame.render_widget(Clear, rect);
+    fill(frame, rect, theme.color("mantle"));
+    frame.render_widget(
+        Block::new()
+            .borders(Borders::ALL)
+            .border_style(Style::default().fg(theme.color("blue"))),
+        rect,
+    );
+    let inner = Rect::new(
+        rect.x + 2,
+        rect.y + 1,
+        rect.width.saturating_sub(4),
+        rect.height.saturating_sub(2),
+    );
+    frame.render_widget(
+        Paragraph::new(title).style(
+            Style::default()
+                .fg(theme.color("text"))
+                .add_modifier(Modifier::BOLD),
+        ),
+        Rect::new(inner.x, inner.y, inner.width, 1),
+    );
+    (rect, inner)
+}
+
+fn draw_overlay_input(
+    frame: &mut Frame,
+    theme: &Theme,
+    area: Rect,
+    label: &str,
+    input: &TextInput,
+    focused: bool,
+    placeholder: &str,
+) {
+    if area.width < 10 {
+        return;
+    }
+    fill(
+        frame,
+        area,
+        if focused {
+            theme.color("surface1")
+        } else {
+            theme.color("surface0")
+        },
+    );
+    let label = format!("{label} ");
+    let label_width = format::text_width(&label) as u16;
+    frame.render_widget(
+        Paragraph::new(label.clone()).style(Style::default().fg(if focused {
+            theme.color("blue")
+        } else {
+            theme.color("overlay0")
+        })),
+        Rect::new(area.x + 1, area.y, label_width, 1),
+    );
+    let value_width = area.width.saturating_sub(label_width + 2);
+    let (visible, cursor) = if input.is_empty() {
+        (format::truncate(placeholder, value_width as usize), 0_u16)
+    } else {
+        visible_input(input, focused, value_width)
+    };
+    frame.render_widget(
+        Paragraph::new(visible).style(if input.is_empty() {
+            Style::default().fg(theme.color("overlay0"))
+        } else {
+            Style::default().fg(theme.color("text"))
+        }),
+        Rect::new(area.x + 1 + label_width, area.y, value_width, 1),
+    );
+    if focused && value_width > 0 {
+        frame.set_cursor_position(Position::new(
+            (area.x + 1 + label_width + cursor).min(area.x + area.width - 1),
+            area.y,
+        ));
+    }
+}
+
+fn draw_new_gist_overlay(
+    frame: &mut Frame,
+    app: &mut App,
+    theme: &Theme,
+    area: Rect,
+    hits: &mut Vec<HitBox>,
+) {
+    let (rect, inner) = overlay_panel(
+        frame,
+        theme,
+        area,
+        76,
+        20,
+        &icons::label(icons::CODE, "新 Gist 喵~"),
+    );
+    app.layout.overlay = rect;
+    frame.render_widget(
+        Paragraph::new("Tab 换栏 · Ctrl+P 公开/私密 · Ctrl+S 提交 · Esc 关闭喵~")
+            .style(Style::default().fg(theme.color("overlay0"))),
+        Rect::new(inner.x, inner.y + 1, inner.width, 1),
+    );
+    let desc_rect = Rect::new(inner.x, inner.y + 3, inner.width, 1);
+    draw_overlay_input(
+        frame,
+        theme,
+        desc_rect,
+        "说明喵~",
+        &app.gist_desc_input,
+        app.gist_field == GistField::Description,
+        "给这个片段写一句说明嘛喵~",
+    );
+    register(
+        hits,
+        desc_rect,
+        Action::FocusGistField(GistField::Description),
+    );
+    let name_rect = Rect::new(inner.x, inner.y + 4, inner.width, 1);
+    draw_overlay_input(
+        frame,
+        theme,
+        name_rect,
+        "文件名喵~",
+        &app.gist_filename_input,
+        app.gist_field == GistField::Filename,
+        "gistfile1.txt",
+    );
+    register(hits, name_rect, Action::FocusGistField(GistField::Filename));
+    let vis = format!(
+        "{} 可见性喵~ {}",
+        icons::EYE,
+        if app.gist_public { "公开" } else { "私密" }
+    );
+    let vis_width = format::text_width(&vis) as u16 + 3;
+    let vis_rect = Rect::new(inner.x, inner.y + 5, vis_width.min(inner.width), 1);
+    fill(
+        frame,
+        vis_rect,
+        if app.gist_public {
+            theme.color("surface1")
+        } else {
+            theme.color("surface0")
+        },
+    );
+    frame.render_widget(
+        Paragraph::new(format!(" {vis}")).style(Style::default().fg(if app.gist_public {
+            theme.color("green")
+        } else {
+            theme.color("peach")
+        })),
+        vis_rect,
+    );
+    register(hits, vis_rect, Action::ToggleGistPublic);
+    let content_y = inner.y + 7;
+    let buttons_y = inner.y + inner.height.saturating_sub(1);
+    let error_y = buttons_y.saturating_sub(1);
+    let content_outer = Rect::new(
+        inner.x,
+        content_y,
+        inner.width,
+        error_y.saturating_sub(content_y),
+    );
+    let block = Block::new()
+        .borders(Borders::ALL)
+        .border_style(
+            Style::default().fg(if app.gist_field == GistField::Content {
+                theme.color("blue")
+            } else {
+                theme.color("surface1")
+            }),
+        );
+    let body = block.inner(content_outer);
+    frame.render_widget(block, content_outer);
+    let width = body.width.max(1) as usize;
+    let height = body.height as usize;
+    let (lines, cursor_row, cursor_column) = format::multiline_layout(
+        &app.gist_content_input.value,
+        app.gist_content_input.cursor,
+        width,
+    );
+    let start = if app.gist_field == GistField::Content {
+        cursor_row.saturating_sub(height.saturating_sub(1))
+    } else {
+        0
+    };
+    let visible: Vec<Line> = if app.gist_content_input.is_empty() {
+        vec![Line::from(Span::styled(
+            "把代码或文字丢进来喵~",
+            Style::default().fg(theme.color("overlay0")),
+        ))]
+    } else {
+        lines
+            .iter()
+            .skip(start)
+            .take(height)
+            .map(|line| {
+                Line::from(Span::styled(
+                    line.clone(),
+                    Style::default().fg(theme.color("text")),
+                ))
+            })
+            .collect()
+    };
+    frame.render_widget(Paragraph::new(visible), body);
+    if app.gist_field == GistField::Content && !app.gist_saving && height > 0 {
+        let row = cursor_row.saturating_sub(start).min(height - 1);
+        let column = cursor_column.min(width.saturating_sub(1));
+        frame.set_cursor_position(Position::new(body.x + column as u16, body.y + row as u16));
+    }
+    register(
+        hits,
+        content_outer,
+        Action::FocusGistField(GistField::Content),
+    );
+    if let Some(error) = app.gist_create_error.as_ref() {
+        frame.render_widget(
+            Paragraph::new(format::truncate(error, inner.width as usize))
+                .style(Style::default().fg(theme.color("red"))),
+            Rect::new(inner.x, error_y, inner.width, 1),
+        );
+    }
+    let cancel = icons::label(icons::BACK, "取消喵~");
+    let cancel_width = format::text_width(&cancel) as u16 + 4;
+    draw_button(
+        frame,
+        app,
+        theme,
+        hits,
+        Rect::new(inner.x, buttons_y, cancel_width, 1),
+        &cancel,
+        Action::CloseOverlay,
+        false,
+    );
+    let submit = if app.gist_saving {
+        format!("{} 提交中...", app.spinner())
+    } else {
+        icons::label(icons::SAVE, "建好啦喵~")
+    };
+    let submit_width = format::text_width(&submit) as u16 + 4;
+    let submit_x = inner.x + inner.width.saturating_sub(submit_width);
+    draw_button(
+        frame,
+        app,
+        theme,
+        hits,
+        Rect::new(submit_x, buttons_y, submit_width, 1),
+        &submit,
+        Action::SubmitNewGist,
+        true,
+    );
+}
+
+fn draw_delete_gist_overlay(
+    frame: &mut Frame,
+    app: &mut App,
+    theme: &Theme,
+    area: Rect,
+    hits: &mut Vec<HitBox>,
+) {
+    let (rect, inner) = overlay_panel(
+        frame,
+        theme,
+        area,
+        62,
+        10,
+        &icons::label(icons::TRASH, "删掉这个 Gist 喵？"),
+    );
+    app.layout.overlay = rect;
+    let description = app
+        .gist_delete
+        .as_ref()
+        .map(|gist| format::clean_text(gist.description_text()).to_string())
+        .unwrap_or_else(|| "这个 Gist".to_string());
+    frame.render_widget(
+        Paragraph::new(format::truncate(
+            &format!("真的要删掉「{description}」吗喵？删了就找不回来啦喵~"),
+            inner.width as usize,
+        ))
+        .style(Style::default().fg(theme.color("subtext0"))),
+        Rect::new(inner.x, inner.y + 2, inner.width, 1),
+    );
+    let buttons_y = inner.y + inner.height.saturating_sub(1);
+    let cancel = icons::label(icons::BACK, "不要喵~");
+    let cancel_width = format::text_width(&cancel) as u16 + 4;
+    draw_button(
+        frame,
+        app,
+        theme,
+        hits,
+        Rect::new(inner.x, buttons_y, cancel_width, 1),
+        &cancel,
+        Action::CloseOverlay,
+        false,
+    );
+    let confirm = if app.gist_deleting {
+        format!("{} 删除中...", app.spinner())
+    } else {
+        icons::label(icons::TRASH, "确认删除喵~")
+    };
+    let confirm_width = format::text_width(&confirm) as u16 + 4;
+    draw_button(
+        frame,
+        app,
+        theme,
+        hits,
+        Rect::new(
+            inner.x + inner.width.saturating_sub(confirm_width),
+            buttons_y,
+            confirm_width,
+            1,
+        ),
+        &confirm,
+        Action::ConfirmDeleteGist,
+        false,
+    );
+}
+
+fn draw_new_pull_overlay(
+    frame: &mut Frame,
+    app: &mut App,
+    theme: &Theme,
+    area: Rect,
+    hits: &mut Vec<HitBox>,
+) {
+    let (rect, inner) = overlay_panel(
+        frame,
+        theme,
+        area,
+        78,
+        20,
+        &icons::label(icons::PULL, "新建合并请求喵~"),
+    );
+    app.layout.overlay = rect;
+    let route = format!(
+        "{} {}  →  {}  ·  Tab 换栏 · Ctrl+D {} · Ctrl+S 提交 · Esc 关闭喵~",
+        icons::BRANCH,
+        app.compare_head,
+        app.compare_base,
+        if app.pull_draft {
+            "草稿：开"
+        } else {
+            "草稿：关"
+        }
+    );
+    frame.render_widget(
+        Paragraph::new(format::truncate(&route, inner.width as usize))
+            .style(Style::default().fg(theme.color("overlay0"))),
+        Rect::new(inner.x, inner.y + 1, inner.width, 1),
+    );
+    let title_rect = Rect::new(inner.x, inner.y + 3, inner.width, 1);
+    draw_overlay_input(
+        frame,
+        theme,
+        title_rect,
+        "标题喵~",
+        &app.pull_title,
+        app.pull_field == PullField::Title,
+        "给合并请求起个标题喵~",
+    );
+    register(hits, title_rect, Action::FocusPullField(PullField::Title));
+    let draft = format!(
+        "{} 草稿喵~ {}",
+        icons::CHECK_SQUARE,
+        if app.pull_draft { "开" } else { "关" }
+    );
+    let draft_width = format::text_width(&draft) as u16 + 3;
+    let draft_rect = Rect::new(inner.x, inner.y + 4, draft_width.min(inner.width), 1);
+    fill(
+        frame,
+        draft_rect,
+        if app.pull_draft {
+            theme.color("surface1")
+        } else {
+            theme.color("surface0")
+        },
+    );
+    frame.render_widget(
+        Paragraph::new(format!(" {draft}")).style(Style::default().fg(if app.pull_draft {
+            theme.color("peach")
+        } else {
+            theme.color("overlay0")
+        })),
+        draft_rect,
+    );
+    register(hits, draft_rect, Action::TogglePullDraft);
+    let content_y = inner.y + 6;
+    let buttons_y = inner.y + inner.height.saturating_sub(1);
+    let error_y = buttons_y.saturating_sub(1);
+    let content_outer = Rect::new(
+        inner.x,
+        content_y,
+        inner.width,
+        error_y.saturating_sub(content_y),
+    );
+    let block = Block::new()
+        .borders(Borders::ALL)
+        .border_style(Style::default().fg(if app.pull_field == PullField::Body {
+            theme.color("blue")
+        } else {
+            theme.color("surface1")
+        }));
+    let body = block.inner(content_outer);
+    frame.render_widget(block, content_outer);
+    let width = body.width.max(1) as usize;
+    let height = body.height as usize;
+    let (lines, cursor_row, cursor_column) =
+        format::multiline_layout(&app.pull_body.value, app.pull_body.cursor, width);
+    let start = if app.pull_field == PullField::Body {
+        cursor_row.saturating_sub(height.saturating_sub(1))
+    } else {
+        0
+    };
+    let visible: Vec<Line> = if app.pull_body.is_empty() {
+        vec![Line::from(Span::styled(
+            "写点说明喵~（可以留空）",
+            Style::default().fg(theme.color("overlay0")),
+        ))]
+    } else {
+        lines
+            .iter()
+            .skip(start)
+            .take(height)
+            .map(|line| {
+                Line::from(Span::styled(
+                    line.clone(),
+                    Style::default().fg(theme.color("text")),
+                ))
+            })
+            .collect()
+    };
+    frame.render_widget(Paragraph::new(visible), body);
+    if app.pull_field == PullField::Body && !app.pull_saving && height > 0 {
+        let row = cursor_row.saturating_sub(start).min(height - 1);
+        let column = cursor_column.min(width.saturating_sub(1));
+        frame.set_cursor_position(Position::new(body.x + column as u16, body.y + row as u16));
+    }
+    register(hits, content_outer, Action::FocusPullField(PullField::Body));
+    if let Some(error) = app.pull_error.as_ref() {
+        frame.render_widget(
+            Paragraph::new(format::truncate(error, inner.width as usize))
+                .style(Style::default().fg(theme.color("red"))),
+            Rect::new(inner.x, error_y, inner.width, 1),
+        );
+    }
+    let cancel = icons::label(icons::BACK, "取消喵~");
+    let cancel_width = format::text_width(&cancel) as u16 + 4;
+    draw_button(
+        frame,
+        app,
+        theme,
+        hits,
+        Rect::new(inner.x, buttons_y, cancel_width, 1),
+        &cancel,
+        Action::CloseOverlay,
+        false,
+    );
+    let submit = if app.pull_saving {
+        format!("{} 提交中...", app.spinner())
+    } else {
+        icons::label(icons::PULL, "建好啦喵~")
+    };
+    let submit_width = format::text_width(&submit) as u16 + 4;
+    draw_button(
+        frame,
+        app,
+        theme,
+        hits,
+        Rect::new(
+            inner.x + inner.width.saturating_sub(submit_width),
+            buttons_y,
+            submit_width,
+            1,
+        ),
+        &submit,
+        Action::ConfirmNewPull,
+        true,
+    );
+}
+
+fn draw_merge_overlay(
+    frame: &mut Frame,
+    app: &mut App,
+    theme: &Theme,
+    area: Rect,
+    hits: &mut Vec<HitBox>,
+) {
+    let (rect, inner) = overlay_panel(
+        frame,
+        theme,
+        area,
+        62,
+        10,
+        &icons::label(icons::PULL, "合并这个请求喵？"),
+    );
+    app.layout.overlay = rect;
+    let title = app
+        .issue_open
+        .as_ref()
+        .map(|issue| format!("#{} {}", issue.number, format::clean_text(&issue.title)))
+        .unwrap_or_else(|| "这个合并请求".to_string());
+    frame.render_widget(
+        Paragraph::new(format::truncate(&title, inner.width as usize)).style(
+            Style::default()
+                .fg(theme.color("text"))
+                .add_modifier(Modifier::BOLD),
+        ),
+        Rect::new(inner.x, inner.y + 2, inner.width, 1),
+    );
+    frame.render_widget(
+        Paragraph::new("会用 squash 方式合并喵~确认要合进去吗？Esc 可以反悔喵~")
+            .style(Style::default().fg(theme.color("subtext0"))),
+        Rect::new(inner.x, inner.y + 3, inner.width, 1),
+    );
+    let buttons_y = inner.y + inner.height.saturating_sub(1);
+    let cancel = icons::label(icons::BACK, "不要喵~");
+    let cancel_width = format::text_width(&cancel) as u16 + 4;
+    draw_button(
+        frame,
+        app,
+        theme,
+        hits,
+        Rect::new(inner.x, buttons_y, cancel_width, 1),
+        &cancel,
+        Action::CloseOverlay,
+        false,
+    );
+    let confirm = if app.issue_action_loading {
+        format!("{} 合并中...", app.spinner())
+    } else {
+        icons::label(icons::PULL, "确认合并喵~")
+    };
+    let confirm_width = format::text_width(&confirm) as u16 + 4;
+    draw_button(
+        frame,
+        app,
+        theme,
+        hits,
+        Rect::new(
+            inner.x + inner.width.saturating_sub(confirm_width),
+            buttons_y,
+            confirm_width,
+            1,
+        ),
+        &confirm,
+        Action::ConfirmMergePull,
+        true,
+    );
 }
 
 fn draw_too_small(frame: &mut Frame, area: Rect, theme: &Theme) {
@@ -11405,6 +13861,177 @@ mod tests {
         let compact = text.split_whitespace().collect::<String>();
         assert!(!compact.contains("帮助喵~"));
         assert!(compact.contains("首页喵~"));
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn new_workspace_pages_render_without_panics() {
+        let dir = std::env::temp_dir().join(format!("gitx-new-pages-ui-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        let paths = crate::config::Paths::for_test(dir.join("config"), dir.join("cache"));
+        let mut app = App::settings(paths, None);
+        app.settings_only = false;
+        let repo = Repo {
+            name: "demo".to_string(),
+            full_name: "me/demo".to_string(),
+            default_branch: "main".to_string(),
+            ..Default::default()
+        };
+        app.issue_repo = Some(repo.clone());
+        app.issue_open = Some(Issue {
+            number: 7,
+            title: "测试议题喵~".to_string(),
+            body: Some("正文内容".to_string()),
+            state: "open".to_string(),
+            comments: 1,
+            ..Default::default()
+        });
+        app.issue_open_number = Some(7);
+        app.issue_comments = vec![crate::model::IssueComment {
+            body: Some("评论内容".to_string()),
+            user: Some(crate::model::Owner {
+                login: "alice".to_string(),
+                ..Default::default()
+            }),
+            ..Default::default()
+        }];
+        app.page = Page::IssueDetail;
+        let mut terminal = ratatui::Terminal::new(ratatui::backend::TestBackend::new(120, 40))
+            .expect("test terminal");
+        terminal
+            .draw(|frame| draw(frame, &mut app))
+            .expect("render issue detail");
+        let text = buffer_text(terminal.backend().buffer());
+        let compact = text.split_whitespace().collect::<String>();
+        assert!(compact.contains("测试议题"));
+        assert!(compact.contains("评论内容"));
+
+        let gist = crate::model::Gist {
+            id: "g1".to_string(),
+            description: Some("片段说明".to_string()),
+            public: true,
+            html_url: "https://gist.github.com/me/g1".to_string(),
+            files: std::collections::HashMap::from([(
+                "hello.rs".to_string(),
+                crate::model::GistFile {
+                    filename: "hello.rs".to_string(),
+                    content: Some("fn main() {}".to_string()),
+                    size: 13,
+                    ..Default::default()
+                },
+            )]),
+            ..Default::default()
+        };
+        app.gists = vec![gist.clone()];
+        app.gist_selected = 0;
+        app.gist_detail = Some(gist);
+        app.page = Page::Gists;
+        terminal.clear().expect("clear terminal");
+        terminal
+            .draw(|frame| draw(frame, &mut app))
+            .expect("render gists");
+        let compact = buffer_text(terminal.backend().buffer())
+            .split_whitespace()
+            .collect::<String>();
+        assert!(compact.contains("Gist工作台"));
+        assert!(compact.contains("hello.rs"));
+
+        app.compare_repo = Some(repo.clone());
+        app.compare_base = "main".to_string();
+        app.compare_head = "dev".to_string();
+        app.compare_result = Some(crate::model::CompareResult {
+            ahead_by: 2,
+            total_commits: 2,
+            commits: vec![crate::model::Commit {
+                sha: "abcdef1234".to_string(),
+                commit: crate::model::CommitInfo {
+                    message: "feat: 测试提交".to_string(),
+                    ..Default::default()
+                },
+                ..Default::default()
+            }],
+            files: vec![crate::model::PullFile {
+                filename: "src/main.rs".to_string(),
+                additions: 3,
+                deletions: 1,
+                patch: Some("+fn main() {}".to_string()),
+                ..Default::default()
+            }],
+            ..Default::default()
+        });
+        app.page = Page::Compare;
+        terminal.clear().expect("clear terminal");
+        terminal
+            .draw(|frame| draw(frame, &mut app))
+            .expect("render compare");
+        let compact = buffer_text(terminal.backend().buffer())
+            .split_whitespace()
+            .collect::<String>();
+        assert!(compact.contains("分支对比"));
+        assert!(compact.contains("领先2"));
+
+        app.file_repo = Some(repo);
+        app.file_path = "src/main.rs".to_string();
+        app.file_branch = "main".to_string();
+        app.file_view = Some(crate::model::FileContent {
+            name: "main.rs".to_string(),
+            path: "src/main.rs".to_string(),
+            size: 20,
+            content: "fn main() {\n    println!();\n}\n".to_string(),
+            html_url: "https://github.com/me/demo/blob/main/src/main.rs".to_string(),
+            ..Default::default()
+        });
+        app.page = Page::Files;
+        terminal.clear().expect("clear terminal");
+        terminal
+            .draw(|frame| draw(frame, &mut app))
+            .expect("render file viewer");
+        let compact = buffer_text(terminal.backend().buffer())
+            .split_whitespace()
+            .collect::<String>();
+        assert!(compact.contains("src/main.rs"));
+        assert!(compact.contains("fnmain"));
+
+        app.network_login = Some("me".to_string());
+        app.network_tab = NetworkTab::Followers;
+        app.network_users = vec![crate::model::User {
+            login: "alice".to_string(),
+            name: Some("Alice".to_string()),
+            followers: 12,
+            ..Default::default()
+        }];
+        app.page = Page::Network;
+        terminal.clear().expect("clear terminal");
+        terminal
+            .draw(|frame| draw(frame, &mut app))
+            .expect("render network");
+        let compact = buffer_text(terminal.backend().buffer())
+            .split_whitespace()
+            .collect::<String>();
+        assert!(compact.contains("社交圈"));
+        assert!(compact.contains("@alice"));
+
+        app.overlay = Some(Overlay::NewGist);
+        terminal.clear().expect("clear terminal");
+        terminal
+            .draw(|frame| draw(frame, &mut app))
+            .expect("render new gist overlay");
+        app.overlay = Some(Overlay::NewPull);
+        terminal.clear().expect("clear terminal");
+        terminal
+            .draw(|frame| draw(frame, &mut app))
+            .expect("render new pull overlay");
+        app.gist_delete = app.gists.first().cloned();
+        app.overlay = Some(Overlay::DeleteGist);
+        terminal.clear().expect("clear terminal");
+        terminal
+            .draw(|frame| draw(frame, &mut app))
+            .expect("render delete gist overlay");
+        app.overlay = Some(Overlay::MergePr);
+        terminal.clear().expect("clear terminal");
+        terminal
+            .draw(|frame| draw(frame, &mut app))
+            .expect("render merge overlay");
         let _ = std::fs::remove_dir_all(dir);
     }
 

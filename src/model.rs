@@ -1095,6 +1095,178 @@ impl IssueState {
     }
 }
 
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct IssueComment {
+    #[serde(default)]
+    pub id: u64,
+    #[serde(default)]
+    pub body: Option<String>,
+    #[serde(default)]
+    pub user: Option<Owner>,
+    #[serde(default)]
+    pub created_at: String,
+    #[serde(default)]
+    pub html_url: String,
+}
+
+impl IssueComment {
+    pub fn author(&self) -> &str {
+        self.user
+            .as_ref()
+            .map(|user| user.login.as_str())
+            .unwrap_or("")
+    }
+
+    pub fn body_text(&self) -> &str {
+        self.body
+            .as_deref()
+            .map(str::trim)
+            .filter(|body| !body.is_empty())
+            .unwrap_or("（空评论喵~）")
+    }
+}
+
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct PullFile {
+    #[serde(default)]
+    pub filename: String,
+    #[serde(default)]
+    pub status: String,
+    #[serde(default)]
+    pub additions: u64,
+    #[serde(default)]
+    pub deletions: u64,
+    #[serde(default)]
+    pub changes: u64,
+    #[serde(default)]
+    pub patch: Option<String>,
+}
+
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct CompareResult {
+    #[serde(default)]
+    pub status: String,
+    #[serde(default)]
+    pub ahead_by: u64,
+    #[serde(default)]
+    pub behind_by: u64,
+    #[serde(default)]
+    pub total_commits: u64,
+    #[serde(default)]
+    pub commits: Vec<Commit>,
+    #[serde(default)]
+    pub files: Vec<PullFile>,
+}
+
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct FileContent {
+    #[serde(default)]
+    pub name: String,
+    #[serde(default)]
+    pub path: String,
+    #[serde(default)]
+    pub sha: String,
+    #[serde(default)]
+    pub size: u64,
+    #[serde(default)]
+    pub html_url: String,
+    #[serde(default)]
+    pub download_url: Option<String>,
+    #[serde(default)]
+    pub content: String,
+}
+
+impl FileContent {
+    pub fn line_count(&self) -> usize {
+        self.content.lines().count().max(1)
+    }
+}
+
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct GistFile {
+    #[serde(default)]
+    pub filename: String,
+    #[serde(rename = "type", default)]
+    pub kind: String,
+    #[serde(default)]
+    pub language: Option<String>,
+    #[serde(default)]
+    pub size: u64,
+    #[serde(default)]
+    pub raw_url: String,
+    #[serde(default)]
+    pub truncated: bool,
+    #[serde(default)]
+    pub content: Option<String>,
+}
+
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct Gist {
+    #[serde(default)]
+    pub id: String,
+    #[serde(default)]
+    pub description: Option<String>,
+    #[serde(default)]
+    pub public: bool,
+    #[serde(default)]
+    pub html_url: String,
+    #[serde(default)]
+    pub created_at: String,
+    #[serde(default)]
+    pub updated_at: String,
+    #[serde(default)]
+    pub comments: u64,
+    #[serde(default)]
+    pub owner: Option<Owner>,
+    #[serde(default)]
+    pub files: std::collections::HashMap<String, GistFile>,
+}
+
+impl Gist {
+    pub fn description_text(&self) -> &str {
+        self.description
+            .as_deref()
+            .map(str::trim)
+            .filter(|text| !text.is_empty())
+            .unwrap_or("（没有写说明喵~）")
+    }
+
+    pub fn file_names(&self) -> Vec<String> {
+        let mut names: Vec<String> = self.files.keys().cloned().collect();
+        names.sort();
+        names
+    }
+
+    pub fn primary_file(&self) -> Option<&GistFile> {
+        let names = self.file_names();
+        names.first().and_then(|name| self.files.get(name))
+    }
+
+    pub fn visibility(&self) -> &'static str {
+        if self.public { "公开" } else { "私密" }
+    }
+}
+
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct Org {
+    #[serde(default)]
+    pub login: String,
+    #[serde(default)]
+    pub description: Option<String>,
+    #[serde(default)]
+    pub html_url: String,
+}
+
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct CreatedPull {
+    #[serde(default)]
+    pub number: u64,
+    #[serde(default)]
+    pub title: String,
+    #[serde(default)]
+    pub html_url: String,
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1262,6 +1434,44 @@ mod tests {
         assert_eq!(issue.body_text(), "正文");
         assert_eq!(IssueState::Closed.next(), IssueState::All);
         assert_eq!(IssueState::All.next(), IssueState::Open);
+    }
+
+    #[test]
+    fn parses_gist_thread_and_compare_payloads() {
+        let gist: Gist = serde_json::from_str(
+            r##"{
+                "id": "abc",
+                "description": "喵",
+                "public": false,
+                "html_url": "https://gist.github.com/me/abc",
+                "files": {
+                    "a.txt": {"filename": "a.txt", "size": 2, "content": "hi"},
+                    "b.md": {"filename": "b.md", "size": 3, "content": "# b"}
+                }
+            }"##,
+        )
+        .unwrap();
+        assert_eq!(gist.file_names(), vec!["a.txt", "b.md"]);
+        assert_eq!(gist.primary_file().unwrap().filename, "a.txt");
+        assert_eq!(gist.visibility(), "私密");
+
+        let comment: IssueComment =
+            serde_json::from_str(r#"{"body": "hi", "user": {"login": "me"}}"#).unwrap();
+        assert_eq!(comment.author(), "me");
+        assert_eq!(comment.body_text(), "hi");
+
+        let compare: CompareResult = serde_json::from_str(
+            r#"{"ahead_by": 2, "behind_by": 1, "total_commits": 2, "commits": [{"sha": "abcdef1234"}], "files": [{"filename": "a.rs", "additions": 3}]}"#,
+        )
+        .unwrap();
+        assert_eq!(compare.ahead_by, 2);
+        assert_eq!(compare.commits[0].short_sha(), "abcdef1");
+        assert_eq!(compare.files[0].additions, 3);
+
+        let file: FileContent =
+            serde_json::from_str(r#"{"name": "a.rs", "path": "src/a.rs", "content": "a\nb"}"#)
+                .unwrap();
+        assert_eq!(file.line_count(), 2);
     }
 
     #[test]

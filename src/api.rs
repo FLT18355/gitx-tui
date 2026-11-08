@@ -1,9 +1,10 @@
 use crate::format::base64_decode;
 use crate::model::{
-    Branch, Commit, CommitDetail, Issue, IssueState, LanguageStat, Notification, RateLimit,
-    ReadmeContent, Release, Repo, SearchOutcome, SearchResponse, SearchSort, StarredRepo, Tag,
-    TreeResponse, TrendingPeriod, User, Workflow, WorkflowJob, WorkflowJobsResponse,
-    WorkflowListResponse, WorkflowRun, WorkflowRunsResponse,
+    Branch, Commit, CommitDetail, CompareResult, CreatedPull, FileContent, Gist, Issue,
+    IssueComment, IssueState, LanguageStat, Notification, Org, PullFile, RateLimit, ReadmeContent,
+    Release, Repo, SearchOutcome, SearchResponse, SearchSort, StarredRepo, Tag, TreeResponse,
+    TrendingPeriod, User, Workflow, WorkflowJob, WorkflowJobsResponse, WorkflowListResponse,
+    WorkflowRun, WorkflowRunsResponse,
 };
 use serde::de::DeserializeOwned;
 use std::fs;
@@ -287,6 +288,248 @@ impl ApiClient {
                 .map_err(|err| format!("GitHub 建完议题送回来的数据人家看不懂：{err}喵~"))
         } else {
             Err(status_message(status, &body))
+        }
+    }
+
+    pub fn issue_detail(
+        &self,
+        full_name: &str,
+        number: u64,
+        private: bool,
+    ) -> Result<Issue, String> {
+        let url = format!("{API}/repos/{full_name}/issues/{number}");
+        if private {
+            self.get_json(&url, true)
+        } else {
+            self.get_public_with_fallback(&url)
+        }
+    }
+
+    pub fn issue_comments(
+        &self,
+        full_name: &str,
+        number: u64,
+        private: bool,
+    ) -> Result<Vec<IssueComment>, String> {
+        let url = format!("{API}/repos/{full_name}/issues/{number}/comments?per_page=100");
+        if private {
+            self.get_pages(&url, true)
+        } else {
+            self.get_public_pages(&url)
+        }
+    }
+
+    pub fn create_issue_comment(
+        &self,
+        full_name: &str,
+        number: u64,
+        body: &str,
+    ) -> Result<IssueComment, String> {
+        let url = format!("{API}/repos/{full_name}/issues/{number}/comments");
+        let payload = serde_json::json!({ "body": body });
+        let response = self.send_json_auth("post", &url, &payload, "发评论")?;
+        serde_json::from_str(&response)
+            .map_err(|err| format!("GitHub 送回来的评论数据人家看不懂：{err}喵~"))
+    }
+
+    pub fn set_issue_state(
+        &self,
+        full_name: &str,
+        number: u64,
+        state: &str,
+    ) -> Result<Issue, String> {
+        let url = format!("{API}/repos/{full_name}/issues/{number}");
+        let payload = serde_json::json!({ "state": state });
+        let response = self.send_json_auth("patch", &url, &payload, "改议题状态")?;
+        serde_json::from_str(&response)
+            .map_err(|err| format!("GitHub 送回来的议题数据人家看不懂：{err}喵~"))
+    }
+
+    pub fn pull_files(
+        &self,
+        full_name: &str,
+        number: u64,
+        private: bool,
+    ) -> Result<Vec<PullFile>, String> {
+        let url = format!("{API}/repos/{full_name}/pulls/{number}/files?per_page=100");
+        if private {
+            self.get_pages(&url, true)
+        } else {
+            self.get_public_pages(&url)
+        }
+    }
+
+    pub fn merge_pull(&self, full_name: &str, number: u64) -> Result<String, String> {
+        let url = format!("{API}/repos/{full_name}/pulls/{number}/merge");
+        let payload = serde_json::json!({ "merge_method": "squash" });
+        let response = self.send_json_auth("put", &url, &payload, "合并请求")?;
+        let value: serde_json::Value = serde_json::from_str(&response).unwrap_or_default();
+        Ok(value
+            .get("message")
+            .and_then(|message| message.as_str())
+            .unwrap_or("合并好啦喵~")
+            .to_string())
+    }
+
+    pub fn compare(
+        &self,
+        full_name: &str,
+        base: &str,
+        head: &str,
+        private: bool,
+    ) -> Result<CompareResult, String> {
+        let url = format!(
+            "{API}/repos/{full_name}/compare/{}...{}",
+            percent_encode(base),
+            percent_encode(head)
+        );
+        if private {
+            self.get_json(&url, true)
+        } else {
+            self.get_public_with_fallback(&url)
+        }
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    pub fn create_pull_request(
+        &self,
+        full_name: &str,
+        title: &str,
+        body: &str,
+        head: &str,
+        base: &str,
+        draft: bool,
+    ) -> Result<CreatedPull, String> {
+        let url = format!("{API}/repos/{full_name}/pulls");
+        let payload = serde_json::json!({
+            "title": title,
+            "body": body,
+            "head": head,
+            "base": base,
+            "draft": draft
+        });
+        let response = self.send_json_auth("post", &url, &payload, "建合并请求")?;
+        serde_json::from_str(&response)
+            .map_err(|err| format!("GitHub 送回来的合并请求数据人家看不懂：{err}喵~"))
+    }
+
+    pub fn gists(&self) -> Result<Vec<Gist>, String> {
+        self.get_pages(&format!("{API}/gists?per_page=100"), true)
+    }
+
+    pub fn gist(&self, id: &str) -> Result<Gist, String> {
+        self.get_json(&format!("{API}/gists/{}", percent_encode(id)), true)
+    }
+
+    pub fn create_gist(
+        &self,
+        description: &str,
+        filename: &str,
+        content: &str,
+        public: bool,
+    ) -> Result<Gist, String> {
+        let url = format!("{API}/gists");
+        let payload = gist_payload(description, filename, content, public);
+        let response = self.send_json_auth("post", &url, &payload, "建 Gist")?;
+        serde_json::from_str(&response)
+            .map_err(|err| format!("GitHub 送回来的 Gist 数据人家看不懂：{err}喵~"))
+    }
+
+    pub fn delete_gist(&self, id: &str) -> Result<(), String> {
+        let url = format!("{API}/gists/{}", percent_encode(id));
+        self.send_empty_auth("delete", &url, "删 Gist")
+    }
+
+    pub fn file_content(
+        &self,
+        full_name: &str,
+        path: &str,
+        branch: &str,
+        private: bool,
+    ) -> Result<FileContent, String> {
+        let mut url = format!(
+            "{API}/repos/{full_name}/contents/{}",
+            path.split('/')
+                .map(percent_encode)
+                .collect::<Vec<_>>()
+                .join("/")
+        );
+        if !branch.trim().is_empty() {
+            url.push_str(&format!("?ref={}", percent_encode(branch)));
+        }
+        let raw: ContentApi = if private {
+            self.get_json(&url, true)?
+        } else {
+            self.get_public_with_fallback(&url)?
+        };
+        if raw.encoding != "base64" {
+            return Err("这个文件不是 base64 文本，人家只能在浏览器里看喵~".to_string());
+        }
+        let bytes = base64_decode(&raw.content)
+            .filter(|bytes| !bytes.is_empty())
+            .ok_or_else(|| {
+                "文件太大了或者内容被 GitHub 省略了，点 o 去浏览器里看嘛喵~".to_string()
+            })?;
+        let content = String::from_utf8(bytes)
+            .map_err(|_| "这个文件不是 UTF-8 文本，人家看不懂呢喵~".to_string())?;
+        Ok(FileContent {
+            name: raw.name,
+            path: raw.path,
+            sha: raw.sha,
+            size: raw.size,
+            html_url: raw.html_url,
+            download_url: raw.download_url,
+            content,
+        })
+    }
+
+    pub fn followers(&self, login: &str) -> Result<Vec<User>, String> {
+        let url = format!(
+            "{API}/users/{}/followers?per_page=100",
+            percent_encode(login)
+        );
+        self.get_public_pages(&url)
+    }
+
+    pub fn following(&self, login: &str) -> Result<Vec<User>, String> {
+        let url = format!(
+            "{API}/users/{}/following?per_page=100",
+            percent_encode(login)
+        );
+        self.get_public_pages(&url)
+    }
+
+    pub fn organizations(&self, login: &str) -> Result<Vec<Org>, String> {
+        let url = format!("{API}/users/{}/orgs?per_page=100", percent_encode(login));
+        self.get_public_pages(&url)
+    }
+
+    pub fn set_following(&self, login: &str, following: bool) -> Result<(), String> {
+        let url = format!("{API}/user/following/{}", percent_encode(login));
+        self.send_empty_auth(if following { "put" } else { "delete" }, &url, "关注")
+    }
+
+    pub fn is_following(&self, login: &str) -> Result<bool, String> {
+        let Some(token) = self.token.as_deref() else {
+            return Err("还没有登录 GitHub，看不了关注状态哦喵~".to_string());
+        };
+        let url = format!("{API}/user/following/{}", percent_encode(login));
+        let response = self
+            .agent
+            .get(&url)
+            .header("Accept", "application/vnd.github+json")
+            .header("X-GitHub-Api-Version", "2022-11-28")
+            .header("Authorization", format!("Bearer {token}"))
+            .call()
+            .map_err(|err| format_transport_error(&err))?;
+        match response.status().as_u16() {
+            204 => Ok(true),
+            404 => Ok(false),
+            status => {
+                let mut response = response;
+                let body = response.body_mut().read_to_string().unwrap_or_default();
+                Err(status_message(status, &body))
+            }
         }
     }
 
@@ -613,6 +856,86 @@ impl ApiClient {
         self.get_pages_accept(base, authenticated, "application/vnd.github+json")
     }
 
+    fn get_public_pages<T: DeserializeOwned>(&self, base: &str) -> Result<Vec<T>, String> {
+        let mut all = Vec::new();
+        for page in 1..=1000 {
+            let separator = if base.contains('?') { '&' } else { '?' };
+            let url = format!("{base}{separator}page={page}");
+            let chunk: Vec<T> = self.get_public_with_fallback(&url)?;
+            let count = chunk.len();
+            all.extend(chunk);
+            if count < 100 {
+                break;
+            }
+        }
+        Ok(all)
+    }
+
+    fn send_json_auth(
+        &self,
+        method: &str,
+        url: &str,
+        payload: &serde_json::Value,
+        hint: &str,
+    ) -> Result<String, String> {
+        let Some(token) = self.token.as_deref() else {
+            return Err(format!(
+                "还没有登录 GitHub，{hint}不了哦喵~先运行 gh auth login 吧喵~"
+            ));
+        };
+        let request = match method {
+            "post" => self.agent.post(url),
+            "put" => self.agent.put(url),
+            _ => self.agent.patch(url),
+        };
+        let response = request
+            .header("Accept", "application/vnd.github+json")
+            .header("X-GitHub-Api-Version", "2022-11-28")
+            .header("Authorization", format!("Bearer {token}"))
+            .send_json(payload)
+            .map_err(|err| format_transport_error(&err))?;
+        let status = response.status().as_u16();
+        let mut response = response;
+        let body = response.body_mut().read_to_string().unwrap_or_default();
+        if (200..300).contains(&status) {
+            Ok(body)
+        } else {
+            Err(status_message(status, &body))
+        }
+    }
+
+    fn send_empty_auth(&self, method: &str, url: &str, hint: &str) -> Result<(), String> {
+        let Some(token) = self.token.as_deref() else {
+            return Err(format!(
+                "还没有登录 GitHub，{hint}不了哦喵~先运行 gh auth login 吧喵~"
+            ));
+        };
+        let response = match method {
+            "put" => self
+                .agent
+                .put(url)
+                .header("Accept", "application/vnd.github+json")
+                .header("X-GitHub-Api-Version", "2022-11-28")
+                .header("Authorization", format!("Bearer {token}"))
+                .send_empty(),
+            "delete" => self
+                .agent
+                .delete(url)
+                .header("Accept", "application/vnd.github+json")
+                .header("X-GitHub-Api-Version", "2022-11-28")
+                .header("Authorization", format!("Bearer {token}"))
+                .call(),
+            _ => self
+                .agent
+                .patch(url)
+                .header("Accept", "application/vnd.github+json")
+                .header("X-GitHub-Api-Version", "2022-11-28")
+                .header("Authorization", format!("Bearer {token}"))
+                .send_empty(),
+        };
+        self.finish_mutation(response)
+    }
+
     fn get_pages_accept<T: DeserializeOwned>(
         &self,
         base: &str,
@@ -810,6 +1133,26 @@ impl ApiClient {
 }
 
 #[derive(serde::Deserialize)]
+struct ContentApi {
+    #[serde(default)]
+    name: String,
+    #[serde(default)]
+    path: String,
+    #[serde(default)]
+    sha: String,
+    #[serde(default)]
+    size: u64,
+    #[serde(default)]
+    html_url: String,
+    #[serde(default)]
+    download_url: Option<String>,
+    #[serde(default)]
+    content: String,
+    #[serde(default)]
+    encoding: String,
+}
+
+#[derive(serde::Deserialize)]
 struct ReadmeApi {
     #[serde(default)]
     name: String,
@@ -853,6 +1196,24 @@ fn detect_token() -> Option<String> {
         }
     }
     None
+}
+
+fn gist_payload(
+    description: &str,
+    filename: &str,
+    content: &str,
+    public: bool,
+) -> serde_json::Value {
+    let mut files = serde_json::Map::new();
+    files.insert(
+        filename.to_string(),
+        serde_json::json!({ "content": content }),
+    );
+    serde_json::json!({
+        "description": description,
+        "public": public,
+        "files": files,
+    })
 }
 
 fn join_proxy(base: &str, github_url: &str) -> String {
@@ -967,6 +1328,14 @@ mod tests {
         assert_eq!(civil_from_days(0), (1970, 1, 1));
         assert_eq!(civil_from_days(10_957), (2000, 1, 1));
         assert_eq!(civil_from_days(19_723), (2024, 1, 1));
+    }
+
+    #[test]
+    fn gist_payload_uses_dynamic_filename_key() {
+        let payload = gist_payload("说明", "hello.rs", "fn main() {}", false);
+        assert_eq!(payload["description"], "说明");
+        assert_eq!(payload["public"], false);
+        assert_eq!(payload["files"]["hello.rs"]["content"], "fn main() {}");
     }
 
     #[test]

@@ -4,13 +4,15 @@ use crate::config::{Config, Paths};
 use crate::format::{self, base64};
 use crate::icons;
 use crate::model::{
-    Branch, Commit, CommitDetail, Issue, IssueState, LanguageStat, Notification, RateLimit,
-    ReadmeContent, Release, Repo, RepoSort, SearchResponse, SearchSort, StarSort, Tag,
-    TreeResponse, TrendingPeriod, User, Workflow, WorkflowRun, key_part,
+    Branch, Commit, CommitDetail, CompareResult, FileContent, Gist, Issue, IssueComment,
+    IssueState, LanguageStat, Notification, Org, PullFile, RateLimit, ReadmeContent, Release, Repo,
+    RepoSort, SearchResponse, SearchSort, StarSort, Tag, TreeResponse, TrendingPeriod, User,
+    Workflow, WorkflowRun, key_part,
 };
 use crate::theme::Theme;
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers, MouseButton, MouseEvent, MouseEventKind};
 use ratatui::layout::Rect;
+use std::collections::HashSet;
 use std::io::Write;
 use std::sync::mpsc::{self, Receiver, Sender};
 use std::time::{Duration, Instant};
@@ -33,6 +35,11 @@ pub enum Page {
     Commits,
     ReleaseDetail,
     Tags,
+    IssueDetail,
+    Gists,
+    Compare,
+    Files,
+    Network,
 }
 
 impl Page {
@@ -45,6 +52,7 @@ impl Page {
             Self::Account => Some(4),
             Self::Notifications => Some(5),
             Self::Trending => Some(6),
+            Self::Gists => Some(7),
             Self::Repo
             | Self::Profile
             | Self::Actions
@@ -52,6 +60,10 @@ impl Page {
             | Self::Commits
             | Self::ReleaseDetail
             | Self::Tags
+            | Self::IssueDetail
+            | Self::Compare
+            | Self::Files
+            | Self::Network
             | Self::Settings
             | Self::Insights => None,
         }
@@ -65,6 +77,7 @@ impl Page {
             4 => Self::Account,
             5 => Self::Notifications,
             6 => Self::Trending,
+            7 => Self::Gists,
             _ => Self::Home,
         }
     }
@@ -87,6 +100,11 @@ impl Page {
             Self::Commits => "提交喵~",
             Self::ReleaseDetail => "发行版详情喵~",
             Self::Tags => "标签喵~",
+            Self::IssueDetail => "议题详情喵~",
+            Self::Gists => "Gist 喵~",
+            Self::Compare => "分支对比喵~",
+            Self::Files => "文件预览喵~",
+            Self::Network => "社交网络喵~",
         }
     }
 
@@ -99,10 +117,13 @@ impl Page {
                 | Self::Commits
                 | Self::ReleaseDetail
                 | Self::Tags
+                | Self::IssueDetail
+                | Self::Compare
+                | Self::Files
         )
     }
 
-    pub const DEFAULT_PAGES: [Page; 8] = [
+    pub const DEFAULT_PAGES: [Page; 9] = [
         Self::Home,
         Self::Repositories,
         Self::Starred,
@@ -110,6 +131,7 @@ impl Page {
         Self::Trending,
         Self::Account,
         Self::Notifications,
+        Self::Gists,
         Self::Insights,
     ];
 
@@ -121,6 +143,7 @@ impl Page {
             "trending" => Self::Trending,
             "account" => Self::Account,
             "notifications" => Self::Notifications,
+            "gists" => Self::Gists,
             "insights" => Self::Insights,
             _ => Self::Home,
         }
@@ -134,6 +157,7 @@ impl Page {
             Self::Trending => "trending",
             Self::Account => "account",
             Self::Notifications => "notifications",
+            Self::Gists => "gists",
             Self::Insights => "insights",
             _ => "home",
         }
@@ -147,6 +171,7 @@ impl Page {
             Self::Trending => "热门喵~",
             Self::Account => "账号喵~",
             Self::Notifications => "通知喵~",
+            Self::Gists => "Gist 喵~",
             Self::Insights => "洞察喵~",
             _ => "首页喵~",
         }
@@ -168,6 +193,60 @@ pub enum Overlay {
     Palette,
     Themes,
     CancelRun,
+    NewGist,
+    DeleteGist,
+    NewPull,
+    MergePr,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum GistField {
+    Description,
+    Filename,
+    Content,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum CompareSide {
+    Base,
+    Head,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum CompareView {
+    Commits,
+    Files,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum NetworkTab {
+    Followers,
+    Following,
+    Orgs,
+}
+
+impl NetworkTab {
+    pub fn label(self) -> &'static str {
+        match self {
+            Self::Followers => "粉丝喵~",
+            Self::Following => "关注喵~",
+            Self::Orgs => "组织喵~",
+        }
+    }
+
+    pub fn next(self) -> Self {
+        match self {
+            Self::Followers => Self::Following,
+            Self::Following => Self::Orgs,
+            Self::Orgs => Self::Followers,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PullField {
+    Title,
+    Body,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -334,6 +413,36 @@ pub enum Action {
     SetNotificationFilter(bool),
     MarkNotificationRead,
     MarkAllNotificationsRead,
+    ToggleIssueState,
+    FocusIssueComment,
+    SubmitIssueComment,
+    MergePull,
+    ConfirmMergePull,
+    OpenNetwork,
+    SelectGist(usize),
+    SelectGistFile(usize),
+    StartNewGist,
+    DeleteGist,
+    ConfirmDeleteGist,
+    ToggleGistPublic,
+    FocusGistField(GistField),
+    SubmitNewGist,
+    CopyGistUrl,
+    RefreshGists,
+    SelectCompareRow(usize),
+    PickCompareBranch(CompareSide),
+    RefreshCompare,
+    ToggleCompareView,
+    StartNewPull,
+    ConfirmNewPull,
+    TogglePullDraft,
+    FocusPullField(PullField),
+    SelectNetwork(usize),
+    SetNetworkTab(NetworkTab),
+    ToggleFollow,
+    ToggleFileWrap,
+    CopyFilePath,
+    DownloadFile,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -721,6 +830,84 @@ enum Msg {
         name: String,
         result: Result<Repo, String>,
     },
+    IssueDetail {
+        name: String,
+        number: u64,
+        result: Result<Issue, String>,
+    },
+    IssueComments {
+        name: String,
+        number: u64,
+        result: Result<Vec<crate::model::IssueComment>, String>,
+    },
+    IssueCommentCreated {
+        name: String,
+        number: u64,
+        result: Result<crate::model::IssueComment, String>,
+    },
+    IssueStateChanged {
+        name: String,
+        number: u64,
+        result: Result<Issue, String>,
+    },
+    PullFiles {
+        name: String,
+        number: u64,
+        result: Result<Vec<crate::model::PullFile>, String>,
+    },
+    PullMerged {
+        name: String,
+        number: u64,
+        result: Result<String, String>,
+    },
+    Gists {
+        result: Result<Vec<crate::model::Gist>, String>,
+    },
+    GistDetail {
+        id: String,
+        result: Result<crate::model::Gist, String>,
+    },
+    GistCreated {
+        result: Result<crate::model::Gist, String>,
+    },
+    GistDeleted {
+        id: String,
+        result: Result<(), String>,
+    },
+    Compare {
+        name: String,
+        base: String,
+        head: String,
+        result: Result<crate::model::CompareResult, String>,
+    },
+    PullCreated {
+        name: String,
+        result: Result<crate::model::CreatedPull, String>,
+    },
+    FileContent {
+        name: String,
+        path: String,
+        branch: String,
+        result: Result<crate::model::FileContent, String>,
+    },
+    NetworkUsers {
+        login: String,
+        tab: NetworkTab,
+        result: Result<Vec<User>, String>,
+    },
+    NetworkOrgs {
+        login: String,
+        result: Result<Vec<crate::model::Org>, String>,
+    },
+    FollowChecked {
+        login: String,
+        result: Result<bool, String>,
+    },
+    FollowToggled {
+        login: String,
+        following: bool,
+        result: Result<(), String>,
+    },
 }
 
 pub struct App {
@@ -775,6 +962,80 @@ pub struct App {
     pub new_issue_body_focus: bool,
     pub new_issue_saving: bool,
     pub new_issue_error: Option<String>,
+    pub issue_open: Option<Issue>,
+    pub issue_open_number: Option<u64>,
+    pub issue_comments: Vec<IssueComment>,
+    pub issue_comments_loading: Option<u64>,
+    pub issue_detail_loading: Option<u64>,
+    pub issue_scroll: u16,
+    pub issue_scroll_max: u16,
+    pub issue_comment_input: TextInput,
+    pub issue_comment_focus: bool,
+    pub issue_comment_saving: bool,
+    pub issue_action_loading: bool,
+    pub issue_pr_files: Vec<PullFile>,
+    pub issue_pr_files_loading: Option<u64>,
+    pub issue_pr_files_scroll: u16,
+    pub gists: Vec<Gist>,
+    pub gists_loading: bool,
+    pub gists_fetched_at: Option<i64>,
+    pub gist_selected: usize,
+    pub gist_error: Option<String>,
+    pub gist_detail: Option<Gist>,
+    pub gist_detail_for: Option<String>,
+    pub gist_detail_loading: Option<String>,
+    pub gist_file_selected: usize,
+    pub gist_scroll: u16,
+    pub gist_scroll_max: u16,
+    pub gist_desc_input: TextInput,
+    pub gist_filename_input: TextInput,
+    pub gist_content_input: TextInput,
+    pub gist_field: GistField,
+    pub gist_public: bool,
+    pub gist_saving: bool,
+    pub gist_create_error: Option<String>,
+    pub gist_delete: Option<Gist>,
+    pub gist_deleting: bool,
+    pub compare_repo: Option<Repo>,
+    pub compare_base: String,
+    pub compare_head: String,
+    pub compare_focus: CompareSide,
+    pub compare_result: Option<CompareResult>,
+    pub compare_loading: bool,
+    pub compare_error: Option<String>,
+    pub compare_view: CompareView,
+    pub compare_selected: usize,
+    pub compare_scroll: u16,
+    pub compare_scroll_max: u16,
+    pub compare_fetched_for: Option<(String, String, String)>,
+    pub branch_pick_side: Option<CompareSide>,
+    pub pull_created: Option<String>,
+    pub pull_title: TextInput,
+    pub pull_body: TextInput,
+    pub pull_draft: bool,
+    pub pull_field: PullField,
+    pub pull_saving: bool,
+    pub pull_error: Option<String>,
+    pub file_repo: Option<Repo>,
+    pub file_path: String,
+    pub file_branch: String,
+    pub file_view: Option<FileContent>,
+    pub file_loading: Option<String>,
+    pub file_error: Option<String>,
+    pub file_wrap: bool,
+    pub file_scroll: u16,
+    pub file_scroll_max: u16,
+    pub file_h_scroll: u16,
+    pub file_h_max: u16,
+    pub network_login: Option<String>,
+    pub network_tab: NetworkTab,
+    pub network_users: Vec<User>,
+    pub network_orgs: Vec<Org>,
+    pub network_loading: Option<NetworkTab>,
+    pub network_selected: usize,
+    pub network_following: Option<bool>,
+    pub network_follow_loading: Option<String>,
+    pub network_known_following: HashSet<String>,
     pub profile_login: Option<String>,
     pub profile_user: Option<User>,
     pub profile_user_loading: bool,
@@ -1017,6 +1278,80 @@ impl App {
             new_issue_body_focus: false,
             new_issue_saving: false,
             new_issue_error: None,
+            issue_open: None,
+            issue_open_number: None,
+            issue_comments: Vec::new(),
+            issue_comments_loading: None,
+            issue_detail_loading: None,
+            issue_scroll: 0,
+            issue_scroll_max: 0,
+            issue_comment_input: TextInput::new(""),
+            issue_comment_focus: false,
+            issue_comment_saving: false,
+            issue_action_loading: false,
+            issue_pr_files: Vec::new(),
+            issue_pr_files_loading: None,
+            issue_pr_files_scroll: 0,
+            gists: Vec::new(),
+            gists_loading: false,
+            gists_fetched_at: None,
+            gist_selected: 0,
+            gist_error: None,
+            gist_detail: None,
+            gist_detail_for: None,
+            gist_detail_loading: None,
+            gist_file_selected: 0,
+            gist_scroll: 0,
+            gist_scroll_max: 0,
+            gist_desc_input: TextInput::new(""),
+            gist_filename_input: TextInput::new("gistfile1.txt"),
+            gist_content_input: TextInput::new(""),
+            gist_field: GistField::Description,
+            gist_public: false,
+            gist_saving: false,
+            gist_create_error: None,
+            gist_delete: None,
+            gist_deleting: false,
+            compare_repo: None,
+            compare_base: String::new(),
+            compare_head: String::new(),
+            compare_focus: CompareSide::Base,
+            compare_result: None,
+            compare_loading: false,
+            compare_error: None,
+            compare_view: CompareView::Commits,
+            compare_selected: 0,
+            compare_scroll: 0,
+            compare_scroll_max: 0,
+            compare_fetched_for: None,
+            branch_pick_side: None,
+            pull_created: None,
+            pull_title: TextInput::new(""),
+            pull_body: TextInput::new(""),
+            pull_draft: false,
+            pull_field: PullField::Title,
+            pull_saving: false,
+            pull_error: None,
+            file_repo: None,
+            file_path: String::new(),
+            file_branch: String::new(),
+            file_view: None,
+            file_loading: None,
+            file_error: None,
+            file_wrap: false,
+            file_scroll: 0,
+            file_scroll_max: 0,
+            file_h_scroll: 0,
+            file_h_max: 0,
+            network_login: None,
+            network_tab: NetworkTab::Followers,
+            network_users: Vec::new(),
+            network_orgs: Vec::new(),
+            network_loading: None,
+            network_selected: 0,
+            network_following: None,
+            network_follow_loading: None,
+            network_known_following: HashSet::new(),
             profile_login: None,
             profile_user: None,
             profile_user_loading: false,
@@ -2165,6 +2500,477 @@ impl App {
                     job.total = total;
                 }
             }
+            Msg::IssueDetail {
+                name,
+                number,
+                result,
+            } => {
+                if self.issue_detail_loading == Some(number) {
+                    self.issue_detail_loading = None;
+                }
+                let current = self
+                    .issue_repo
+                    .as_ref()
+                    .map(|repo| repo.display_full_name());
+                if current.as_deref() != Some(name.as_str())
+                    || self.issue_open_number != Some(number)
+                {
+                    return;
+                }
+                match result {
+                    Ok(issue) => {
+                        self.issue_open = Some(issue);
+                        self.issue_action_loading = false;
+                    }
+                    Err(error) => {
+                        self.issue_action_loading = false;
+                        if self.page == Page::IssueDetail {
+                            self.set_status(StatusKind::Error, &error);
+                        }
+                    }
+                }
+            }
+            Msg::IssueComments {
+                name,
+                number,
+                result,
+            } => {
+                if self.issue_comments_loading == Some(number) {
+                    self.issue_comments_loading = None;
+                }
+                let current = self
+                    .issue_repo
+                    .as_ref()
+                    .map(|repo| repo.display_full_name());
+                if current.as_deref() != Some(name.as_str())
+                    || self.issue_open_number != Some(number)
+                {
+                    return;
+                }
+                match result {
+                    Ok(comments) => {
+                        self.issue_comments = comments;
+                    }
+                    Err(error) => {
+                        if self.page == Page::IssueDetail {
+                            self.set_status(StatusKind::Error, &error);
+                        }
+                    }
+                }
+            }
+            Msg::IssueCommentCreated {
+                name,
+                number,
+                result,
+            } => {
+                self.issue_comment_saving = false;
+                let current = self
+                    .issue_repo
+                    .as_ref()
+                    .map(|repo| repo.display_full_name());
+                if current.as_deref() != Some(name.as_str())
+                    || self.issue_open_number != Some(number)
+                {
+                    return;
+                }
+                match result {
+                    Ok(comment) => {
+                        self.issue_comments.push(comment);
+                        self.issue_comment_input = TextInput::new("");
+                        self.issue_comment_focus = false;
+                        if let Some(issue) = self.issue_open.as_mut() {
+                            issue.comments = issue.comments.saturating_add(1);
+                        }
+                        self.issue_scroll = u16::MAX;
+                        self.set_status(StatusKind::Ok, "评论发出去啦喵~");
+                    }
+                    Err(error) => self.set_status(StatusKind::Error, &error),
+                }
+            }
+            Msg::IssueStateChanged {
+                name,
+                number,
+                result,
+            } => {
+                self.issue_action_loading = false;
+                let current = self
+                    .issue_repo
+                    .as_ref()
+                    .map(|repo| repo.display_full_name());
+                if current.as_deref() != Some(name.as_str())
+                    || self.issue_open_number != Some(number)
+                {
+                    return;
+                }
+                match result {
+                    Ok(issue) => {
+                        if let Some(item) =
+                            self.issues.iter_mut().find(|item| item.number == number)
+                        {
+                            *item = issue.clone();
+                        }
+                        self.set_status(
+                            StatusKind::Ok,
+                            &format!("议题 #{} 现在是「{}」喵~", number, issue.state_label()),
+                        );
+                        self.issue_open = Some(issue);
+                        self.fetch_issues(true);
+                    }
+                    Err(error) => self.set_status(StatusKind::Error, &error),
+                }
+            }
+            Msg::PullFiles {
+                name,
+                number,
+                result,
+            } => {
+                if self.issue_pr_files_loading == Some(number) {
+                    self.issue_pr_files_loading = None;
+                }
+                let current = self
+                    .issue_repo
+                    .as_ref()
+                    .map(|repo| repo.display_full_name());
+                if current.as_deref() != Some(name.as_str())
+                    || self.issue_open_number != Some(number)
+                {
+                    return;
+                }
+                match result {
+                    Ok(files) => {
+                        self.issue_pr_files = files;
+                        self.issue_pr_files_scroll = 0;
+                    }
+                    Err(error) => {
+                        if self.page == Page::IssueDetail {
+                            self.set_status(StatusKind::Error, &error);
+                        }
+                    }
+                }
+            }
+            Msg::PullMerged {
+                name,
+                number,
+                result,
+            } => {
+                self.issue_action_loading = false;
+                let current = self
+                    .issue_repo
+                    .as_ref()
+                    .map(|repo| repo.display_full_name());
+                if current.as_deref() != Some(name.as_str())
+                    || self.issue_open_number != Some(number)
+                {
+                    return;
+                }
+                match result {
+                    Ok(message) => {
+                        self.set_status(StatusKind::Ok, &format!("{message} 喵~"));
+                        self.fetch_issue_detail();
+                        self.fetch_pull_files();
+                    }
+                    Err(error) => self.set_status(StatusKind::Error, &error),
+                }
+            }
+            Msg::Gists { result } => {
+                self.gists_loading = false;
+                match result {
+                    Ok(gists) => {
+                        let selected = self.selected_gist().map(|gist| gist.id);
+                        self.gists = gists;
+                        self.gists_fetched_at = Some(now_epoch());
+                        let _ = self.cache.save("gists", &self.gists);
+                        self.refresh_cache_stats();
+                        if let Some(id) = selected
+                            && let Some(index) = self.gists.iter().position(|gist| gist.id == id)
+                        {
+                            self.gist_selected = index;
+                        }
+                        self.clamp_gist_selection();
+                        self.gist_error = None;
+                        self.schedule_gist_detail(true);
+                        if self.page == Page::Gists {
+                            self.set_status(
+                                StatusKind::Ok,
+                                &format!("Gist 都拿来啦，一共 {} 个喵~", self.gists.len()),
+                            );
+                        }
+                    }
+                    Err(error) => {
+                        self.gist_error = Some(error.clone());
+                        if self.page == Page::Gists {
+                            self.set_status(StatusKind::Error, &error);
+                        }
+                    }
+                }
+            }
+            Msg::GistDetail { id, result } => {
+                if self.gist_detail_loading.as_deref() == Some(id.as_str()) {
+                    self.gist_detail_loading = None;
+                }
+                if self.selected_gist().map(|gist| gist.id).as_deref() != Some(id.as_str()) {
+                    return;
+                }
+                match result {
+                    Ok(gist) => {
+                        self.gist_detail_for = Some(id);
+                        self.gist_detail = Some(gist);
+                        let count = self.gist_file_names().len();
+                        if self.gist_file_selected >= count {
+                            self.gist_file_selected = 0;
+                        }
+                    }
+                    Err(error) => {
+                        self.gist_error = Some(error.clone());
+                        if self.page == Page::Gists {
+                            self.set_status(StatusKind::Error, &error);
+                        }
+                    }
+                }
+            }
+            Msg::GistCreated { result } => {
+                self.gist_saving = false;
+                match result {
+                    Ok(gist) => {
+                        self.overlay = None;
+                        self.gist_create_error = None;
+                        self.gists.insert(0, gist.clone());
+                        self.gist_selected = 0;
+                        self.gist_file_selected = 0;
+                        self.gist_scroll = 0;
+                        self.gist_detail = Some(gist);
+                        self.gist_detail_for = self.selected_gist().map(|gist| gist.id);
+                        self.set_status(StatusKind::Ok, "Gist 建好啦喵~");
+                        self.fetch_gists(true);
+                    }
+                    Err(error) => {
+                        self.gist_create_error = Some(error.clone());
+                        self.set_status(StatusKind::Error, &error);
+                    }
+                }
+            }
+            Msg::GistDeleted { id, result } => {
+                self.gist_deleting = false;
+                match result {
+                    Ok(()) => {
+                        self.gists.retain(|gist| gist.id != id);
+                        self.overlay = None;
+                        self.gist_delete = None;
+                        self.gist_detail = None;
+                        self.gist_detail_for = None;
+                        self.clamp_gist_selection();
+                        self.schedule_gist_detail(false);
+                        let _ = self.cache.save("gists", &self.gists);
+                        self.set_status(StatusKind::Ok, "Gist 删掉啦喵~");
+                    }
+                    Err(error) => self.set_status(StatusKind::Error, &error),
+                }
+            }
+            Msg::Compare {
+                name,
+                base,
+                head,
+                result,
+            } => {
+                self.compare_loading = false;
+                let current = self
+                    .compare_repo
+                    .as_ref()
+                    .map(|repo| repo.display_full_name());
+                if current.as_deref() != Some(name.as_str())
+                    || self.compare_base != base
+                    || self.compare_head != head
+                {
+                    return;
+                }
+                match result {
+                    Ok(compare) => {
+                        self.compare_result = Some(compare);
+                        self.compare_error = None;
+                        self.compare_fetched_for = Some((name, base, head));
+                        self.compare_selected = 0;
+                        self.compare_scroll = 0;
+                        self.pull_created = None;
+                        if self.page == Page::Compare {
+                            let (ahead, files) = self
+                                .compare_result
+                                .as_ref()
+                                .map(|result| (result.ahead_by, result.files.len()))
+                                .unwrap_or((0, 0));
+                            self.set_status(
+                                StatusKind::Ok,
+                                &format!("对比好啦：领先 {ahead} 个提交，动了 {files} 个文件喵~"),
+                            );
+                        }
+                    }
+                    Err(error) => {
+                        self.compare_error = Some(error.clone());
+                        if self.page == Page::Compare {
+                            self.set_status(StatusKind::Error, &error);
+                        }
+                    }
+                }
+            }
+            Msg::PullCreated { name, result } => {
+                self.pull_saving = false;
+                let current = self
+                    .compare_repo
+                    .as_ref()
+                    .map(|repo| repo.display_full_name());
+                if current.as_deref() != Some(name.as_str()) {
+                    return;
+                }
+                match result {
+                    Ok(pull) => {
+                        self.overlay = None;
+                        self.pull_error = None;
+                        self.pull_created = Some(pull.html_url.clone());
+                        self.set_status(
+                            StatusKind::Ok,
+                            &format!("合并请求 #{} 建好啦喵~ {}", pull.number, pull.html_url),
+                        );
+                    }
+                    Err(error) => {
+                        self.pull_error = Some(error.clone());
+                        self.set_status(StatusKind::Error, &error);
+                    }
+                }
+            }
+            Msg::FileContent {
+                name,
+                path,
+                branch,
+                result,
+            } => {
+                if self.file_loading.as_deref() == Some(path.as_str()) {
+                    self.file_loading = None;
+                }
+                let current = self.file_repo.as_ref().map(Repo::display_full_name);
+                if current.as_deref() != Some(name.as_str())
+                    || self.file_path != path
+                    || self.file_branch != branch
+                {
+                    return;
+                }
+                match result {
+                    Ok(file) => {
+                        self.file_error = None;
+                        self.file_view = Some(file);
+                        self.file_scroll = 0;
+                        self.file_h_scroll = 0;
+                        self.set_status(StatusKind::Ok, "文件读出来啦喵~");
+                    }
+                    Err(error) => {
+                        self.file_view = None;
+                        self.file_error = Some(error.clone());
+                        self.set_status(StatusKind::Error, &error);
+                    }
+                }
+            }
+            Msg::NetworkUsers { login, tab, result } => {
+                if self.network_loading == Some(tab) {
+                    self.network_loading = None;
+                }
+                if self.network_login.as_deref() != Some(login.as_str()) || self.network_tab != tab
+                {
+                    return;
+                }
+                match result {
+                    Ok(users) => {
+                        if tab == NetworkTab::Following {
+                            self.network_known_following =
+                                users.iter().map(|user| user.login.clone()).collect();
+                        }
+                        self.network_users = users;
+                        self.network_selected = 0;
+                        self.network_following = None;
+                        if self.page == Page::Network {
+                            self.set_status(
+                                StatusKind::Ok,
+                                &format!("{} 页已经摆好啦喵~", tab.label()),
+                            );
+                        }
+                    }
+                    Err(error) => {
+                        if self.page == Page::Network {
+                            self.set_status(StatusKind::Error, &error);
+                        }
+                    }
+                }
+            }
+            Msg::NetworkOrgs { login, result } => {
+                if self.network_loading == Some(NetworkTab::Orgs) {
+                    self.network_loading = None;
+                }
+                if self.network_login.as_deref() != Some(login.as_str())
+                    || self.network_tab != NetworkTab::Orgs
+                {
+                    return;
+                }
+                match result {
+                    Ok(orgs) => {
+                        self.network_orgs = orgs;
+                        self.network_selected = 0;
+                    }
+                    Err(error) => {
+                        if self.page == Page::Network {
+                            self.set_status(StatusKind::Error, &error);
+                        }
+                    }
+                }
+            }
+            Msg::FollowChecked { login, result } => {
+                if self.network_follow_loading.as_deref() != Some(login.as_str()) {
+                    return;
+                }
+                self.network_follow_loading = None;
+                if self.selected_network_login().as_deref() != Some(login.as_str()) {
+                    return;
+                }
+                match result {
+                    Ok(following) => {
+                        self.network_following = Some(following);
+                        self.apply_follow(login, !following);
+                    }
+                    Err(error) => self.set_status(StatusKind::Error, &error),
+                }
+            }
+            Msg::FollowToggled {
+                login,
+                following,
+                result,
+            } => {
+                if self.network_follow_loading.as_deref() == Some(login.as_str()) {
+                    self.network_follow_loading = None;
+                }
+                match result {
+                    Ok(()) => {
+                        if following {
+                            self.network_known_following.insert(login.clone());
+                        } else {
+                            self.network_known_following.remove(&login);
+                        }
+                        if self.selected_network_login().as_deref() == Some(login.as_str()) {
+                            self.network_following = Some(following);
+                        }
+                        if !following && self.network_tab == NetworkTab::Following {
+                            self.network_users.retain(|user| user.login != login);
+                            let count = self.network_users.len();
+                            self.network_selected =
+                                self.network_selected.min(count.saturating_sub(1));
+                        }
+                        self.set_status(
+                            StatusKind::Ok,
+                            if following {
+                                "关注好啦喵~"
+                            } else {
+                                "取消关注啦喵~"
+                            },
+                        );
+                    }
+                    Err(error) => self.set_status(StatusKind::Error, &error),
+                }
+            }
             Msg::DownloadDone { id, label, result } => {
                 if self.download_job.as_ref().is_some_and(|job| job.id == id) {
                     self.download_job = None;
@@ -2320,8 +3126,11 @@ impl App {
                 .as_deref()
                 .and_then(|name| self.repo_by_name(name))
                 .or_else(|| self.page_repo.clone()),
-            Page::Issues => self.issue_repo.clone(),
+            Page::Issues | Page::IssueDetail => self.issue_repo.clone(),
             Page::Commits => self.commit_repo.clone(),
+            Page::Compare => self.compare_repo.clone(),
+            Page::Files => self.file_repo.clone(),
+            Page::Gists | Page::Network => None,
             Page::Notifications | Page::Settings | Page::Home | Page::Insights => None,
             _ => self
                 .detail
@@ -3144,6 +3953,10 @@ impl App {
     }
 
     pub fn open_selected_issue(&mut self) {
+        self.open_issue_detail();
+    }
+
+    pub fn open_selected_issue_browser(&mut self) {
         let Some(issue) = self.selected_issue() else {
             self.set_status(StatusKind::Info, "先挑一个议题嘛喵~");
             return;
@@ -4996,6 +5809,11 @@ impl App {
                 }
             }
             Page::Tags => self.fetch_tags(true),
+            Page::IssueDetail => self.refresh_issue_detail(),
+            Page::Gists => self.fetch_gists(true),
+            Page::Compare => self.fetch_compare(),
+            Page::Files => self.refresh_file(),
+            Page::Network => self.fetch_network(true),
             Page::Notifications => self.fetch_notifications(true),
             Page::Settings => self.refresh_cache_stats(),
             Page::Home => {
@@ -5014,6 +5832,14 @@ impl App {
 
     pub fn navigate(&mut self, page: Page) {
         if self.settings_only && page != Page::Settings {
+            return;
+        }
+        if page == Page::Gists {
+            self.open_gists();
+            return;
+        }
+        if page == Page::Compare {
+            self.open_compare();
             return;
         }
         if page == Page::Repo || page == self.page {
@@ -5388,6 +6214,21 @@ impl App {
                 action: Action::Navigate(Page::Notifications),
             },
             PaletteItem {
+                label: "Gist 工作台".to_string(),
+                hint: "7 · 自己的代码片段".to_string(),
+                action: Action::Navigate(Page::Gists),
+            },
+            PaletteItem {
+                label: "分支对比 / 建合并请求".to_string(),
+                hint: "m · 比较分支，开 PR".to_string(),
+                action: Action::Navigate(Page::Compare),
+            },
+            PaletteItem {
+                label: "社交网络".to_string(),
+                hint: "粉丝 · 关注 · 组织".to_string(),
+                action: Action::OpenNetwork,
+            },
+            PaletteItem {
                 label: "数据洞察".to_string(),
                 hint: "语言 · 星标 · 缓存".to_string(),
                 action: Action::Navigate(Page::Insights),
@@ -5524,6 +6365,25 @@ impl App {
     pub fn go_back(&mut self) {
         if self.page == Page::Profile {
             self.close_profile();
+            return;
+        }
+        if self.page == Page::IssueDetail {
+            self.issue_comment_focus = false;
+            self.page = Page::Issues;
+            self.issue_open = None;
+            self.issue_open_number = None;
+            return;
+        }
+        if matches!(self.page, Page::Gists | Page::Network) {
+            let target = if matches!(self.return_page, Page::Gists | Page::Network) {
+                Page::Home
+            } else {
+                self.return_page
+            };
+            self.page = target;
+            if let Some(index) = target.nav_index() {
+                self.nav_offset = index;
+            }
             return;
         }
         let Some(target) = back_target(self.page, self.return_page, self.page_repo.is_some())
@@ -6236,6 +7096,10 @@ impl App {
     }
 
     pub fn open_tree_path(&mut self, path: &str, directory: bool) {
+        if !directory {
+            self.open_file(path);
+            return;
+        }
         let Some(repo) = self.page_repo.clone().or_else(|| self.selected_repo()) else {
             return;
         };
@@ -6336,6 +7200,40 @@ impl App {
             }
             return;
         }
+        if self.page == Page::IssueDetail {
+            if delta != 0 {
+                self.issue_scroll_by(3 * delta.signum());
+            }
+            return;
+        }
+        if self.page == Page::Gists {
+            if layout.contains(layout.list, x, y) && delta != 0 {
+                self.move_gist_selection(delta.signum());
+            } else if delta != 0 {
+                self.gist_scroll_by(3 * delta.signum());
+            }
+            return;
+        }
+        if self.page == Page::Compare {
+            if layout.contains(layout.list, x, y) && delta != 0 {
+                self.move_compare_selection(delta.signum());
+            } else if delta != 0 {
+                self.compare_scroll_by(3 * delta.signum());
+            }
+            return;
+        }
+        if self.page == Page::Files {
+            if delta != 0 {
+                self.file_scroll_by(3 * delta.signum());
+            }
+            return;
+        }
+        if self.page == Page::Network {
+            if delta != 0 {
+                self.move_network_selection(delta.signum());
+            }
+            return;
+        }
         if layout.contains(layout.list, x, y) {
             if delta != 0 {
                 self.move_selection(delta.signum());
@@ -6344,6 +7242,1159 @@ impl App {
             let step = 3_i32 * delta;
             let max = self.detail_scroll_max as i32;
             self.detail_scroll = (self.detail_scroll as i32 + step).clamp(0, max) as u16;
+        }
+    }
+
+    // ---- Gist ----
+    pub fn open_gists(&mut self) {
+        if self.page == Page::Gists {
+            self.fetch_gists(true);
+            self.schedule_gist_detail(true);
+            return;
+        }
+        self.return_page = return_page_when_opening(self.page, self.return_page);
+        self.page = Page::Gists;
+        self.search_focus = false;
+        self.list_filter_focus = false;
+        self.release_filter_focus = false;
+        self.readme_fullscreen = false;
+        if let Some(cached) = self.cache.load::<Vec<Gist>>("gists") {
+            self.gists = cached.data;
+            self.gists_fetched_at = Some(cached.fetched_at);
+        }
+        self.clamp_gist_selection();
+        self.fetch_gists(false);
+        self.schedule_gist_detail(false);
+    }
+
+    pub fn selected_gist(&self) -> Option<Gist> {
+        self.gists.get(self.gist_selected).cloned()
+    }
+
+    fn clamp_gist_selection(&mut self) {
+        self.gist_selected = self.gist_selected.min(self.gists.len().saturating_sub(1));
+    }
+
+    fn fetch_gists(&mut self, force: bool) {
+        if self.gists_loading {
+            return;
+        }
+        let fresh = self
+            .gists_fetched_at
+            .map(|at| now_epoch() - at <= self.config.detail_ttl_secs as i64)
+            .unwrap_or(false);
+        if !force && fresh && !self.gists.is_empty() {
+            return;
+        }
+        self.gists_loading = true;
+        if self.gists.is_empty() {
+            self.set_status(StatusKind::Info, "人家正在搬 Gist 喵~...");
+        }
+        let tx = self.tx.clone();
+        let client = self.client.clone();
+        std::thread::spawn(move || {
+            let result = client.gists();
+            let _ = tx.send(Msg::Gists { result });
+        });
+    }
+
+    fn schedule_gist_detail(&mut self, force: bool) {
+        let Some(gist) = self.selected_gist() else {
+            self.gist_detail = None;
+            self.gist_detail_for = None;
+            return;
+        };
+        let id = gist.id.clone();
+        if self.gist_detail_for.as_deref() == Some(id.as_str()) && !force {
+            return;
+        }
+        if self.gist_detail_loading.as_deref() == Some(id.as_str()) {
+            return;
+        }
+        if self.gist_detail_for.as_deref() != Some(id.as_str()) {
+            self.gist_detail = None;
+            self.gist_file_selected = 0;
+            self.gist_scroll = 0;
+        }
+        self.gist_detail_loading = Some(id.clone());
+        let tx = self.tx.clone();
+        let client = self.client.clone();
+        std::thread::spawn(move || {
+            let result = client.gist(&id);
+            let _ = tx.send(Msg::GistDetail { id, result });
+        });
+    }
+
+    pub fn select_gist(&mut self, index: usize) {
+        if self.gists.is_empty() {
+            return;
+        }
+        let next = index.min(self.gists.len() - 1);
+        if next != self.gist_selected {
+            self.gist_selected = next;
+            self.gist_scroll = 0;
+            self.schedule_gist_detail(false);
+        }
+    }
+
+    pub fn move_gist_selection(&mut self, delta: i32) {
+        if self.gists.is_empty() {
+            return;
+        }
+        let next = (self.gist_selected as i32 + delta).clamp(0, self.gists.len() as i32 - 1);
+        self.select_gist(next as usize);
+    }
+
+    fn gist_source(&self) -> Option<&Gist> {
+        self.gist_detail
+            .as_ref()
+            .or_else(|| self.gists.get(self.gist_selected))
+    }
+
+    pub fn gist_file_names(&self) -> Vec<String> {
+        self.gist_source().map(Gist::file_names).unwrap_or_default()
+    }
+
+    pub fn current_gist_file(&self) -> Option<crate::model::GistFile> {
+        let names = self.gist_file_names();
+        let name = names.get(self.gist_file_selected)?;
+        self.gist_source()
+            .and_then(|gist| gist.files.get(name).cloned())
+    }
+
+    pub fn cycle_gist_file(&mut self) {
+        let count = self.gist_file_names().len();
+        if count == 0 {
+            return;
+        }
+        self.gist_file_selected = (self.gist_file_selected + 1) % count;
+        self.gist_scroll = 0;
+    }
+
+    pub fn gist_scroll_by(&mut self, delta: i32) {
+        self.gist_scroll =
+            (self.gist_scroll as i32 + delta).clamp(0, self.gist_scroll_max as i32) as u16;
+    }
+
+    pub fn open_gist_browser(&mut self) {
+        if let Some(gist) = self.gist_detail.clone().or_else(|| self.selected_gist()) {
+            self.open_url(&gist.html_url);
+        }
+    }
+
+    pub fn copy_gist_url(&mut self) {
+        if let Some(gist) = self.gist_detail.clone().or_else(|| self.selected_gist()) {
+            self.copy_text(&gist.html_url, "Gist 地址喵~");
+        }
+    }
+
+    pub fn open_new_gist(&mut self) {
+        if !self.client.token_present() {
+            self.set_status(StatusKind::Info, "还没有登录 GitHub，建不了 Gist 哦喵~");
+            return;
+        }
+        self.overlay = Some(Overlay::NewGist);
+        self.gist_desc_input = TextInput::new("");
+        self.gist_filename_input = TextInput::new("gistfile1.txt");
+        self.gist_content_input = TextInput::new("");
+        self.gist_field = GistField::Description;
+        self.gist_public = false;
+        self.gist_saving = false;
+        self.gist_create_error = None;
+    }
+
+    fn active_gist_input(&mut self) -> &mut TextInput {
+        match self.gist_field {
+            GistField::Description => &mut self.gist_desc_input,
+            GistField::Filename => &mut self.gist_filename_input,
+            GistField::Content => &mut self.gist_content_input,
+        }
+    }
+
+    fn next_gist_field(&mut self, forward: bool) {
+        self.gist_field = match (self.gist_field, forward) {
+            (GistField::Description, true) => GistField::Filename,
+            (GistField::Filename, true) => GistField::Content,
+            (GistField::Content, true) => GistField::Description,
+            (GistField::Description, false) => GistField::Content,
+            (GistField::Filename, false) => GistField::Description,
+            (GistField::Content, false) => GistField::Filename,
+        };
+    }
+
+    pub fn handle_new_gist_key(&mut self, key: KeyEvent) {
+        if self.gist_saving {
+            return;
+        }
+        match key.code {
+            KeyCode::Esc => {
+                self.overlay = None;
+                self.gist_create_error = None;
+            }
+            KeyCode::Tab => self.next_gist_field(true),
+            KeyCode::BackTab => self.next_gist_field(false),
+            KeyCode::Char('p') if key.modifiers.contains(KeyModifiers::CONTROL) => {
+                self.gist_public = !self.gist_public;
+            }
+            KeyCode::Enter => {
+                if self.gist_field == GistField::Content {
+                    self.gist_content_input.insert('\n');
+                } else {
+                    self.next_gist_field(true);
+                }
+            }
+            KeyCode::Backspace => self.active_gist_input().backspace(),
+            KeyCode::Delete => self.active_gist_input().delete(),
+            KeyCode::Left => self.active_gist_input().left(),
+            KeyCode::Right => self.active_gist_input().right(),
+            KeyCode::Home => self.active_gist_input().home(),
+            KeyCode::End => self.active_gist_input().end(),
+            KeyCode::Char(ch) if !ch.is_control() => self.active_gist_input().insert(ch),
+            _ => {}
+        }
+    }
+
+    pub fn submit_new_gist(&mut self) {
+        if self.gist_saving {
+            return;
+        }
+        let filename = self.gist_filename_input.value.trim().to_string();
+        let content = self.gist_content_input.value.clone();
+        if filename.is_empty() {
+            self.gist_field = GistField::Filename;
+            self.gist_create_error = Some("文件名不能空着喵~".to_string());
+            return;
+        }
+        if content.trim().is_empty() {
+            self.gist_field = GistField::Content;
+            self.gist_create_error = Some("内容不能空着喵~".to_string());
+            return;
+        }
+        self.gist_saving = true;
+        self.gist_create_error = None;
+        self.set_status(StatusKind::Info, "正在把 Gist 送去 GitHub 喵~...");
+        let description = self.gist_desc_input.value.clone();
+        let public = self.gist_public;
+        let tx = self.tx.clone();
+        let client = self.client.clone();
+        std::thread::spawn(move || {
+            let result = client.create_gist(&description, &filename, &content, public);
+            let _ = tx.send(Msg::GistCreated { result });
+        });
+    }
+
+    pub fn open_delete_gist(&mut self) {
+        let Some(gist) = self.selected_gist() else {
+            return;
+        };
+        self.gist_delete = Some(gist);
+        self.gist_deleting = false;
+        self.overlay = Some(Overlay::DeleteGist);
+    }
+
+    pub fn confirm_delete_gist(&mut self) {
+        if self.gist_deleting {
+            return;
+        }
+        let Some(gist) = self.gist_delete.clone() else {
+            return;
+        };
+        self.gist_deleting = true;
+        let id = gist.id.clone();
+        let tx = self.tx.clone();
+        let client = self.client.clone();
+        std::thread::spawn(move || {
+            let result = client.delete_gist(&id);
+            let _ = tx.send(Msg::GistDeleted { id, result });
+        });
+    }
+
+    // ---- 分支对比 / 新建合并请求 ----
+    pub fn open_compare(&mut self) {
+        let Some(repo) = self.context_repo() else {
+            self.set_status(StatusKind::Info, "先挑一个仓库嘛喵~");
+            return;
+        };
+        let name = repo.display_full_name();
+        let changed = self
+            .compare_repo
+            .as_ref()
+            .map(|current| current.display_full_name() != name)
+            .unwrap_or(true);
+        self.return_page = return_page_when_opening(self.page, self.return_page);
+        self.compare_repo = Some(repo.clone());
+        self.page = Page::Compare;
+        self.search_focus = false;
+        self.list_filter_focus = false;
+        self.release_filter_focus = false;
+        self.readme_fullscreen = false;
+        if changed {
+            self.compare_base = repo.default_branch.clone();
+            self.compare_head =
+                if self.tree_branch.is_empty() || self.tree_branch == self.compare_base {
+                    repo.default_branch.clone()
+                } else {
+                    self.tree_branch.clone()
+                };
+            self.compare_result = None;
+            self.compare_error = None;
+            self.compare_selected = 0;
+            self.compare_scroll = 0;
+            self.compare_fetched_for = None;
+            self.compare_view = CompareView::Commits;
+            self.pull_created = None;
+        }
+        self.branch_pick_side = None;
+        if self.branches.is_empty() {
+            self.load_branches_cache(&repo);
+        }
+        self.fetch_branches(false);
+        self.fetch_compare();
+    }
+
+    pub fn fetch_compare(&mut self) {
+        if self.compare_loading {
+            return;
+        }
+        let Some(repo) = self.compare_repo.clone() else {
+            return;
+        };
+        let base = self.compare_base.trim().to_string();
+        let head = self.compare_head.trim().to_string();
+        if base.is_empty() || head.is_empty() {
+            self.set_status(StatusKind::Info, "先选好 base 和 head 分支嘛喵~");
+            return;
+        }
+        let name = repo.display_full_name();
+        let private = repo.private;
+        self.compare_loading = true;
+        self.compare_error = None;
+        self.set_status(StatusKind::Info, "人家正在比较这两个分支喵~...");
+        let tx = self.tx.clone();
+        let client = self.client.clone();
+        let sent_base = base.clone();
+        let sent_head = head.clone();
+        std::thread::spawn(move || {
+            let result = client.compare(&name, &sent_base, &sent_head, private);
+            let _ = tx.send(Msg::Compare {
+                name,
+                base: sent_base,
+                head: sent_head,
+                result,
+            });
+        });
+    }
+
+    pub fn compare_row_count(&self) -> usize {
+        let Some(result) = self.compare_result.as_ref() else {
+            return 0;
+        };
+        match self.compare_view {
+            CompareView::Commits => result.commits.len(),
+            CompareView::Files => result.files.len(),
+        }
+    }
+
+    pub fn move_compare_selection(&mut self, delta: i32) {
+        let count = self.compare_row_count();
+        if count == 0 {
+            self.compare_selected = 0;
+            return;
+        }
+        self.compare_selected =
+            (self.compare_selected as i32 + delta).clamp(0, count as i32 - 1) as usize;
+        self.compare_scroll = 0;
+    }
+
+    pub fn select_compare_row(&mut self, index: usize) {
+        let count = self.compare_row_count();
+        if count == 0 {
+            return;
+        }
+        self.compare_selected = index.min(count - 1);
+        self.compare_scroll = 0;
+    }
+
+    pub fn toggle_compare_view(&mut self) {
+        self.compare_view = match self.compare_view {
+            CompareView::Commits => CompareView::Files,
+            CompareView::Files => CompareView::Commits,
+        };
+        self.compare_selected = 0;
+        self.compare_scroll = 0;
+    }
+
+    pub fn compare_scroll_by(&mut self, delta: i32) {
+        self.compare_scroll =
+            (self.compare_scroll as i32 + delta).clamp(0, self.compare_scroll_max as i32) as u16;
+    }
+
+    pub fn focus_compare_side(&mut self, side: CompareSide) {
+        self.compare_focus = side;
+    }
+
+    pub fn open_compare_branches(&mut self, side: CompareSide) {
+        let Some(repo) = self.compare_repo.clone() else {
+            return;
+        };
+        self.compare_focus = side;
+        if self.branches.is_empty() {
+            self.load_branches_cache(&repo);
+        }
+        let current = match side {
+            CompareSide::Base => self.compare_base.clone(),
+            CompareSide::Head => self.compare_head.clone(),
+        };
+        self.branch_selected = self
+            .branches
+            .iter()
+            .position(|branch| branch.name == current)
+            .unwrap_or(0);
+        self.branch_offset = self
+            .branch_selected
+            .saturating_sub(self.branch_viewport.max(1) - 1);
+        self.branch_pick_side = Some(side);
+        self.overlay = Some(Overlay::Branches);
+        self.fetch_branches(false);
+    }
+
+    pub fn set_compare_branch(&mut self, side: CompareSide, branch: String) {
+        if branch.is_empty() {
+            return;
+        }
+        self.overlay = None;
+        self.branch_pick_side = None;
+        match side {
+            CompareSide::Base => self.compare_base = branch,
+            CompareSide::Head => self.compare_head = branch,
+        }
+        self.compare_result = None;
+        self.compare_error = None;
+        self.compare_fetched_for = None;
+        self.compare_selected = 0;
+        self.fetch_compare();
+    }
+
+    pub fn start_new_pull(&mut self) {
+        if self.compare_repo.is_none() {
+            return;
+        }
+        if self.compare_base.trim().is_empty() || self.compare_head.trim().is_empty() {
+            self.set_status(StatusKind::Info, "先选好 base 和 head 分支嘛喵~");
+            return;
+        }
+        if self.compare_base == self.compare_head {
+            self.set_status(
+                StatusKind::Info,
+                "base 和 head 是同一个分支，没法建合并请求喵~",
+            );
+            return;
+        }
+        if !self.client.token_present() {
+            self.set_status(StatusKind::Info, "还没有登录 GitHub，建不了合并请求哦喵~");
+            return;
+        }
+        self.overlay = Some(Overlay::NewPull);
+        let title = self
+            .compare_result
+            .as_ref()
+            .and_then(|result| result.commits.last())
+            .map(|commit| commit.summary().to_string())
+            .filter(|summary| !summary.is_empty())
+            .unwrap_or_else(|| format!("合并 {} 到 {}", self.compare_head, self.compare_base));
+        self.pull_title = TextInput::new(title);
+        self.pull_body = TextInput::new("");
+        self.pull_draft = false;
+        self.pull_field = PullField::Title;
+        self.pull_saving = false;
+        self.pull_error = None;
+    }
+
+    pub fn handle_new_pull_key(&mut self, key: KeyEvent) {
+        if self.pull_saving {
+            return;
+        }
+        match key.code {
+            KeyCode::Esc => {
+                self.overlay = None;
+                self.pull_error = None;
+            }
+            KeyCode::Tab | KeyCode::BackTab => {
+                self.pull_field = match self.pull_field {
+                    PullField::Title => PullField::Body,
+                    PullField::Body => PullField::Title,
+                };
+            }
+            KeyCode::Char('d') if key.modifiers.contains(KeyModifiers::CONTROL) => {
+                self.pull_draft = !self.pull_draft;
+            }
+            KeyCode::Enter => {
+                if self.pull_field == PullField::Body {
+                    self.pull_body.insert('\n');
+                } else {
+                    self.pull_field = PullField::Body;
+                }
+            }
+            KeyCode::Backspace => {
+                if self.pull_field == PullField::Title {
+                    self.pull_title.backspace();
+                } else {
+                    self.pull_body.backspace();
+                }
+            }
+            KeyCode::Delete => {
+                if self.pull_field == PullField::Title {
+                    self.pull_title.delete();
+                } else {
+                    self.pull_body.delete();
+                }
+            }
+            KeyCode::Left => {
+                if self.pull_field == PullField::Title {
+                    self.pull_title.left();
+                } else {
+                    self.pull_body.left();
+                }
+            }
+            KeyCode::Right => {
+                if self.pull_field == PullField::Title {
+                    self.pull_title.right();
+                } else {
+                    self.pull_body.right();
+                }
+            }
+            KeyCode::Home => {
+                if self.pull_field == PullField::Title {
+                    self.pull_title.home();
+                } else {
+                    self.pull_body.home();
+                }
+            }
+            KeyCode::End => {
+                if self.pull_field == PullField::Title {
+                    self.pull_title.end();
+                } else {
+                    self.pull_body.end();
+                }
+            }
+            KeyCode::Char(ch) if !ch.is_control() => {
+                if self.pull_field == PullField::Title {
+                    self.pull_title.insert(ch);
+                } else {
+                    self.pull_body.insert(ch);
+                }
+            }
+            _ => {}
+        }
+    }
+
+    pub fn submit_new_pull(&mut self) {
+        if self.pull_saving {
+            return;
+        }
+        let Some(repo) = self.compare_repo.clone() else {
+            return;
+        };
+        let title = self.pull_title.value.trim().to_string();
+        if title.is_empty() {
+            self.pull_field = PullField::Title;
+            self.pull_error = Some("标题不能空着喵~".to_string());
+            return;
+        }
+        let body = self.pull_body.value.clone();
+        let base = self.compare_base.clone();
+        let head = self.compare_head.clone();
+        let draft = self.pull_draft;
+        let name = repo.display_full_name();
+        self.pull_saving = true;
+        self.pull_error = None;
+        self.set_status(StatusKind::Info, "正在把合并请求送去 GitHub 喵~...");
+        let tx = self.tx.clone();
+        let client = self.client.clone();
+        std::thread::spawn(move || {
+            let result = client.create_pull_request(&name, &title, &body, &head, &base, draft);
+            let _ = tx.send(Msg::PullCreated { name, result });
+        });
+    }
+
+    // ---- 文件预览 ----
+    pub fn open_file(&mut self, path: &str) {
+        let Some(repo) = self.page_repo.clone().or_else(|| self.selected_repo()) else {
+            return;
+        };
+        let branch = if self.tree_branch.trim().is_empty() {
+            repo.default_branch.clone()
+        } else {
+            self.tree_branch.clone()
+        };
+        self.return_page = return_page_when_opening(self.page, self.return_page);
+        self.file_repo = Some(repo);
+        self.file_path = path.trim_start_matches('/').to_string();
+        self.file_branch = if branch.is_empty() {
+            "main".to_string()
+        } else {
+            branch
+        };
+        self.file_view = None;
+        self.file_error = None;
+        self.file_loading = None;
+        self.file_scroll = 0;
+        self.file_h_scroll = 0;
+        self.page = Page::Files;
+        self.search_focus = false;
+        self.list_filter_focus = false;
+        self.release_filter_focus = false;
+        self.readme_fullscreen = false;
+        self.fetch_file_content();
+    }
+
+    fn fetch_file_content(&mut self) {
+        let Some(repo) = self.file_repo.clone() else {
+            return;
+        };
+        if self.file_loading.as_deref() == Some(self.file_path.as_str()) {
+            return;
+        }
+        let name = repo.display_full_name();
+        let path = self.file_path.clone();
+        let branch = self.file_branch.clone();
+        let private = repo.private;
+        self.file_loading = Some(path.clone());
+        self.file_error = None;
+        self.set_status(
+            StatusKind::Info,
+            &format!("人家正在读 {} 喵~...", format::clean_text(&path)),
+        );
+        let tx = self.tx.clone();
+        let client = self.client.clone();
+        std::thread::spawn(move || {
+            let result = client.file_content(&name, &path, &branch, private);
+            let _ = tx.send(Msg::FileContent {
+                name,
+                path,
+                branch,
+                result,
+            });
+        });
+    }
+
+    pub fn refresh_file(&mut self) {
+        self.fetch_file_content();
+    }
+
+    pub fn file_scroll_by(&mut self, delta: i32) {
+        self.file_scroll =
+            (self.file_scroll as i32 + delta).clamp(0, self.file_scroll_max as i32) as u16;
+    }
+
+    pub fn file_scroll_x(&mut self, delta: i32) {
+        self.file_h_scroll =
+            (self.file_h_scroll as i32 + delta).clamp(0, self.file_h_max as i32) as u16;
+    }
+
+    pub fn toggle_file_wrap(&mut self) {
+        self.file_wrap = !self.file_wrap;
+        self.file_scroll = 0;
+        self.file_h_scroll = 0;
+        self.set_status(
+            StatusKind::Info,
+            if self.file_wrap {
+                "自动换行打开啦喵~"
+            } else {
+                "自动换行关掉啦，用 h/l 横着看喵~"
+            },
+        );
+    }
+
+    pub fn copy_file_path(&mut self) {
+        if !self.file_path.is_empty() {
+            let path = self.file_path.clone();
+            self.copy_text(&path, "文件路径喵~");
+        }
+    }
+
+    pub fn download_file(&mut self) {
+        let Some(repo) = self.file_repo.clone() else {
+            return;
+        };
+        let Some(file) = self.file_view.clone() else {
+            return;
+        };
+        let Some(url) = file.download_url.clone() else {
+            self.set_status(StatusKind::Error, "这个文件没有下载地址喵~");
+            return;
+        };
+        let filename = file
+            .path
+            .rsplit('/')
+            .next()
+            .unwrap_or("download.bin")
+            .to_string();
+        self.start_download(
+            format!("文件 {} 喵~", format::clean_text(&file.path)),
+            url,
+            repo.private,
+            filename,
+        );
+    }
+
+    pub fn open_file_browser(&mut self) {
+        let Some(file) = self.file_view.as_ref() else {
+            return;
+        };
+        let url = file.html_url.clone();
+        self.open_url(&url);
+    }
+
+    // ---- 社交网络 ----
+    pub fn open_network(&mut self, login: Option<String>) {
+        if self.settings_only {
+            return;
+        }
+        let login = login
+            .or_else(|| {
+                (self.page == Page::Profile)
+                    .then(|| self.profile_login.clone())
+                    .flatten()
+            })
+            .or_else(|| self.login.clone());
+        let Some(login) = login else {
+            self.set_status(StatusKind::Info, "还没有登录，也不知道要看谁的朋友圈喵~");
+            return;
+        };
+        let changed = self.network_login.as_deref() != Some(login.as_str());
+        self.return_page = return_page_when_opening(self.page, self.return_page);
+        self.network_login = Some(login);
+        self.page = Page::Network;
+        if changed {
+            self.network_tab = NetworkTab::Followers;
+            self.network_users.clear();
+            self.network_orgs.clear();
+            self.network_selected = 0;
+            self.network_following = None;
+            self.network_known_following.clear();
+        }
+        self.fetch_network(false);
+    }
+
+    fn fetch_network(&mut self, force: bool) {
+        let Some(login) = self.network_login.clone() else {
+            return;
+        };
+        let tab = self.network_tab;
+        if self.network_loading == Some(tab) {
+            return;
+        }
+        if !force {
+            let populated = match tab {
+                NetworkTab::Orgs => !self.network_orgs.is_empty(),
+                _ => !self.network_users.is_empty(),
+            };
+            if populated {
+                return;
+            }
+        }
+        self.network_loading = Some(tab);
+        let tx = self.tx.clone();
+        let client = self.client.clone();
+        match tab {
+            NetworkTab::Orgs => {
+                std::thread::spawn(move || {
+                    let result = client.organizations(&login);
+                    let _ = tx.send(Msg::NetworkOrgs { login, result });
+                });
+            }
+            NetworkTab::Followers | NetworkTab::Following => {
+                let sent_login = login.clone();
+                std::thread::spawn(move || {
+                    let result = match tab {
+                        NetworkTab::Followers => client.followers(&sent_login),
+                        _ => client.following(&sent_login),
+                    };
+                    let _ = tx.send(Msg::NetworkUsers {
+                        login: sent_login,
+                        tab,
+                        result,
+                    });
+                });
+            }
+        }
+    }
+
+    pub fn set_network_tab(&mut self, tab: NetworkTab) {
+        if self.network_tab == tab {
+            return;
+        }
+        self.network_tab = tab;
+        self.network_selected = 0;
+        self.network_following = None;
+        self.fetch_network(false);
+    }
+
+    pub fn cycle_network_tab(&mut self) {
+        self.set_network_tab(self.network_tab.next());
+    }
+
+    pub fn network_row_count(&self) -> usize {
+        match self.network_tab {
+            NetworkTab::Orgs => self.network_orgs.len(),
+            _ => self.network_users.len(),
+        }
+    }
+
+    pub fn move_network_selection(&mut self, delta: i32) {
+        let count = self.network_row_count();
+        if count == 0 {
+            self.network_selected = 0;
+            return;
+        }
+        let next = (self.network_selected as i32 + delta).clamp(0, count as i32 - 1);
+        if next as usize != self.network_selected {
+            self.network_selected = next as usize;
+            self.network_following = None;
+        }
+    }
+
+    pub fn select_network_row(&mut self, index: usize) {
+        let count = self.network_row_count();
+        if count == 0 {
+            return;
+        }
+        let next = index.min(count - 1);
+        if next != self.network_selected {
+            self.network_selected = next;
+            self.network_following = None;
+        }
+    }
+
+    pub fn selected_network_login(&self) -> Option<String> {
+        match self.network_tab {
+            NetworkTab::Orgs => self
+                .network_orgs
+                .get(self.network_selected)
+                .map(|org| org.login.clone()),
+            _ => self
+                .network_users
+                .get(self.network_selected)
+                .map(|user| user.login.clone()),
+        }
+        .filter(|login| !login.is_empty())
+    }
+
+    pub fn open_selected_network_profile(&mut self) {
+        if let Some(login) = self.selected_network_login() {
+            self.open_user_profile(login);
+        }
+    }
+
+    pub fn open_selected_network_browser(&mut self) {
+        let login = self.selected_network_login();
+        let url = match self.network_tab {
+            NetworkTab::Orgs => self
+                .network_orgs
+                .get(self.network_selected)
+                .map(|org| org.html_url.clone()),
+            _ => self
+                .network_users
+                .get(self.network_selected)
+                .map(|user| user.html_url.clone()),
+        };
+        if let Some(url) = url.filter(|url| !url.is_empty()) {
+            self.open_url(&url);
+        } else if let Some(login) = login {
+            self.open_url(&format!("https://github.com/{login}"));
+        }
+    }
+
+    pub fn toggle_follow(&mut self) {
+        if self.network_tab == NetworkTab::Orgs {
+            self.set_status(StatusKind::Info, "组织不能关注喵~");
+            return;
+        }
+        let Some(login) = self.selected_network_login() else {
+            self.set_status(StatusKind::Info, "先挑一个用户嘛喵~");
+            return;
+        };
+        if self.network_follow_loading.is_some() {
+            return;
+        }
+        let following = self.network_following.or_else(|| {
+            self.network_known_following
+                .contains(&login)
+                .then_some(true)
+        });
+        if let Some(following) = following {
+            self.apply_follow(login, !following);
+            return;
+        }
+        self.network_follow_loading = Some(login.clone());
+        self.set_status(StatusKind::Info, "人家正在看你们的关注关系喵~...");
+        let tx = self.tx.clone();
+        let client = self.client.clone();
+        std::thread::spawn(move || {
+            let result = client.is_following(&login);
+            let _ = tx.send(Msg::FollowChecked { login, result });
+        });
+    }
+
+    pub fn apply_follow(&mut self, login: String, following: bool) {
+        self.network_follow_loading = Some(login.clone());
+        self.set_status(
+            StatusKind::Info,
+            if following {
+                "正在关注喵~..."
+            } else {
+                "正在取消关注喵~..."
+            },
+        );
+        let tx = self.tx.clone();
+        let client = self.client.clone();
+        std::thread::spawn(move || {
+            let result = client.set_following(&login, following);
+            let _ = tx.send(Msg::FollowToggled {
+                login,
+                following,
+                result,
+            });
+        });
+    }
+
+    // ---- 议题详情 / 评论 ----
+    pub fn open_issue_detail(&mut self) {
+        let Some(issue) = self.selected_issue() else {
+            self.set_status(StatusKind::Info, "先挑一个议题嘛喵~");
+            return;
+        };
+        if self.issue_repo.is_none() {
+            self.set_status(StatusKind::Info, "先打开一个仓库的议题页嘛喵~");
+            return;
+        }
+        self.return_page = if self.page == Page::Issues {
+            Page::Issues
+        } else {
+            return_page_when_opening(self.page, self.return_page)
+        };
+        self.page = Page::IssueDetail;
+        self.search_focus = false;
+        self.list_filter_focus = false;
+        self.release_filter_focus = false;
+        self.readme_fullscreen = false;
+        self.issue_open_number = Some(issue.number);
+        self.issue_open = Some(issue.clone());
+        self.issue_comments.clear();
+        self.issue_pr_files.clear();
+        self.issue_comment_input = TextInput::new("");
+        self.issue_comment_focus = false;
+        self.issue_comment_saving = false;
+        self.issue_action_loading = false;
+        self.issue_scroll = 0;
+        self.issue_pr_files_scroll = 0;
+        self.fetch_issue_detail();
+        self.fetch_issue_comments();
+        if issue.is_pull_request() {
+            self.fetch_pull_files();
+        }
+    }
+
+    fn fetch_issue_detail(&mut self) {
+        let (Some(repo), Some(number)) = (self.issue_repo.clone(), self.issue_open_number) else {
+            return;
+        };
+        if self.issue_detail_loading == Some(number) {
+            return;
+        }
+        self.issue_detail_loading = Some(number);
+        let name = repo.display_full_name();
+        let private = repo.private;
+        let tx = self.tx.clone();
+        let client = self.client.clone();
+        std::thread::spawn(move || {
+            let result = client.issue_detail(&name, number, private);
+            let _ = tx.send(Msg::IssueDetail {
+                name,
+                number,
+                result,
+            });
+        });
+    }
+
+    fn fetch_issue_comments(&mut self) {
+        let (Some(repo), Some(number)) = (self.issue_repo.clone(), self.issue_open_number) else {
+            return;
+        };
+        if self.issue_comments_loading == Some(number) {
+            return;
+        }
+        self.issue_comments_loading = Some(number);
+        let name = repo.display_full_name();
+        let private = repo.private;
+        let tx = self.tx.clone();
+        let client = self.client.clone();
+        std::thread::spawn(move || {
+            let result = client.issue_comments(&name, number, private);
+            let _ = tx.send(Msg::IssueComments {
+                name,
+                number,
+                result,
+            });
+        });
+    }
+
+    fn fetch_pull_files(&mut self) {
+        let (Some(repo), Some(number)) = (self.issue_repo.clone(), self.issue_open_number) else {
+            return;
+        };
+        if self.issue_pr_files_loading == Some(number) {
+            return;
+        }
+        self.issue_pr_files_loading = Some(number);
+        let name = repo.display_full_name();
+        let private = repo.private;
+        let tx = self.tx.clone();
+        let client = self.client.clone();
+        std::thread::spawn(move || {
+            let result = client.pull_files(&name, number, private);
+            let _ = tx.send(Msg::PullFiles {
+                name,
+                number,
+                result,
+            });
+        });
+    }
+
+    pub fn refresh_issue_detail(&mut self) {
+        self.fetch_issue_detail();
+        self.fetch_issue_comments();
+        if self.issue_open.as_ref().is_some_and(Issue::is_pull_request) {
+            self.fetch_pull_files();
+        }
+    }
+
+    pub fn issue_scroll_by(&mut self, delta: i32) {
+        self.issue_scroll =
+            (self.issue_scroll as i32 + delta).clamp(0, self.issue_scroll_max as i32) as u16;
+    }
+
+    pub fn start_issue_comment(&mut self) {
+        self.issue_comment_focus = true;
+    }
+
+    pub fn submit_issue_comment(&mut self) {
+        if self.issue_comment_saving {
+            return;
+        }
+        let body = self.issue_comment_input.value.trim().to_string();
+        if body.is_empty() {
+            self.set_status(StatusKind::Info, "评论还空着喵~先写点什么嘛喵~");
+            return;
+        }
+        let (Some(repo), Some(number)) = (self.issue_repo.clone(), self.issue_open_number) else {
+            return;
+        };
+        let name = repo.display_full_name();
+        self.issue_comment_saving = true;
+        self.set_status(StatusKind::Info, "正在把评论送给 GitHub 喵~...");
+        let tx = self.tx.clone();
+        let client = self.client.clone();
+        std::thread::spawn(move || {
+            let result = client.create_issue_comment(&name, number, &body);
+            let _ = tx.send(Msg::IssueCommentCreated {
+                name,
+                number,
+                result,
+            });
+        });
+    }
+
+    pub fn toggle_issue_state(&mut self) {
+        if self.issue_action_loading {
+            return;
+        }
+        let Some(issue) = self.issue_open.clone() else {
+            return;
+        };
+        let (Some(repo), Some(number)) = (self.issue_repo.clone(), self.issue_open_number) else {
+            return;
+        };
+        let state = if issue.state == "open" {
+            "closed"
+        } else {
+            "open"
+        };
+        let name = repo.display_full_name();
+        self.issue_action_loading = true;
+        self.set_status(StatusKind::Info, "正在改议题状态喵~...");
+        let tx = self.tx.clone();
+        let client = self.client.clone();
+        std::thread::spawn(move || {
+            let result = client.set_issue_state(&name, number, state);
+            let _ = tx.send(Msg::IssueStateChanged {
+                name,
+                number,
+                result,
+            });
+        });
+    }
+
+    pub fn open_merge_confirm(&mut self) {
+        let Some(issue) = self.issue_open.as_ref() else {
+            return;
+        };
+        if !issue.is_pull_request() {
+            self.set_status(StatusKind::Info, "这是议题不是合并请求喵~");
+            return;
+        }
+        if issue.is_merged() || issue.state != "open" {
+            self.set_status(StatusKind::Info, "这个合并请求已经结束啦喵~");
+            return;
+        }
+        self.overlay = Some(Overlay::MergePr);
+    }
+
+    pub fn confirm_merge_pull(&mut self) {
+        if self.issue_action_loading {
+            return;
+        }
+        let (Some(repo), Some(number)) = (self.issue_repo.clone(), self.issue_open_number) else {
+            return;
+        };
+        self.overlay = None;
+        self.issue_action_loading = true;
+        self.set_status(StatusKind::Info, "正在合并喵~...");
+        let name = repo.display_full_name();
+        let tx = self.tx.clone();
+        let client = self.client.clone();
+        std::thread::spawn(move || {
+            let result = client.merge_pull(&name, number);
+            let _ = tx.send(Msg::PullMerged {
+                name,
+                number,
+                result,
+            });
+        });
+    }
+
+    pub fn open_issue_browser(&mut self) {
+        if let Some(issue) = self.issue_open.as_ref() {
+            self.open_url(&issue.html_url.clone());
+        }
+    }
+
+    pub fn handle_issue_key(&mut self, key: KeyEvent) {
+        match key.code {
+            KeyCode::Esc => {
+                if self.issue_comment_focus {
+                    self.issue_comment_focus = false;
+                } else {
+                    self.go_back();
+                }
+            }
+            KeyCode::Char('c') if !self.issue_comment_focus => self.start_issue_comment(),
+            KeyCode::Char('x') if !self.issue_comment_focus => self.toggle_issue_state(),
+            KeyCode::Char('M') if !self.issue_comment_focus => self.open_merge_confirm(),
+            KeyCode::Char('o') if !self.issue_comment_focus => self.open_issue_browser(),
+            KeyCode::Char('r') if !self.issue_comment_focus => self.refresh_issue_detail(),
+            _ => {}
         }
     }
 
@@ -6364,10 +8415,16 @@ impl App {
         {
             if self.overlay == Some(Overlay::NewIssue) {
                 self.submit_new_issue();
+            } else if self.overlay == Some(Overlay::NewGist) {
+                self.submit_new_gist();
+            } else if self.overlay == Some(Overlay::NewPull) {
+                self.submit_new_pull();
             } else if self.overlay == Some(Overlay::EditRepo) {
                 self.save_repo_edit();
             } else if self.overlay == Some(Overlay::RepoLanguages) {
                 return;
+            } else if self.page == Page::IssueDetail && self.issue_comment_focus {
+                self.submit_issue_comment();
             } else {
                 if self.editing_proxy {
                     self.commit_proxy_edit();
@@ -6528,7 +8585,10 @@ impl App {
         }
         if self.overlay == Some(Overlay::Branches) {
             match key.code {
-                KeyCode::Esc | KeyCode::Char('q') => self.overlay = None,
+                KeyCode::Esc | KeyCode::Char('q') => {
+                    self.overlay = None;
+                    self.branch_pick_side = None;
+                }
                 KeyCode::Up | KeyCode::Char('k') => self.move_branch_selection(-1),
                 KeyCode::Down | KeyCode::Char('j') => self.move_branch_selection(1),
                 KeyCode::Char('g') | KeyCode::Home => {
@@ -6545,7 +8605,11 @@ impl App {
                 }
                 KeyCode::Enter => {
                     if let Some(branch) = self.branches.get(self.branch_selected).cloned() {
-                        self.select_branch(branch.name);
+                        if let Some(side) = self.branch_pick_side {
+                            self.set_compare_branch(side, branch.name);
+                        } else {
+                            self.select_branch(branch.name);
+                        }
                     }
                 }
                 KeyCode::Char('r') => self.fetch_branches(true),
@@ -6566,6 +8630,35 @@ impl App {
             }
             return;
         }
+        if self.overlay == Some(Overlay::NewGist) {
+            self.handle_new_gist_key(key);
+            return;
+        }
+        if self.overlay == Some(Overlay::NewPull) {
+            self.handle_new_pull_key(key);
+            return;
+        }
+        if self.overlay == Some(Overlay::DeleteGist) {
+            match key.code {
+                KeyCode::Esc | KeyCode::Char('q') => {
+                    if !self.gist_deleting {
+                        self.overlay = None;
+                        self.gist_delete = None;
+                    }
+                }
+                KeyCode::Enter => self.confirm_delete_gist(),
+                _ => {}
+            }
+            return;
+        }
+        if self.overlay == Some(Overlay::MergePr) {
+            match key.code {
+                KeyCode::Esc | KeyCode::Char('q') => self.overlay = None,
+                KeyCode::Enter => self.confirm_merge_pull(),
+                _ => {}
+            }
+            return;
+        }
         if self.overlay.is_some() {
             if matches!(
                 key.code,
@@ -6576,6 +8669,129 @@ impl App {
             return;
         }
 
+        if self.page == Page::IssueDetail && self.issue_comment_focus {
+            match key.code {
+                KeyCode::Esc => self.issue_comment_focus = false,
+                KeyCode::Enter => self.issue_comment_input.insert('\n'),
+                KeyCode::Backspace => self.issue_comment_input.backspace(),
+                KeyCode::Delete => self.issue_comment_input.delete(),
+                KeyCode::Left => self.issue_comment_input.left(),
+                KeyCode::Right => self.issue_comment_input.right(),
+                KeyCode::Home => self.issue_comment_input.home(),
+                KeyCode::End => self.issue_comment_input.end(),
+                KeyCode::Char(ch) if !ch.is_control() => self.issue_comment_input.insert(ch),
+                _ => {}
+            }
+            return;
+        }
+        if self.page == Page::IssueDetail {
+            match key.code {
+                KeyCode::Char('c')
+                | KeyCode::Char('x')
+                | KeyCode::Char('M')
+                | KeyCode::Char('o')
+                | KeyCode::Char('r') => {
+                    self.handle_issue_key(key);
+                    return;
+                }
+                _ => {}
+            }
+        }
+        if self.page == Page::Gists {
+            match key.code {
+                KeyCode::Char('n') => {
+                    self.open_new_gist();
+                    return;
+                }
+                KeyCode::Char('D') => {
+                    self.open_delete_gist();
+                    return;
+                }
+                KeyCode::Char('y') => {
+                    self.copy_gist_url();
+                    return;
+                }
+                KeyCode::Char('o') => {
+                    self.open_gist_browser();
+                    return;
+                }
+                KeyCode::Tab => {
+                    self.cycle_gist_file();
+                    return;
+                }
+                _ => {}
+            }
+        }
+        if self.page == Page::Compare {
+            match key.code {
+                KeyCode::Tab => {
+                    self.compare_focus = match self.compare_focus {
+                        CompareSide::Base => CompareSide::Head,
+                        CompareSide::Head => CompareSide::Base,
+                    };
+                    return;
+                }
+                KeyCode::Char('b') => {
+                    self.open_compare_branches(self.compare_focus);
+                    return;
+                }
+                KeyCode::Char('v') => {
+                    self.toggle_compare_view();
+                    return;
+                }
+                KeyCode::Char('n') => {
+                    self.start_new_pull();
+                    return;
+                }
+                _ => {}
+            }
+        }
+        if self.page == Page::Files {
+            match key.code {
+                KeyCode::Char('w') => {
+                    self.toggle_file_wrap();
+                    return;
+                }
+                KeyCode::Char('y') => {
+                    self.copy_file_path();
+                    return;
+                }
+                KeyCode::Char('o') => {
+                    self.open_file_browser();
+                    return;
+                }
+                KeyCode::Char('d') => {
+                    self.download_file();
+                    return;
+                }
+                KeyCode::Char('h') => {
+                    self.file_scroll_x(-4);
+                    return;
+                }
+                KeyCode::Char('l') => {
+                    self.file_scroll_x(4);
+                    return;
+                }
+                _ => {}
+            }
+        }
+        if self.page == Page::Network {
+            match key.code {
+                KeyCode::Tab => {
+                    self.cycle_network_tab();
+                    return;
+                }
+                KeyCode::Char('f') => {
+                    self.toggle_follow();
+                    return;
+                }
+                _ => {}
+            }
+        }
+        if matches!(self.page, Page::Account | Page::Profile) && key.code == KeyCode::Char('n') {
+            self.open_network(None);
+            return;
+        }
         if self.readme_fullscreen {
             match key.code {
                 KeyCode::Esc | KeyCode::Char('F') | KeyCode::Char('q') => {
@@ -6907,6 +9123,7 @@ impl App {
             KeyCode::Char('4') => self.open_account(),
             KeyCode::Char('5') => self.navigate(Page::Notifications),
             KeyCode::Char('6') => self.navigate(Page::Trending),
+            KeyCode::Char('7') => self.navigate(Page::Gists),
             KeyCode::Char('9') | KeyCode::Char('I') => self.navigate(Page::Insights),
             KeyCode::Char('E') => self.random_repo(),
             KeyCode::Char('P') => self.toggle_pin(),
@@ -6918,9 +9135,16 @@ impl App {
             KeyCode::Char('F') if self.page == Page::Repo => self.toggle_readme_fullscreen(),
             KeyCode::Tab => self.navigate_next_page(),
             KeyCode::Esc => match self.page {
-                Page::Repo | Page::Profile | Page::Actions | Page::Issues | Page::ReleaseDetail => {
-                    self.go_back()
-                }
+                Page::Repo
+                | Page::Profile
+                | Page::Actions
+                | Page::Issues
+                | Page::ReleaseDetail
+                | Page::IssueDetail
+                | Page::Gists
+                | Page::Compare
+                | Page::Files
+                | Page::Network => self.go_back(),
                 Page::Settings
                 | Page::Account
                 | Page::Notifications
@@ -6931,13 +9155,15 @@ impl App {
             KeyCode::Char('r') => self.refresh_current(),
             KeyCode::Char('o') => match self.page {
                 Page::Actions => self.open_action_run(None),
-                Page::Issues => self.open_selected_issue(),
+                Page::Issues => self.open_selected_issue_browser(),
                 Page::Commits => self.open_selected_commit(),
                 Page::ReleaseDetail => self.open_selected_release_page(),
                 Page::Notifications => self.open_selected_notification(),
+                Page::Network => self.open_selected_network_browser(),
                 _ => self.open_current(),
             },
             KeyCode::Char('b') if self.page.is_repo_page() => self.open_branches(),
+            KeyCode::Char('m') if self.page.is_repo_page() => self.open_compare(),
             KeyCode::Char('C') if self.page.is_repo_page() => self.open_commits(),
             KeyCode::Char('a') => self.open_actions(),
             KeyCode::Char('L') if self.page.is_repo_page() => self.open_repo_languages(),
@@ -6967,10 +9193,15 @@ impl App {
                 Page::Repo => self.open_current(),
                 Page::Account => self.open_profile(),
                 Page::Actions => self.open_action_run(None),
-                Page::Issues => self.open_selected_issue(),
+                Page::Issues => self.open_selected_issue_browser(),
                 Page::Commits => self.open_selected_commit(),
                 Page::ReleaseDetail => self.download_selected_release_asset(),
                 Page::Notifications => self.open_selected_notification(),
+                Page::IssueDetail => self.start_issue_comment(),
+                Page::Gists => self.open_gist_browser(),
+                Page::Compare => self.fetch_compare(),
+                Page::Files => self.refresh_file(),
+                Page::Network => self.open_selected_network_profile(),
                 Page::Home => {
                     if self.pinned_list().is_empty() {
                         self.navigate(Page::Search);
@@ -6997,7 +9228,7 @@ impl App {
             .page
             .nav_index()
             .unwrap_or_else(|| self.return_page.nav_index().unwrap_or(0));
-        let next = (current + 1) % 7;
+        let next = (current + 1) % 8;
         self.navigate(Page::from_nav(next));
     }
 
@@ -7011,6 +9242,11 @@ impl App {
             Page::Notifications => self.move_notification_selection(-1),
             Page::Settings => self.settings_row = self.settings_row.saturating_sub(1),
             Page::Home => self.move_home_selection(-1),
+            Page::IssueDetail => self.issue_scroll_by(-1),
+            Page::Gists => self.move_gist_selection(-1),
+            Page::Compare => self.move_compare_selection(-1),
+            Page::Files => self.file_scroll_by(-1),
+            Page::Network => self.move_network_selection(-1),
             Page::Insights => {}
             _ => self.move_selection(-1),
         }
@@ -7026,6 +9262,11 @@ impl App {
             Page::Notifications => self.move_notification_selection(1),
             Page::Settings => self.settings_row = (self.settings_row + 1).min(11),
             Page::Home => self.move_home_selection(1),
+            Page::IssueDetail => self.issue_scroll_by(1),
+            Page::Gists => self.move_gist_selection(1),
+            Page::Compare => self.move_compare_selection(1),
+            Page::Files => self.file_scroll_by(1),
+            Page::Network => self.move_network_selection(1),
             Page::Insights => {}
             _ => self.move_selection(1),
         }
@@ -7042,6 +9283,11 @@ impl App {
             Page::Notifications => self.notification_selected = 0,
             Page::Account => {}
             Page::Home => self.home_selected = 0,
+            Page::IssueDetail => self.issue_scroll = 0,
+            Page::Gists => self.select_gist(0),
+            Page::Compare => self.select_compare_row(0),
+            Page::Files => self.file_scroll = 0,
+            Page::Network => self.select_network_row(0),
             Page::Insights => {}
             _ => self.first_list_page(),
         }
@@ -7076,6 +9322,11 @@ impl App {
             Page::Home => {
                 self.home_selected = self.pinned_list().len().saturating_sub(1);
             }
+            Page::IssueDetail => self.issue_scroll = self.issue_scroll_max,
+            Page::Gists => self.select_gist(self.gists.len().saturating_sub(1)),
+            Page::Compare => self.select_compare_row(self.compare_row_count().saturating_sub(1)),
+            Page::Files => self.file_scroll = self.file_scroll_max,
+            Page::Network => self.select_network_row(self.network_row_count().saturating_sub(1)),
             Page::Insights => {}
             _ => self.last_list_page(),
         }
@@ -7093,6 +9344,11 @@ impl App {
                 self.release_scroll = self.release_scroll.saturating_sub(10);
             }
             Page::Notifications => self.move_notification_selection(-5),
+            Page::IssueDetail => self.issue_scroll_by(-10),
+            Page::Gists => self.gist_scroll_by(-10),
+            Page::Compare => self.compare_scroll_by(-10),
+            Page::Files => self.file_scroll_by(-10),
+            Page::Network => self.move_network_selection(-5),
             Page::Settings => self.settings_row = self.settings_row.saturating_sub(3),
             Page::Account => {}
             _ => self.prev_list_page(),
@@ -7112,6 +9368,11 @@ impl App {
                 self.release_scroll = (self.release_scroll + 10).min(self.release_scroll_max);
             }
             Page::Notifications => self.move_notification_selection(5),
+            Page::IssueDetail => self.issue_scroll_by(10),
+            Page::Gists => self.gist_scroll_by(10),
+            Page::Compare => self.compare_scroll_by(10),
+            Page::Files => self.file_scroll_by(10),
+            Page::Network => self.move_network_selection(5),
             Page::Settings => self.settings_row = (self.settings_row + 3).min(11),
             Page::Account => {}
             _ => self.next_list_page(),
@@ -7195,14 +9456,21 @@ impl App {
     }
 
     fn key_left(&mut self) {
-        if self.page == Page::Settings {
-            self.adjust_settings(-1);
+        match self.page {
+            Page::Settings => self.adjust_settings(-1),
+            Page::Files => self.file_scroll_x(-4),
+            Page::Compare => self.focus_compare_side(CompareSide::Base),
+            Page::Gists => {}
+            _ => {}
         }
     }
 
     fn key_right(&mut self) {
-        if self.page == Page::Settings {
-            self.adjust_settings(1);
+        match self.page {
+            Page::Settings => self.adjust_settings(1),
+            Page::Files => self.file_scroll_x(4),
+            Page::Compare => self.focus_compare_side(CompareSide::Head),
+            _ => {}
         }
     }
 
@@ -7646,7 +9914,7 @@ impl App {
             Action::TogglePin => self.toggle_pin(),
             Action::OpenPin(index) => self.open_pin(index),
             Action::NavLeft => self.nav_offset = self.nav_offset.saturating_sub(1),
-            Action::NavRight => self.nav_offset = (self.nav_offset + 1).min(6),
+            Action::NavRight => self.nav_offset = (self.nav_offset + 1).min(7),
             Action::StartProxyEdit => self.start_proxy_edit(),
             Action::StartDownloadDirEdit => self.start_download_dir_edit(),
             Action::ToggleFileTree => self.toggle_file_tree(),
@@ -7676,6 +9944,18 @@ impl App {
             Action::ToggleStar => self.toggle_current_star(),
             Action::CloseOverlay => {
                 if self.overlay == Some(Overlay::NewIssue) && self.new_issue_saving {
+                    return;
+                }
+                if self.overlay == Some(Overlay::NewGist) && self.gist_saving {
+                    return;
+                }
+                if self.overlay == Some(Overlay::NewPull) && self.pull_saving {
+                    return;
+                }
+                if self.overlay == Some(Overlay::DeleteGist) && self.gist_deleting {
+                    return;
+                }
+                if self.overlay == Some(Overlay::MergePr) && self.issue_action_loading {
                     return;
                 }
                 self.overlay = None;
@@ -7744,6 +10024,42 @@ impl App {
             Action::SetNotificationFilter(all) => self.set_notification_filter(all),
             Action::MarkNotificationRead => self.mark_selected_notification_read(),
             Action::MarkAllNotificationsRead => self.mark_all_notifications_read(),
+            Action::ToggleIssueState => self.toggle_issue_state(),
+            Action::FocusIssueComment => self.start_issue_comment(),
+            Action::SubmitIssueComment => self.submit_issue_comment(),
+            Action::MergePull => self.open_merge_confirm(),
+            Action::ConfirmMergePull => self.confirm_merge_pull(),
+            Action::OpenNetwork => self.open_network(None),
+            Action::SelectGist(index) => self.select_gist(index),
+            Action::SelectGistFile(index) => {
+                let count = self.gist_file_names().len();
+                if count > 0 {
+                    self.gist_file_selected = index.min(count - 1);
+                    self.gist_scroll = 0;
+                }
+            }
+            Action::StartNewGist => self.open_new_gist(),
+            Action::DeleteGist => self.open_delete_gist(),
+            Action::ConfirmDeleteGist => self.confirm_delete_gist(),
+            Action::ToggleGistPublic => self.gist_public = !self.gist_public,
+            Action::FocusGistField(field) => self.gist_field = field,
+            Action::SubmitNewGist => self.submit_new_gist(),
+            Action::CopyGistUrl => self.copy_gist_url(),
+            Action::RefreshGists => self.fetch_gists(true),
+            Action::SelectCompareRow(index) => self.select_compare_row(index),
+            Action::PickCompareBranch(side) => self.open_compare_branches(side),
+            Action::RefreshCompare => self.fetch_compare(),
+            Action::ToggleCompareView => self.toggle_compare_view(),
+            Action::StartNewPull => self.start_new_pull(),
+            Action::ConfirmNewPull => self.submit_new_pull(),
+            Action::TogglePullDraft => self.pull_draft = !self.pull_draft,
+            Action::FocusPullField(field) => self.pull_field = field,
+            Action::SelectNetwork(index) => self.select_network_row(index),
+            Action::SetNetworkTab(tab) => self.set_network_tab(tab),
+            Action::ToggleFollow => self.toggle_follow(),
+            Action::ToggleFileWrap => self.toggle_file_wrap(),
+            Action::CopyFilePath => self.copy_file_path(),
+            Action::DownloadFile => self.download_file(),
             Action::OpenCacheManager => self.open_cache_manager(),
             Action::ClearCacheGroup(index) => self.clear_cache_group(index),
             Action::SelectCacheRow(index) => {
@@ -8398,6 +10714,113 @@ mod tests {
         assert!(!should_schedule_selected_detail(Page::Home));
         assert!(!should_schedule_selected_detail(Page::Insights));
         assert!(!should_schedule_selected_detail(Page::Settings));
+    }
+
+    #[test]
+    fn gist_page_joins_navigation_and_names() {
+        assert_eq!(Page::Gists.nav_index(), Some(7));
+        assert_eq!(Page::from_nav(7), Page::Gists);
+        assert_eq!(Page::from_nav(0), Page::Home);
+        assert_eq!(Page::from_default_name("gists"), Page::Gists);
+        assert_eq!(Page::Gists.default_name(), "gists");
+        assert!(Page::DEFAULT_PAGES.contains(&Page::Gists));
+        assert!(Page::IssueDetail.is_repo_page());
+        assert!(Page::Compare.is_repo_page());
+        assert!(Page::Files.is_repo_page());
+        assert!(!Page::Gists.is_repo_page());
+        assert!(!Page::Network.is_repo_page());
+    }
+
+    #[test]
+    fn gist_files_cycle_and_compare_rows_clamp() {
+        let root = std::env::temp_dir().join(format!("gitx-feature-state-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        let paths = Paths::for_test(root.join("config"), root.join("cache"));
+        let mut app = App::settings(paths, None);
+        app.settings_only = false;
+
+        let files = std::collections::HashMap::from([
+            (
+                "b.md".to_string(),
+                crate::model::GistFile {
+                    filename: "b.md".to_string(),
+                    content: Some("# b".to_string()),
+                    ..Default::default()
+                },
+            ),
+            (
+                "a.txt".to_string(),
+                crate::model::GistFile {
+                    filename: "a.txt".to_string(),
+                    content: Some("a".to_string()),
+                    ..Default::default()
+                },
+            ),
+        ]);
+        app.gists = vec![crate::model::Gist {
+            id: "g1".to_string(),
+            files,
+            ..Default::default()
+        }];
+        app.gist_selected = 0;
+        assert_eq!(app.gist_file_names(), vec!["a.txt", "b.md"]);
+        app.cycle_gist_file();
+        assert_eq!(app.gist_file_selected, 1);
+        app.cycle_gist_file();
+        assert_eq!(app.gist_file_selected, 0);
+        assert_eq!(
+            app.current_gist_file().map(|file| file.filename),
+            Some("a.txt".to_string())
+        );
+
+        app.compare_result = Some(crate::model::CompareResult {
+            ahead_by: 1,
+            commits: vec![crate::model::Commit {
+                sha: "abcdef1234".to_string(),
+                ..Default::default()
+            }],
+            files: vec![crate::model::PullFile {
+                filename: "src/main.rs".to_string(),
+                ..Default::default()
+            }],
+            ..Default::default()
+        });
+        app.compare_view = CompareView::Commits;
+        assert_eq!(app.compare_row_count(), 1);
+        app.move_compare_selection(9);
+        assert_eq!(app.compare_selected, 0);
+        app.toggle_compare_view();
+        assert_eq!(app.compare_view, CompareView::Files);
+        assert_eq!(app.compare_row_count(), 1);
+        app.select_compare_row(9);
+        assert_eq!(app.compare_selected, 0);
+
+        app.network_users = vec![
+            User {
+                login: "a".to_string(),
+                ..Default::default()
+            },
+            User {
+                login: "b".to_string(),
+                ..Default::default()
+            },
+            User {
+                login: "c".to_string(),
+                ..Default::default()
+            },
+        ];
+        app.network_tab = NetworkTab::Followers;
+        app.move_network_selection(5);
+        assert_eq!(app.network_selected, 2);
+        assert_eq!(app.selected_network_login().as_deref(), Some("c"));
+        app.network_tab = NetworkTab::Orgs;
+        app.network_orgs = vec![crate::model::Org {
+            login: "org".to_string(),
+            ..Default::default()
+        }];
+        app.network_selected = 0;
+        assert_eq!(app.selected_network_login().as_deref(), Some("org"));
+        let _ = std::fs::remove_dir_all(root);
     }
 
     #[test]
