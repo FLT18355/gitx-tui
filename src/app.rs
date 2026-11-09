@@ -328,6 +328,8 @@ pub enum Action {
     Back,
     Refresh,
     OpenCurrent,
+    RepoActionsLeft,
+    RepoActionsRight,
     CopyClone,
     SetTheme(String),
     CycleTheme,
@@ -895,9 +897,23 @@ enum Msg {
         tab: NetworkTab,
         result: Result<Vec<User>, String>,
     },
+    NetworkUserDetails {
+        login: String,
+        tab: NetworkTab,
+        result: Result<Vec<User>, String>,
+    },
     NetworkOrgs {
         login: String,
         result: Result<Vec<crate::model::Org>, String>,
+    },
+    ProfileFollowChecked {
+        login: String,
+        result: Result<bool, String>,
+    },
+    ProfileFollowToggled {
+        login: String,
+        following: bool,
+        result: Result<(), String>,
     },
     FollowChecked {
         login: String,
@@ -1036,8 +1052,11 @@ pub struct App {
     pub network_following: Option<bool>,
     pub network_follow_loading: Option<String>,
     pub network_known_following: HashSet<String>,
+    pub network_details: HashSet<String>,
     pub profile_login: Option<String>,
     pub profile_user: Option<User>,
+    pub profile_following: Option<bool>,
+    pub profile_follow_loading: Option<String>,
     pub profile_user_loading: bool,
     pub profile_repos: Vec<Repo>,
     pub profile_repos_loading: bool,
@@ -1105,6 +1124,7 @@ pub struct App {
     pub page_repo: Option<Repo>,
     pub page_scroll: u16,
     pub page_scroll_max: u16,
+    pub repo_actions_offset: usize,
     pub repo_pane: RepoPane,
     pub tree: Option<TreeResponse>,
     pub tree_for: Option<String>,
@@ -1352,8 +1372,11 @@ impl App {
             network_following: None,
             network_follow_loading: None,
             network_known_following: HashSet::new(),
+            network_details: HashSet::new(),
             profile_login: None,
             profile_user: None,
+            profile_following: None,
+            profile_follow_loading: None,
             profile_user_loading: false,
             profile_repos: Vec::new(),
             profile_repos_loading: false,
@@ -1418,6 +1441,7 @@ impl App {
             page_repo: None,
             page_scroll: 0,
             page_scroll_max: 0,
+            repo_actions_offset: 0,
             repo_pane: RepoPane::Releases,
             tree: None,
             tree_for: None,
@@ -2882,8 +2906,22 @@ impl App {
                                 users.iter().map(|user| user.login.clone()).collect();
                         }
                         self.network_users = users;
+                        self.network_details.clear();
                         self.network_selected = 0;
                         self.network_following = None;
+                        let logins: Vec<String> = self
+                            .network_users
+                            .iter()
+                            .map(|user| user.login.clone())
+                            .collect();
+                        if !logins.is_empty() {
+                            let tx = self.tx.clone();
+                            let client = self.client.clone();
+                            std::thread::spawn(move || {
+                                let result = client.user_summaries(&logins);
+                                let _ = tx.send(Msg::NetworkUserDetails { login, tab, result });
+                            });
+                        }
                         if self.page == Page::Network {
                             self.set_status(
                                 StatusKind::Ok,
@@ -2896,6 +2934,33 @@ impl App {
                             self.set_status(StatusKind::Error, &error);
                         }
                     }
+                }
+            }
+            Msg::NetworkUserDetails { login, tab, result } => {
+                if self.network_login.as_deref() != Some(login.as_str()) || self.network_tab != tab
+                {
+                    return;
+                }
+                match result {
+                    Ok(details) => {
+                        for detail in details {
+                            let login = detail.login.clone();
+                            let Some(user) = self
+                                .network_users
+                                .iter_mut()
+                                .find(|user| user.login == login)
+                            else {
+                                continue;
+                            };
+                            user.name = detail.name;
+                            user.bio = detail.bio;
+                            user.followers = detail.followers;
+                            user.following = detail.following;
+                            user.public_repos = detail.public_repos;
+                            self.network_details.insert(login);
+                        }
+                    }
+                    Err(error) => self.set_status(StatusKind::Error, &error),
                 }
             }
             Msg::NetworkOrgs { login, result } => {
@@ -2958,6 +3023,58 @@ impl App {
                             let count = self.network_users.len();
                             self.network_selected =
                                 self.network_selected.min(count.saturating_sub(1));
+                        }
+                        self.set_status(
+                            StatusKind::Ok,
+                            if following {
+                                "关注好啦喵~"
+                            } else {
+                                "取消关注啦喵~"
+                            },
+                        );
+                    }
+                    Err(error) => self.set_status(StatusKind::Error, &error),
+                }
+            }
+            Msg::ProfileFollowChecked { login, result } => {
+                if self.profile_follow_loading.as_deref() != Some(login.as_str()) {
+                    return;
+                }
+                self.profile_follow_loading = None;
+                if self.profile_login.as_deref() != Some(login.as_str()) {
+                    return;
+                }
+                match result {
+                    Ok(following) => {
+                        self.profile_following = Some(following);
+                        self.apply_profile_follow(login, !following);
+                    }
+                    Err(error) => self.set_status(StatusKind::Error, &error),
+                }
+            }
+            Msg::ProfileFollowToggled {
+                login,
+                following,
+                result,
+            } => {
+                if self.profile_follow_loading.as_deref() == Some(login.as_str()) {
+                    self.profile_follow_loading = None;
+                }
+                match result {
+                    Ok(()) => {
+                        if self.profile_login.as_deref() == Some(login.as_str()) {
+                            self.profile_following = Some(following);
+                            if let Some(user) = self
+                                .profile_user
+                                .as_mut()
+                                .filter(|user| user.login == login)
+                            {
+                                if following {
+                                    user.followers = user.followers.saturating_add(1);
+                                } else {
+                                    user.followers = user.followers.saturating_sub(1);
+                                }
+                            }
                         }
                         self.set_status(
                             StatusKind::Ok,
@@ -5927,6 +6044,7 @@ impl App {
             self.nav_offset = index;
         }
         self.page_scroll = 0;
+        self.repo_actions_offset = 0;
         self.search_focus = false;
         self.readme_fullscreen = false;
         self.detail_scroll_reset = true;
@@ -6562,6 +6680,8 @@ impl App {
         if self.profile_login.as_deref() != Some(login.as_str()) {
             self.profile_login = Some(login.clone());
             self.profile_user = None;
+            self.profile_following = None;
+            self.profile_follow_loading = None;
             self.profile_repos.clear();
             self.profile_selected = 0;
             self.profile_error = None;
@@ -7973,6 +8093,7 @@ impl App {
             self.network_selected = 0;
             self.network_following = None;
             self.network_known_following.clear();
+            self.network_details.clear();
         }
         self.fetch_network(false);
     }
@@ -8025,10 +8146,13 @@ impl App {
         if self.network_tab == tab {
             return;
         }
+        let previous = self.network_tab;
         self.network_tab = tab;
         self.network_selected = 0;
         self.network_following = None;
-        self.fetch_network(false);
+        let users_swapped = matches!(previous, NetworkTab::Followers | NetworkTab::Following)
+            && matches!(tab, NetworkTab::Followers | NetworkTab::Following);
+        self.fetch_network(users_swapped);
     }
 
     pub fn cycle_network_tab(&mut self) {
@@ -8152,6 +8276,58 @@ impl App {
         std::thread::spawn(move || {
             let result = client.set_following(&login, following);
             let _ = tx.send(Msg::FollowToggled {
+                login,
+                following,
+                result,
+            });
+        });
+    }
+
+    pub fn toggle_profile_follow(&mut self) {
+        let Some(login) = self.profile_login.clone() else {
+            self.set_status(StatusKind::Info, "还没有打开任何人的主页喵~");
+            return;
+        };
+        if self.login.as_deref() == Some(login.as_str()) {
+            self.set_status(StatusKind::Info, "这是你自己的主页，不能关注自己喵~");
+            return;
+        }
+        if !self.client.token_present() {
+            self.set_status(StatusKind::Error, "还没登录呢，人家关注不了哦喵~");
+            return;
+        }
+        if self.profile_follow_loading.is_some() {
+            return;
+        }
+        if let Some(following) = self.profile_following {
+            self.apply_profile_follow(login, !following);
+            return;
+        }
+        self.profile_follow_loading = Some(login.clone());
+        self.set_status(StatusKind::Info, "人家正在看你们的关注关系喵~...");
+        let tx = self.tx.clone();
+        let client = self.client.clone();
+        std::thread::spawn(move || {
+            let result = client.is_following(&login);
+            let _ = tx.send(Msg::ProfileFollowChecked { login, result });
+        });
+    }
+
+    fn apply_profile_follow(&mut self, login: String, following: bool) {
+        self.profile_follow_loading = Some(login.clone());
+        self.set_status(
+            StatusKind::Info,
+            if following {
+                "正在关注喵~..."
+            } else {
+                "正在取消关注喵~..."
+            },
+        );
+        let tx = self.tx.clone();
+        let client = self.client.clone();
+        std::thread::spawn(move || {
+            let result = client.set_following(&login, following);
+            let _ = tx.send(Msg::ProfileFollowToggled {
                 login,
                 following,
                 result,
@@ -9007,6 +9183,19 @@ impl App {
             self.cycle_repo_pane();
             return;
         }
+        if self.page == Page::Repo {
+            match key.code {
+                KeyCode::Left => {
+                    self.repo_actions_offset = self.repo_actions_offset.saturating_sub(1);
+                    return;
+                }
+                KeyCode::Right => {
+                    self.repo_actions_offset += 1;
+                    return;
+                }
+                _ => {}
+            }
+        }
         if self.page == Page::Tags {
             match key.code {
                 KeyCode::Esc => self.go_back(),
@@ -9175,6 +9364,7 @@ impl App {
             }
             KeyCode::Char('c') => self.open_cache_manager(),
             KeyCode::Char('y') => self.copy_clone(),
+            KeyCode::Char('f') if self.page == Page::Profile => self.toggle_profile_follow(),
             KeyCode::Char('f') => self.toggle_current_star(),
             KeyCode::Char('e') => self.open_repo_edit(),
             KeyCode::Char('[') => self.prev_list_page(),
@@ -9904,6 +10094,10 @@ impl App {
             Action::Back => self.go_back(),
             Action::Refresh => self.refresh_current(),
             Action::OpenCurrent => self.open_current(),
+            Action::RepoActionsLeft => {
+                self.repo_actions_offset = self.repo_actions_offset.saturating_sub(1)
+            }
+            Action::RepoActionsRight => self.repo_actions_offset += 1,
             Action::CopyClone => self.copy_clone(),
             Action::SetTheme(flavor) => self.set_theme(flavor),
             Action::CycleTheme => self.cycle_theme(1),
@@ -10845,6 +11039,22 @@ mod tests {
         }];
         app.network_selected = 0;
         assert_eq!(app.selected_network_login().as_deref(), Some("org"));
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn profile_f_follows_instead_of_starring() {
+        let root = std::env::temp_dir().join(format!("gitx-profile-f-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        let paths = Paths::for_test(root.join("config"), root.join("cache"));
+        let mut app = App::settings(paths, None);
+        app.settings_only = false;
+        app.client = crate::api::ApiClient::without_auth(String::new());
+        app.login = Some("me".to_string());
+        app.profile_login = Some("alice".to_string());
+        app.page = Page::Profile;
+        app.handle_key(KeyEvent::new(KeyCode::Char('f'), KeyModifiers::NONE));
+        assert!(app.status.text.contains("关注"));
         let _ = std::fs::remove_dir_all(root);
     }
 

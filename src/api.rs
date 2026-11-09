@@ -499,6 +499,76 @@ impl ApiClient {
         self.get_public_pages(&url)
     }
 
+    pub fn user_summaries(&self, logins: &[String]) -> Result<Vec<User>, String> {
+        if logins.is_empty() || self.token.is_none() {
+            return Ok(Vec::new());
+        }
+        let mut users = Vec::new();
+        for chunk in logins.chunks(100) {
+            let mut query = String::from("query {\n");
+            for (index, login) in chunk.iter().enumerate() {
+                let login = serde_json::to_string(login)
+                    .map_err(|error| format!("用户名读不出来：{error}喵~"))?;
+                query.push_str(&format!(
+                    "  u{index}: user(login: {login}) {{ login name bio followers {{ totalCount }} following {{ totalCount }} repositories(privacy: PUBLIC, ownerAffiliations: OWNER) {{ totalCount }} }}\n"
+                ));
+            }
+            query.push('}');
+            let payload = serde_json::json!({ "query": query });
+            let body =
+                self.send_json_auth("post", &format!("{API}/graphql"), &payload, "读取用户资料")?;
+            let value: serde_json::Value = serde_json::from_str(&body)
+                .map_err(|error| format!("用户资料格式不对：{error}喵~"))?;
+            if let Some(message) = value
+                .get("errors")
+                .and_then(|errors| errors.as_array())
+                .and_then(|errors| errors.first())
+                .and_then(|error| error.get("message"))
+                .and_then(|message| message.as_str())
+            {
+                return Err(format!("GitHub 没有给出用户资料：{message}喵~"));
+            }
+            let Some(data) = value.get("data") else {
+                continue;
+            };
+            for (index, fallback) in chunk.iter().enumerate() {
+                let key = format!("u{index}");
+                let Some(node) = data.get(key.as_str()).filter(|node| !node.is_null()) else {
+                    continue;
+                };
+                users.push(User {
+                    login: node
+                        .get("login")
+                        .and_then(|value| value.as_str())
+                        .unwrap_or(fallback)
+                        .to_string(),
+                    name: node
+                        .get("name")
+                        .and_then(|value| value.as_str())
+                        .map(str::to_string),
+                    bio: node
+                        .get("bio")
+                        .and_then(|value| value.as_str())
+                        .map(str::to_string),
+                    followers: node
+                        .pointer("/followers/totalCount")
+                        .and_then(|value| value.as_u64())
+                        .unwrap_or(0),
+                    following: node
+                        .pointer("/following/totalCount")
+                        .and_then(|value| value.as_u64())
+                        .unwrap_or(0),
+                    public_repos: node
+                        .pointer("/repositories/totalCount")
+                        .and_then(|value| value.as_u64())
+                        .unwrap_or(0),
+                    ..Default::default()
+                });
+            }
+        }
+        Ok(users)
+    }
+
     pub fn organizations(&self, login: &str) -> Result<Vec<Org>, String> {
         let url = format!("{API}/users/{}/orgs?per_page=100", percent_encode(login));
         self.get_public_pages(&url)

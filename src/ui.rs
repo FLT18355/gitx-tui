@@ -470,13 +470,15 @@ fn hints_for(app: &App) -> &'static str {
         Page::Search => "回车搜索  / 结果筛选  l 语言  j/k 挑  [ ] 翻页  Enter 打开喵~",
         Page::Trending => "j/k 挑  [ ] 翻页  p 换时段  / 筛选  l 语言  Enter 打开  r 刷新喵~",
         Page::Account => "r 刷新账号和额度    Enter 打开主页    Esc 回仓库喵~",
-        Page::Profile => "j/k 挑仓库  [ ] 翻页  Enter 打开  o 去 GitHub  r 刷新  Esc 返回喵~",
+        Page::Profile => {
+            "j/k 挑仓库  [ ] 翻页  Enter 打开  f 关注/取关  o 去 GitHub  r 刷新  Esc 返回喵~"
+        }
         Page::Notifications => {
             "j/k 挑通知  Enter 打开  m 已读  M 全部已读  u 未读/全部  r 刷新  Esc 返回喵~"
         }
         Page::Settings => "j/k 选    h/l 调    Enter 操作    Ctrl+S 保存    Esc 离开喵~",
         Page::Repo => {
-            "Esc 返回  Tab 换面板  b 分支  C 提交  v 标签  L 语言  a 工作流  i 议题  u SSH  N 全名喵~"
+            "Esc 返回  Tab 换面板  ←/→ 翻按钮  b 分支  C 提交  v 标签  L 语言  a 工作流  i 议题  u SSH  N 全名喵~"
         }
         Page::Actions => {
             "j/k 挑运行  Enter 浏览器  R 重跑  X 取消  x 运行工作流  PgUp/PgDn 滚任务  r 刷新喵~"
@@ -3883,7 +3885,9 @@ fn draw_repo_page(
     );
 
     let actions_y = inner.y + 5;
-    let mut action_x = inner.x;
+    let action_row = Rect::new(inner.x, actions_y, inner.width, 1);
+    frame.render_widget(Clear, action_row);
+    fill(frame, action_row, theme.color("base"));
     let mut buttons = vec![
         (
             icons::label(icons::EXTERNAL, "去主页喵~"),
@@ -3951,9 +3955,60 @@ fn draw_repo_page(
             ),
         );
     }
-    for (label, action, primary) in buttons {
-        let button_width = format::text_width(&label) as u16 + 4;
-        if action_x + button_width > inner.x + inner.width {
+    let action_span = |label: &str| format::text_width(label) as u16 + 5;
+    let total = buttons
+        .iter()
+        .map(|(label, ..)| action_span(label))
+        .fold(0u16, u16::saturating_add)
+        .saturating_sub(1);
+    let overflow = total > inner.width;
+    let offset = if overflow {
+        app.repo_actions_offset.min(buttons.len().saturating_sub(1))
+    } else {
+        0
+    };
+    app.repo_actions_offset = offset;
+    let arrow_width = 3u16;
+    let mut action_x = inner.x;
+    if overflow && offset > 0 {
+        draw_button(
+            frame,
+            app,
+            theme,
+            hits,
+            Rect::new(action_x, actions_y, arrow_width, 1),
+            "<",
+            Action::RepoActionsLeft,
+            false,
+        );
+        action_x += arrow_width + 1;
+    }
+    let mut action_right = inner.x + inner.width;
+    if overflow {
+        let remaining = buttons
+            .iter()
+            .skip(offset)
+            .map(|(label, ..)| action_span(label))
+            .fold(0u16, u16::saturating_add)
+            .saturating_sub(1);
+        if remaining > action_right.saturating_sub(action_x) {
+            let arrow_x = action_right.saturating_sub(arrow_width);
+            draw_button(
+                frame,
+                app,
+                theme,
+                hits,
+                Rect::new(arrow_x, actions_y, arrow_width, 1),
+                ">",
+                Action::RepoActionsRight,
+                false,
+            );
+            action_right = arrow_x.saturating_sub(1);
+        }
+    }
+    for (label, action, primary) in buttons.iter().skip(offset) {
+        let button_width = format::text_width(label) as u16 + 4;
+        if action_x + button_width > action_right {
             break;
         }
         draw_button(
@@ -3962,9 +4017,9 @@ fn draw_repo_page(
             theme,
             hits,
             Rect::new(action_x, actions_y, button_width, 1),
-            &label,
-            action,
-            primary,
+            label,
+            action.clone(),
+            *primary,
         );
         action_x += button_width + 1;
     }
@@ -12918,22 +12973,26 @@ fn draw_network_page(
                     ])),
                     Rect::new(body.x + 1, y, body.width.saturating_sub(1), 1),
                 );
-                let meta = format!(
-                    "   {} 粉丝 · {} 关注 · {}{}",
-                    format::human_count(user.followers),
-                    format::human_count(user.following),
-                    user.public_repos,
-                    user.bio
-                        .as_deref()
-                        .filter(|bio| !bio.trim().is_empty())
-                        .map(|bio| format!(" · {}", format::truncate(bio, 40)))
-                        .unwrap_or_default()
-                );
-                frame.render_widget(
-                    Paragraph::new(format::truncate(&meta, body.width as usize))
-                        .style(Style::default().fg(theme.color("overlay0"))),
-                    Rect::new(body.x + 1, y + 1, body.width.saturating_sub(1), 1),
-                );
+                let meta = app.network_details.contains(&user.login).then(|| {
+                    format!(
+                        "   {} 粉丝 · {} 关注 · {}{}",
+                        format::human_count(user.followers),
+                        format::human_count(user.following),
+                        user.public_repos,
+                        user.bio
+                            .as_deref()
+                            .filter(|bio| !bio.trim().is_empty())
+                            .map(|bio| format!(" · {}", format::truncate(bio, 40)))
+                            .unwrap_or_default()
+                    )
+                });
+                if let Some(meta) = meta {
+                    frame.render_widget(
+                        Paragraph::new(format::truncate(&meta, body.width as usize))
+                            .style(Style::default().fg(theme.color("overlay0"))),
+                        Rect::new(body.x + 1, y + 1, body.width.saturating_sub(1), 1),
+                    );
+                }
             }
         }
         register(hits, rect, Action::SelectNetwork(index));
@@ -13865,6 +13924,60 @@ mod tests {
     }
 
     #[test]
+    fn repo_action_row_scrolls_with_arrows() {
+        let dir = std::env::temp_dir().join(format!("gitx-repo-actions-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        let paths = crate::config::Paths::for_test(dir.join("config"), dir.join("cache"));
+        let mut app = App::settings(paths, None);
+        app.settings_only = false;
+        app.page = Page::Repo;
+        app.page_repo = Some(Repo {
+            name: "demo".to_string(),
+            full_name: "me/demo".to_string(),
+            default_branch: "main".to_string(),
+            ..Default::default()
+        });
+        let mut terminal = ratatui::Terminal::new(ratatui::backend::TestBackend::new(90, 40))
+            .expect("test terminal");
+        terminal
+            .draw(|frame| draw(frame, &mut app))
+            .expect("render repo actions");
+        assert!(
+            app.hitboxes
+                .iter()
+                .any(|hit| hit.action == Action::RepoActionsRight)
+        );
+        assert_eq!(app.repo_actions_offset, 0);
+        let text = buffer_text(terminal.backend().buffer());
+        let compact = text.split_whitespace().collect::<String>();
+        assert!(compact.contains("去主页喵~"));
+        assert!(compact.contains('>'));
+        for _ in 0..20 {
+            app.handle_action(Action::RepoActionsRight);
+            terminal
+                .draw(|frame| draw(frame, &mut app))
+                .expect("render scrolled repo actions");
+        }
+        assert!(app.repo_actions_offset > 0);
+        assert!(
+            app.hitboxes
+                .iter()
+                .any(|hit| hit.action == Action::RepoActionsLeft)
+        );
+        let hits: Vec<String> = app.hitboxes.iter().filter(|hit| hit.rect.y == 9).map(|hit| format!("{:?}", hit.action)).collect();
+        panic!("offset={} hits={hits:?}", app.repo_actions_offset);
+        let text = buffer_text(terminal.backend().buffer());
+        let compact = text.split_whitespace().collect::<String>();
+        assert!(compact.contains("工作流喵~"), "{text}");
+        assert!(
+            app.hitboxes
+                .iter()
+                .any(|hit| hit.action == Action::OpenActions)
+        );
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
     fn new_workspace_pages_render_without_panics() {
         let dir = std::env::temp_dir().join(format!("gitx-new-pages-ui-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
@@ -14010,6 +14123,16 @@ mod tests {
             .collect::<String>();
         assert!(compact.contains("社交圈"));
         assert!(compact.contains("@alice"));
+        assert!(!compact.contains("0粉丝"));
+        app.network_details.insert("alice".to_string());
+        terminal.clear().expect("clear terminal");
+        terminal
+            .draw(|frame| draw(frame, &mut app))
+            .expect("render hydrated network");
+        let compact = buffer_text(terminal.backend().buffer())
+            .split_whitespace()
+            .collect::<String>();
+        assert!(compact.contains("12粉丝"));
 
         app.overlay = Some(Overlay::NewGist);
         terminal.clear().expect("clear terminal");
