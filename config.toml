@@ -5,6 +5,9 @@
 # Catppuccin 风味：latte / frappe / macchiato / mocha
 theme = "mocha"
 
+# 主 TUI 透明背景：页面背景透出终端壁纸，标题栏、卡片和弹窗保持不透明
+transparent = false
+
 # 公开 API 与发行版下载的加速地址
 proxy = "https://v4.gh-proxy.org"
 
