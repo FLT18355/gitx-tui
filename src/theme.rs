@@ -14,6 +14,8 @@ const MOCHA: &str = include_str!("../themes/mocha.toml");
 pub struct Theme {
     pub flavor: String,
     pub name: String,
+    /// Draw page backgrounds with the terminal default, letting its wallpaper show.
+    pub transparent: bool,
     colors: BTreeMap<String, Color>,
 }
 
@@ -109,16 +111,30 @@ impl Theme {
         Ok(Self {
             flavor: flavor.to_string(),
             name,
+            transparent: false,
             colors,
         })
     }
 
     pub fn color(&self, name: &str) -> Color {
+        // Only `base` goes transparent: mantles, cards and overlays stay readable.
+        if self.transparent && name == "base" {
+            return Color::Reset;
+        }
         self.colors
             .get(name)
             .copied()
             .or_else(|| self.colors.get("text").copied())
             .unwrap_or(Color::White)
+    }
+
+    /// Text drawn on top of an accent-colored button or pill.
+    pub fn on_accent(&self) -> Color {
+        if self.transparent {
+            self.color("crust")
+        } else {
+            self.color("base")
+        }
     }
 }
 
@@ -193,6 +209,18 @@ mod tests {
         );
         assert!(!Theme::exists(&paths, "../escape"));
         let _ = fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn transparent_base_follows_terminal() {
+        let paths = Paths::for_test("missing".into(), "missing".into());
+        let mut theme = Theme::load(&paths, "mocha");
+        assert_ne!(theme.color("base"), Color::Reset);
+        theme.transparent = true;
+        assert_eq!(theme.color("base"), Color::Reset);
+        assert_eq!(theme.on_accent(), theme.color("crust"));
+        assert_ne!(theme.color("mantle"), Color::Reset);
+        assert_ne!(theme.color("surface0"), Color::Reset);
     }
 
     #[test]

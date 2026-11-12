@@ -1230,7 +1230,8 @@ impl App {
         let theme_name = theme_override
             .filter(|value| Theme::exists(&paths, value))
             .unwrap_or_else(|| config.theme.clone());
-        let theme = Theme::load(&paths, &theme_name);
+        let mut theme = Theme::load(&paths, &theme_name);
+        theme.transparent = config.transparent;
         let themes = Theme::available(&paths);
         let client = if settings_only {
             ApiClient::without_auth(config.proxy.clone())
@@ -9741,7 +9742,9 @@ impl App {
         if !Theme::exists(&self.paths, &flavor) {
             return;
         }
-        self.theme = Theme::load(&self.paths, &flavor);
+        let mut theme = Theme::load(&self.paths, &flavor);
+        theme.transparent = self.config.transparent;
+        self.theme = theme;
         self.config.theme = flavor;
         self.config_dirty = true;
         self.set_status(

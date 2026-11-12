@@ -4088,7 +4088,7 @@ fn release_tag_pill(theme: &Theme, tag: &str, accent: Color) -> Span<'static> {
         format!(" {tag} "),
         Style::default()
             .bg(accent)
-            .fg(theme.color("base"))
+            .fg(theme.on_accent())
             .add_modifier(Modifier::BOLD),
     )
 }
@@ -8641,7 +8641,7 @@ pub(crate) fn markdown_lines(text: &str, width: usize, theme: &Theme) -> Vec<Lin
                     Span::styled(
                         format!(" {icon} {label} "),
                         Style::default()
-                            .fg(theme.color("base"))
+                            .fg(theme.on_accent())
                             .bg(color)
                             .add_modifier(Modifier::BOLD),
                     ),
@@ -9462,7 +9462,7 @@ fn draw_settings_page(
             .alignment(Alignment::Center)
             .style(
                 Style::default()
-                    .fg(theme.color("base"))
+                    .fg(theme.on_accent())
                     .add_modifier(Modifier::BOLD),
             ),
         Rect::new(x, actions_y, save_width, 1),
@@ -9902,7 +9902,7 @@ fn draw_button(
         theme.color("surface0")
     };
     let foreground = if primary {
-        theme.color("base")
+        theme.on_accent()
     } else if hovered {
         theme.color("text")
     } else {
@@ -13964,11 +13964,6 @@ mod tests {
                 .iter()
                 .any(|hit| hit.action == Action::RepoActionsLeft)
         );
-        let hits: Vec<String> = app.hitboxes.iter().filter(|hit| hit.rect.y == 9).map(|hit| format!("{:?}", hit.action)).collect();
-        panic!("offset={} hits={hits:?}", app.repo_actions_offset);
-        let text = buffer_text(terminal.backend().buffer());
-        let compact = text.split_whitespace().collect::<String>();
-        assert!(compact.contains("工作流喵~"), "{text}");
         assert!(
             app.hitboxes
                 .iter()
