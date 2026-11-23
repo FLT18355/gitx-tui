@@ -1072,8 +1072,6 @@ pub struct App {
     pub cache_row: usize,
     pub page: Page,
     pub return_page: Page,
-    pub anim_page: Page,
-    pub page_anim_started: Option<Instant>,
     pub overlay: Option<Overlay>,
     pub palette_input: TextInput,
     pub palette_selected: usize,
@@ -1397,8 +1395,6 @@ impl App {
             cache_row: 0,
             page: start_page,
             return_page: start_page,
-            anim_page: start_page,
-            page_anim_started: None,
             overlay: None,
             palette_input: TextInput::new(""),
             palette_selected: 0,
@@ -4539,7 +4535,6 @@ impl App {
     }
 
     pub fn tick(&mut self) {
-        self.sync_page_animation();
         if let Some(pending) = self.pending_detail.take() {
             if pending.at.elapsed() >= Duration::from_millis(220) {
                 self.fetch_detail_if_needed(pending.repo, false);
@@ -4672,25 +4667,6 @@ impl App {
 
     pub fn spinner(&self) -> &'static str {
         format::spinner(self.started_at.elapsed().as_millis() as u64 / 120)
-    }
-
-    pub fn sync_page_animation(&mut self) {
-        if self.page != self.anim_page {
-            self.anim_page = self.page;
-            self.page_anim_started = Some(Instant::now());
-        }
-    }
-
-    pub fn page_transition_offset(&self, max: u16) -> u16 {
-        let Some(start) = self.page_anim_started else {
-            return 0;
-        };
-        let progress = start.elapsed().as_millis() as f32 / 240.0;
-        if progress >= 1.0 {
-            return 0;
-        }
-        let eased = 1.0 - (1.0 - progress).powi(3);
-        ((1.0 - eased) * max as f32).round() as u16
     }
 
     pub fn set_status(&mut self, kind: StatusKind, text: &str) {
@@ -10974,20 +10950,6 @@ mod tests {
         assert!(!app.config.gradients);
         assert!(!app.theme.gradients);
         assert!(app.config_dirty);
-        let _ = std::fs::remove_dir_all(root);
-    }
-
-    #[test]
-    fn page_change_starts_slide_animation() {
-        let root = std::env::temp_dir().join(format!("gitx-page-anim-{}", std::process::id()));
-        let paths = Paths::for_test(root.join("config"), root.join("cache"));
-        let mut app = App::settings(paths, None);
-        app.page = Page::Home;
-        assert_eq!(app.page_transition_offset(14), 0);
-        app.tick();
-        assert!(app.page_transition_offset(14) > 0);
-        app.page_anim_started = Some(Instant::now() - Duration::from_millis(300));
-        assert_eq!(app.page_transition_offset(14), 0);
         let _ = std::fs::remove_dir_all(root);
     }
 

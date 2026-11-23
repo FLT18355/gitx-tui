@@ -39,51 +39,29 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
     .split(area);
     let mut hits = Vec::new();
     app.layout = LayoutRects::default();
-    let slide = app.page_transition_offset(14);
-    let page_area = Rect::new(
-        chunks[1].x + slide,
-        chunks[1].y,
-        chunks[1].width.saturating_sub(slide),
-        chunks[1].height,
-    );
-    if slide > 0 {
-        for row in 0..chunks[1].height {
-            let t = row as f32 / chunks[1].height.max(1) as f32;
-            let color = if theme.gradients {
-                color_mix(theme.color("blue"), theme.color("mauve"), t)
-            } else {
-                theme.color("blue")
-            };
-            fill(
-                frame,
-                Rect::new(chunks[1].x, chunks[1].y + row, 1, 1),
-                color,
-            );
-        }
-    }
     draw_header(frame, app, &theme, chunks[0], &mut hits);
     match app.page {
-        Page::Home => draw_home_page(frame, app, &theme, page_area, &mut hits),
-        Page::Repositories => draw_repositories_page(frame, app, &theme, page_area, &mut hits),
-        Page::Starred => draw_starred_page(frame, app, &theme, page_area, &mut hits),
-        Page::Search => draw_search_page(frame, app, &theme, page_area, &mut hits),
-        Page::Trending => draw_trending_page(frame, app, &theme, page_area, &mut hits),
-        Page::Account => draw_account_page(frame, app, &theme, page_area, &mut hits),
-        Page::Profile => draw_profile_page(frame, app, &theme, page_area, &mut hits),
-        Page::Notifications => draw_notifications_page(frame, app, &theme, page_area, &mut hits),
-        Page::Settings => draw_settings_page(frame, app, &theme, page_area, &mut hits),
-        Page::Insights => draw_insights_page(frame, app, &theme, page_area, &mut hits),
-        Page::Repo => draw_repo_page(frame, app, &theme, page_area, &mut hits),
-        Page::Actions => draw_actions_page(frame, app, &theme, page_area, &mut hits),
-        Page::Issues => draw_issues_page(frame, app, &theme, page_area, &mut hits),
-        Page::Commits => draw_commits_page(frame, app, &theme, page_area, &mut hits),
-        Page::ReleaseDetail => draw_release_page(frame, app, &theme, page_area, &mut hits),
-        Page::Tags => draw_tags_page(frame, app, &theme, page_area, &mut hits),
-        Page::IssueDetail => draw_issue_thread_page(frame, app, &theme, page_area, &mut hits),
-        Page::Gists => draw_gists_page(frame, app, &theme, page_area, &mut hits),
-        Page::Compare => draw_compare_page(frame, app, &theme, page_area, &mut hits),
-        Page::Files => draw_file_page(frame, app, &theme, page_area, &mut hits),
-        Page::Network => draw_network_page(frame, app, &theme, page_area, &mut hits),
+        Page::Home => draw_home_page(frame, app, &theme, chunks[1], &mut hits),
+        Page::Repositories => draw_repositories_page(frame, app, &theme, chunks[1], &mut hits),
+        Page::Starred => draw_starred_page(frame, app, &theme, chunks[1], &mut hits),
+        Page::Search => draw_search_page(frame, app, &theme, chunks[1], &mut hits),
+        Page::Trending => draw_trending_page(frame, app, &theme, chunks[1], &mut hits),
+        Page::Account => draw_account_page(frame, app, &theme, chunks[1], &mut hits),
+        Page::Profile => draw_profile_page(frame, app, &theme, chunks[1], &mut hits),
+        Page::Notifications => draw_notifications_page(frame, app, &theme, chunks[1], &mut hits),
+        Page::Settings => draw_settings_page(frame, app, &theme, chunks[1], &mut hits),
+        Page::Insights => draw_insights_page(frame, app, &theme, chunks[1], &mut hits),
+        Page::Repo => draw_repo_page(frame, app, &theme, chunks[1], &mut hits),
+        Page::Actions => draw_actions_page(frame, app, &theme, chunks[1], &mut hits),
+        Page::Issues => draw_issues_page(frame, app, &theme, chunks[1], &mut hits),
+        Page::Commits => draw_commits_page(frame, app, &theme, chunks[1], &mut hits),
+        Page::ReleaseDetail => draw_release_page(frame, app, &theme, chunks[1], &mut hits),
+        Page::Tags => draw_tags_page(frame, app, &theme, chunks[1], &mut hits),
+        Page::IssueDetail => draw_issue_thread_page(frame, app, &theme, chunks[1], &mut hits),
+        Page::Gists => draw_gists_page(frame, app, &theme, chunks[1], &mut hits),
+        Page::Compare => draw_compare_page(frame, app, &theme, chunks[1], &mut hits),
+        Page::Files => draw_file_page(frame, app, &theme, chunks[1], &mut hits),
+        Page::Network => draw_network_page(frame, app, &theme, chunks[1], &mut hits),
     }
     draw_footer(frame, app, &theme, chunks[2], &hits);
 
@@ -9436,268 +9414,162 @@ fn draw_settings_page(
         Rect::new(inner.x, inner.y + 1, inner.width, 1),
     );
     let actions_y = inner.y + inner.height.saturating_sub(2);
-    let mut y = inner.y + 2;
-
-    frame.render_widget(
-        Paragraph::new(format!(
-            "{} 配置文件  {}喵~",
-            icons::TERMINAL,
-            format::truncate(
-                &app.config_file_label(),
-                inner.width.saturating_sub(14) as usize
-            )
-        ))
-        .style(Style::default().fg(theme.color("overlay0"))),
-        Rect::new(inner.x, y, inner.width, 1),
+    let y = inner.y + 2;
+    let gap = 2_u16;
+    let theme_width = (inner.width.saturating_mul(2) / 5).max(26);
+    let left_column = Rect::new(inner.x, y, theme_width, actions_y.saturating_sub(y));
+    let right_column = Rect::new(
+        inner.x + theme_width + gap,
+        y,
+        inner.width.saturating_sub(theme_width + gap),
+        actions_y.saturating_sub(y),
     );
-    y += 2;
 
-    if y + 5 < actions_y {
-        let theme_header = icons::label(icons::PALETTE, "主题喵~");
-        let theme_offset = format::text_width(&theme_header) as u16 + 2;
-        frame.render_widget(
-            Paragraph::new(theme_header).style(
+    let themes = app.themes.clone();
+    let theme_header = icons::label(icons::PALETTE, "主题喵~");
+    frame.render_widget(
+        Paragraph::new(Line::from(vec![
+            Span::styled(
+                theme_header,
                 Style::default()
                     .fg(theme.color("text"))
                     .add_modifier(Modifier::BOLD),
             ),
-            Rect::new(inner.x, y, inner.width, 1),
-        );
-        frame.render_widget(
-            Paragraph::new(
-                "Catppuccin 五套和自定义主题，点一下就能换喵~ 自定义放 ~/.config/gitx-tui/themes/",
-            )
-            .style(Style::default().fg(theme.color("overlay0"))),
-            Rect::new(
-                inner.x + theme_offset,
-                y,
-                inner.width.saturating_sub(theme_offset),
-                1,
+            Span::styled(
+                "  点一下就换喵~",
+                Style::default().fg(theme.color("overlay0")),
             ),
+        ])),
+        Rect::new(left_column.x, y, left_column.width, 1),
+    );
+    let theme_rows = left_column.height.saturating_sub(2) as usize;
+    for (index, flavor) in themes.iter().take(theme_rows).enumerate() {
+        draw_theme_row(
+            frame,
+            app,
+            theme,
+            hits,
+            Rect::new(left_column.x, y + 1 + index as u16, left_column.width, 1),
+            flavor,
         );
-        y += 1;
-        let themes = app.themes.clone();
-        let gap = 1_u16;
-        let columns = 4_u16;
-        let card_width = (inner.width.saturating_sub(gap * (columns - 1))) / columns;
-        let mut index = 0;
-        while index < themes.len() && y + 4 <= actions_y && card_width >= 12 {
-            for column in 0..columns {
-                if index >= themes.len() {
-                    break;
-                }
-                let rect = Rect::new(inner.x + column * (card_width + gap), y, card_width, 4);
-                if rect.x + rect.width > inner.x + inner.width {
-                    break;
-                }
-                draw_theme_card(frame, app, theme, rect, &themes[index], hits);
-                index += 1;
-            }
-            y += 5;
-        }
+    }
+    let note_y = y + 1 + themes.len().min(theme_rows) as u16;
+    if note_y < actions_y {
+        frame.render_widget(
+            Paragraph::new(format!(
+                "{} 自定义主题放 ~/.config/gitx-tui/themes/",
+                icons::THEME
+            ))
+            .style(Style::default().fg(theme.color("overlay0"))),
+            Rect::new(left_column.x, note_y, left_column.width, 1),
+        );
+    }
+    if note_y + 1 < actions_y {
+        frame.render_widget(
+            Paragraph::new(format!(
+                "{} {}",
+                icons::TERMINAL,
+                format::truncate(
+                    &app.config_file_label(),
+                    left_column.width.saturating_sub(3) as usize
+                )
+            ))
+            .style(Style::default().fg(theme.color("overlay0"))),
+            Rect::new(left_column.x, note_y + 1, left_column.width, 1),
+        );
     }
 
-    if y + 6 < actions_y {
-        let gap = 2_u16;
-        let column_width = (inner.width.saturating_sub(gap)) / 2;
-        let left_column = Rect::new(inner.x, y, column_width, actions_y - y);
-        let right_column = Rect::new(
-            inner.x + column_width + gap,
-            y,
-            inner.width.saturating_sub(column_width + gap),
-            actions_y - y,
-        );
-
-        let preview_header = icons::label(icons::BOOK, "仓库预览喵~");
-        let preview_offset = format::text_width(&preview_header) as u16 + 2;
-        frame.render_widget(
-            Paragraph::new(preview_header).style(
-                Style::default()
-                    .fg(theme.color("text"))
-                    .add_modifier(Modifier::BOLD),
-            ),
-            Rect::new(left_column.x, y, left_column.width, 1),
-        );
-        frame.render_widget(
-            Paragraph::new("默认关闭，人家不会偷偷去取喵~")
-                .style(Style::default().fg(theme.color("overlay0"))),
-            Rect::new(
-                left_column.x + preview_offset,
-                y,
-                left_column.width.saturating_sub(preview_offset),
-                1,
-            ),
-        );
+    let row = |offset: u16| Rect::new(right_column.x, y + offset, right_column.width, 1);
+    if y < actions_y {
         draw_toggle_row(
             frame,
             app,
             theme,
             hits,
-            Rect::new(left_column.x, y + 1, left_column.width, 1),
+            row(0),
             1,
             "文件树预览喵~",
             app.config.show_file_tree,
             Action::ToggleFileTree,
         );
+    }
+    if y + 1 < actions_y {
         draw_toggle_row(
             frame,
             app,
             theme,
             hits,
-            Rect::new(left_column.x, y + 2, left_column.width, 1),
+            row(1),
             2,
             "README 预览喵~",
             app.config.show_readme,
             Action::ToggleReadme,
         );
+    }
+    if y + 2 < actions_y {
         draw_toggle_row(
             frame,
             app,
             theme,
             hits,
-            Rect::new(left_column.x, y + 3, left_column.width, 1),
+            row(2),
             3,
             "透明背景喵~",
             app.config.transparent,
             Action::ToggleTransparent,
         );
+    }
+    if y + 3 < actions_y {
         draw_toggle_row(
             frame,
             app,
             theme,
             hits,
-            Rect::new(left_column.x, y + 4, left_column.width, 1),
+            row(3),
             4,
             "渐变效果喵~",
             app.config.gradients,
             Action::ToggleGradients,
         );
-        frame.render_widget(
-            Paragraph::new(icons::label(icons::DOWNLOAD, "下载喵~")).style(
-                Style::default()
-                    .fg(theme.color("text"))
-                    .add_modifier(Modifier::BOLD),
-            ),
-            Rect::new(left_column.x, y + 6, left_column.width, 1),
-        );
-        draw_download_dir_row(
-            frame,
-            app,
-            theme,
-            hits,
-            Rect::new(left_column.x, y + 7, left_column.width, 1),
-        );
+    }
+    if y + 4 < actions_y {
+        draw_download_dir_row(frame, app, theme, hits, row(4));
+    }
+    if y + 5 < actions_y {
         let open_dir = icons::label(icons::DOWNLOAD_DIR, "打开下载目录喵~");
         let open_width = format::text_width(&open_dir) as u16 + 4;
-        if y + 8 < actions_y {
-            draw_button(
-                frame,
-                app,
-                theme,
-                hits,
-                Rect::new(left_column.x, y + 8, open_width, 1),
-                &open_dir,
-                Action::OpenDownloadDir,
-                false,
-            );
-            frame.render_widget(
-                Paragraph::new("同名文件会自动改名，不会覆盖旧的哦喵~")
-                    .style(Style::default().fg(theme.color("overlay0"))),
-                Rect::new(left_column.x, y + 9, left_column.width.saturating_sub(2), 1),
-            );
-        }
-
-        let network_header = icons::label(icons::NETWORK, "网络喵~");
-        let network_offset = format::text_width(&network_header) as u16 + 2;
-        frame.render_widget(
-            Paragraph::new(network_header).style(
-                Style::default()
-                    .fg(theme.color("text"))
-                    .add_modifier(Modifier::BOLD),
-            ),
-            Rect::new(right_column.x, y, right_column.width, 1),
-        );
-        frame.render_widget(
-            Paragraph::new("公开接口先走代理，认证请求直连 GitHub 哦喵~")
-                .style(Style::default().fg(theme.color("overlay0"))),
-            Rect::new(
-                right_column.x + network_offset,
-                y,
-                right_column.width.saturating_sub(network_offset),
-                1,
-            ),
-        );
-        draw_proxy_row(
+        draw_button(
             frame,
             app,
             theme,
             hits,
-            Rect::new(right_column.x, y + 1, right_column.width, 1),
+            Rect::new(right_column.x, y + 5, open_width, 1),
+            &open_dir,
+            Action::OpenDownloadDir,
+            false,
         );
-        let cache_header = icons::label(icons::DATABASE, "缓存喵~");
-        let cache_offset = format::text_width(&cache_header) as u16 + 2;
-        frame.render_widget(
-            Paragraph::new(cache_header).style(
-                Style::default()
-                    .fg(theme.color("text"))
-                    .add_modifier(Modifier::BOLD),
-            ),
-            Rect::new(right_column.x, y + 3, right_column.width, 1),
-        );
-        frame.render_widget(
-            Paragraph::new(format!(
-                "{} 个文件 · {}喵~",
-                app.cache_stats.files,
-                format::format_size(app.cache_stats.bytes)
-            ))
-            .style(Style::default().fg(theme.color("overlay0"))),
-            Rect::new(
-                right_column.x + cache_offset,
-                y + 3,
-                right_column.width.saturating_sub(cache_offset),
-                1,
-            ),
-        );
-        for (index, (label, kind)) in [
-            ("仓库列表喵~", TtlKind::Repositories),
-            ("详情与发行版喵~", TtlKind::Detail),
-            ("搜索结果喵~", TtlKind::Search),
-        ]
-        .into_iter()
-        .enumerate()
-        {
-            if y + 4 + index as u16 >= actions_y {
-                break;
-            }
-            draw_ttl_row(
-                frame,
-                app,
-                theme,
-                hits,
-                Rect::new(right_column.x, y + 4 + index as u16, right_column.width, 1),
-                label,
-                kind,
-                7 + index,
-            );
+    }
+    if y + 6 < actions_y {
+        draw_proxy_row(frame, app, theme, hits, row(6));
+    }
+    for (index, (label, kind)) in [
+        ("仓库列表缓存喵~", TtlKind::Repositories),
+        ("详情缓存喵~", TtlKind::Detail),
+        ("搜索缓存喵~", TtlKind::Search),
+    ]
+    .into_iter()
+    .enumerate()
+    {
+        let offset = 7 + index as u16;
+        if y + offset < actions_y {
+            draw_ttl_row(frame, app, theme, hits, row(offset), label, kind, 7 + index);
         }
-        if y + 7 < actions_y {
-            draw_commit_limit_row(
-                frame,
-                app,
-                theme,
-                hits,
-                Rect::new(right_column.x, y + 7, right_column.width, 1),
-            );
-        }
-        if y + 8 < actions_y {
-            draw_default_page_row(
-                frame,
-                app,
-                theme,
-                hits,
-                Rect::new(right_column.x, y + 8, right_column.width, 1),
-            );
-        }
+    }
+    if y + 10 < actions_y {
+        draw_commit_limit_row(frame, app, theme, hits, row(10));
+    }
+    if y + 11 < actions_y {
+        draw_default_page_row(frame, app, theme, hits, row(11));
     }
 
     let mut x = inner.x;
@@ -9858,13 +9730,13 @@ fn draw_download_dir_row(
     register(hits, rect, Action::SetSettingsRow(5));
 }
 
-fn draw_theme_card(
+fn draw_theme_row(
     frame: &mut Frame,
     app: &App,
     theme: &Theme,
+    hits: &mut Vec<HitBox>,
     area: Rect,
     flavor: &str,
-    hits: &mut Vec<HitBox>,
 ) {
     let selected = app.theme.flavor == flavor;
     let action = Action::SetTheme(flavor.to_string());
@@ -9879,48 +9751,51 @@ fn draw_theme_card(
     } else {
         theme.color("blue")
     };
-    let bg = if selected {
-        theme.color("surface0")
+    if selected || hovered {
+        fill(frame, area, theme.color("surface0"));
+    }
+    let icon = if selected {
+        icons::CHECK
     } else {
-        theme.color("mantle")
+        icons::PALETTE
     };
-    fill(frame, area, bg);
-    frame.render_widget(
-        Block::new()
-            .borders(Borders::ALL)
-            .border_style(Style::default().fg(if selected {
-                accent
-            } else if hovered {
-                theme.color("surface2")
-            } else {
-                theme.color("surface1")
-            })),
-        area,
+    let label = format::truncate(
+        preview.display_name(),
+        area.width.saturating_sub(14) as usize,
     );
-    let label = preview.display_name().to_string();
     frame.render_widget(
-        Paragraph::new(label).style(
-            Style::default()
-                .fg(if selected {
+        Paragraph::new(Line::from(vec![
+            Span::styled(
+                format!(" {icon} "),
+                Style::default().fg(if selected {
                     accent
                 } else {
-                    theme.color("text")
-                })
-                .add_modifier(Modifier::BOLD),
-        ),
-        Rect::new(area.x + 2, area.y + 1, area.width.saturating_sub(4), 1),
+                    theme.color("overlay0")
+                }),
+            ),
+            Span::styled(
+                label,
+                Style::default()
+                    .fg(if selected {
+                        accent
+                    } else {
+                        theme.color("text")
+                    })
+                    .add_modifier(Modifier::BOLD),
+            ),
+        ])),
+        area,
     );
-    let colors = [
-        "base", "surface1", "blue", "mauve", "green", "peach", "red", "text",
-    ];
-    let mut swatches = Vec::new();
-    for name in colors {
-        swatches.push(Span::styled("  ", Style::default().bg(preview.color(name))));
+    if area.width > 26 {
+        let swatches = ["blue", "mauve", "green", "peach"]
+            .into_iter()
+            .map(|name| Span::styled("  ", Style::default().bg(preview.color(name))))
+            .collect::<Vec<_>>();
+        frame.render_widget(
+            Paragraph::new(Line::from(swatches)).alignment(Alignment::Right),
+            Rect::new(area.x, area.y, area.width.saturating_sub(1), 1),
+        );
     }
-    frame.render_widget(
-        Paragraph::new(Line::from(swatches)),
-        Rect::new(area.x + 2, area.y + 2, area.width.saturating_sub(4), 1),
-    );
     register(hits, area, action);
 }
 
@@ -14299,6 +14174,34 @@ mod tests {
                 .iter()
                 .any(|hit| hit.action == Action::OpenActions)
         );
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn settings_page_fits_short_terminal() {
+        let dir = std::env::temp_dir().join(format!("gitx-settings-fit-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        let paths = crate::config::Paths::for_test(dir.join("config"), dir.join("cache"));
+        let mut app = App::settings(paths, None);
+        let mut terminal = ratatui::Terminal::new(ratatui::backend::TestBackend::new(100, 24))
+            .expect("test terminal");
+        terminal
+            .draw(|frame| draw(frame, &mut app))
+            .expect("render compact settings");
+        let text = buffer_text(terminal.backend().buffer())
+            .split_whitespace()
+            .collect::<String>();
+        for label in [
+            "主题喵~",
+            "文件树预览",
+            "渐变效果",
+            "下载目录",
+            "API代理",
+            "默认页",
+            "保存设置",
+        ] {
+            assert!(text.contains(label), "missing {label}");
+        }
         let _ = std::fs::remove_dir_all(dir);
     }
 
