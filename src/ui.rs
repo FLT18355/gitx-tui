@@ -103,13 +103,15 @@ fn draw_header(
     hits: &mut Vec<HitBox>,
 ) {
     fill(frame, area, theme.color("mantle"));
+    let anim = animation_phase(app, 3200);
+    let wave = animation_wave(app, 1600);
     let brand = Rect::new(area.x + 2, area.y, area.width.saturating_sub(4), 1);
     let mut title = vec![Span::styled(
         format!("{} ", icons::GITHUB),
         Style::default().fg(theme.color("blue")),
     )];
     title.extend(
-        gradient_segments(
+        gradient_segments_phase(
             &[
                 (
                     "gxt".to_string(),
@@ -119,6 +121,7 @@ fn draw_header(
             ],
             theme.color("blue"),
             theme.color("mauve"),
+            anim,
         )
         .into_iter()
         .map(|(text, style)| Span::styled(text, style)),
@@ -138,11 +141,12 @@ fn draw_header(
             Rect::new(area.x + 2, area.y + 1, area.width.saturating_sub(4), 1),
         );
         frame.render_widget(
-            Paragraph::new(gradient_line(
+            Paragraph::new(gradient_line_phase(
                 area.width as usize,
                 "─",
                 theme.color("surface1"),
                 theme.color("overlay0"),
+                anim,
             )),
             Rect::new(area.x, area.y + 2, area.width, 1),
         );
@@ -326,7 +330,7 @@ fn draw_header(
         fill(frame, rect, bg);
         let style = if selected {
             Style::default()
-                .fg(theme.color("blue"))
+                .fg(color_mix(theme.color("blue"), theme.color("mauve"), wave))
                 .add_modifier(Modifier::BOLD)
         } else if hovered {
             Style::default().fg(theme.color("text"))
@@ -356,21 +360,23 @@ fn draw_header(
         );
     }
     frame.render_widget(
-        Paragraph::new(gradient_line(
+        Paragraph::new(gradient_line_phase(
             area.width as usize,
             "─",
             theme.color("surface1"),
             theme.color("overlay0"),
+            anim,
         )),
         Rect::new(area.x, area.y + 2, area.width, 1),
     );
     if let Some(rect) = selected_rect {
         frame.render_widget(
-            Paragraph::new(Line::from(gradient_chars(
+            Paragraph::new(Line::from(gradient_chars_phase(
                 rect.width as usize,
                 "━",
                 theme.color("blue"),
                 theme.color("mauve"),
+                anim,
             ))),
             Rect::new(rect.x, area.y + 2, rect.width, 1),
         );
@@ -379,14 +385,16 @@ fn draw_header(
 
 fn draw_footer(frame: &mut Frame, app: &App, theme: &Theme, area: Rect, _hits: &[HitBox]) {
     fill(frame, area, theme.color("crust"));
+    let busy_color = color_mix(
+        theme.color("peach"),
+        theme.color("yellow"),
+        animation_wave(app, 1400),
+    );
     let status_rect = Rect::new(area.x + 2, area.y, area.width.saturating_sub(26), 1);
     let (text, color) = if let Some(download) = app.download_summary() {
-        (
-            format!("{}  {}", app.spinner(), download),
-            theme.color("peach"),
-        )
+        (format!("{}  {}", app.spinner(), download), busy_color)
     } else if let Some(busy) = app.busy_text() {
-        (format!("{}  {}", app.spinner(), busy), theme.color("peach"))
+        (format!("{}  {}", app.spinner(), busy), busy_color)
     } else {
         let (icon, color) = match app.status.kind {
             StatusKind::Info => (icons::INFO, theme.color("subtext0")),
@@ -7305,9 +7313,14 @@ fn draw_file_tree_panel(
     if let Some(loading) = app.tree_loading.as_ref()
         && loading == &repo.display_full_name()
     {
+        let loading_color = color_mix(
+            theme.color("peach"),
+            theme.color("yellow"),
+            animation_wave(app, 1200),
+        );
         frame.render_widget(
             Paragraph::new(format!("{} 人家正在翻文件树喵~...", app.spinner()))
-                .style(Style::default().fg(theme.color("peach"))),
+                .style(Style::default().fg(loading_color)),
             Rect::new(body.x, body.y, body.width, 1),
         );
         return;
@@ -8081,14 +8094,35 @@ fn color_mix(start: Color, end: Color, t: f32) -> Color {
     Color::Rgb(mix(sr, er), mix(sg, eg), mix(sb, eb))
 }
 
+fn animation_phase(app: &App, period_ms: u64) -> f32 {
+    let period = period_ms.max(1);
+    (app.started_at.elapsed().as_millis() as u64 % period) as f32 / period as f32
+}
+
+fn animation_wave(app: &App, period_ms: u64) -> f32 {
+    let phase = animation_phase(app, period_ms);
+    1.0 - (phase * 2.0 - 1.0).abs()
+}
+
 fn gradient_chars(count: usize, glyph: &str, start: Color, end: Color) -> Vec<Span<'static>> {
+    gradient_chars_phase(count, glyph, start, end, 0.0)
+}
+
+fn gradient_chars_phase(
+    count: usize,
+    glyph: &str,
+    start: Color,
+    end: Color,
+    phase: f32,
+) -> Vec<Span<'static>> {
     if count == 0 {
         return Vec::new();
     }
     let denominator = count.saturating_sub(1).max(1) as f32;
     (0..count)
         .map(|index| {
-            let t = index as f32 / denominator;
+            let shifted = (index as f32 / denominator + phase).rem_euclid(1.0);
+            let t = 1.0 - (shifted * 2.0 - 1.0).abs();
             Span::styled(
                 glyph.to_string(),
                 Style::default().fg(color_mix(start, end, t)),
@@ -8101,10 +8135,29 @@ fn gradient_line(count: usize, glyph: &str, start: Color, end: Color) -> Line<'s
     Line::from(gradient_chars(count.max(1), glyph, start, end))
 }
 
+fn gradient_line_phase(
+    count: usize,
+    glyph: &str,
+    start: Color,
+    end: Color,
+    phase: f32,
+) -> Line<'static> {
+    Line::from(gradient_chars_phase(count.max(1), glyph, start, end, phase))
+}
+
 fn gradient_segments(
     segments: &[(String, Style)],
     start: Color,
     end: Color,
+) -> Vec<(String, Style)> {
+    gradient_segments_phase(segments, start, end, 0.0)
+}
+
+fn gradient_segments_phase(
+    segments: &[(String, Style)],
+    start: Color,
+    end: Color,
+    phase: f32,
 ) -> Vec<(String, Style)> {
     let total = segments
         .iter()
@@ -8115,11 +8168,12 @@ fn gradient_segments(
     let mut index = 0;
     for (text, style) in segments {
         for ch in text.chars() {
-            let t = if total > 1 {
-                index as f32 / (total - 1) as f32
+            let shifted = if total > 1 {
+                (index as f32 / (total - 1) as f32 + phase).rem_euclid(1.0)
             } else {
-                0.0
+                phase.rem_euclid(1.0)
             };
+            let t = 1.0 - (shifted * 2.0 - 1.0).abs();
             out.push((ch.to_string(), style.fg(color_mix(start, end, t))));
             index += 1;
         }
@@ -9696,6 +9750,11 @@ fn draw_theme_card(
     let action = Action::SetTheme(flavor.to_string());
     let hovered = app.hover.as_ref() == Some(&action);
     let preview = Theme::load(&app.paths, flavor);
+    let accent = color_mix(
+        theme.color("blue"),
+        theme.color("mauve"),
+        animation_wave(app, 1600),
+    );
     let bg = if selected {
         theme.color("surface0")
     } else {
@@ -9706,7 +9765,7 @@ fn draw_theme_card(
         Block::new()
             .borders(Borders::ALL)
             .border_style(Style::default().fg(if selected {
-                theme.color("blue")
+                accent
             } else if hovered {
                 theme.color("surface2")
             } else {
@@ -9719,7 +9778,7 @@ fn draw_theme_card(
         Paragraph::new(label).style(
             Style::default()
                 .fg(if selected {
-                    theme.color("blue")
+                    accent
                 } else {
                     theme.color("text")
                 })
@@ -9974,23 +10033,26 @@ fn draw_button(
     primary: bool,
 ) {
     let hovered = app.hover.as_ref() == Some(&action);
+    let wave = animation_wave(app, 1100);
+    let primary_hover = color_mix(theme.color("blue"), theme.color("sapphire"), wave);
+    let secondary_hover = color_mix(theme.color("surface1"), theme.color("surface2"), wave);
     let background = if theme.transparent {
         Color::Reset
     } else if primary {
         if hovered {
-            theme.color("sapphire")
+            primary_hover
         } else {
             theme.color("blue")
         }
     } else if hovered {
-        theme.color("surface1")
+        secondary_hover
     } else {
         theme.color("surface0")
     };
     let foreground = if theme.transparent {
         if primary {
             if hovered {
-                theme.color("sapphire")
+                primary_hover
             } else {
                 theme.color("blue")
             }
@@ -14106,6 +14168,24 @@ mod tests {
                 .any(|hit| hit.action == Action::OpenActions)
         );
         let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn animated_gradients_shift_with_phase() {
+        let paths = crate::config::Paths::for_test("missing".into(), "missing".into());
+        let theme = Theme::load(&paths, "mocha");
+        let start = theme.color("blue");
+        let end = theme.color("mauve");
+        let first = gradient_chars_phase(12, "━", start, end, 0.0);
+        let shifted = gradient_chars_phase(12, "━", start, end, 0.5);
+        let wrapped = gradient_chars_phase(12, "━", start, end, 1.0);
+        assert!(
+            first
+                .iter()
+                .zip(&shifted)
+                .any(|(a, b)| a.style.fg != b.style.fg)
+        );
+        assert_eq!(first[0].style.fg, wrapped[0].style.fg);
     }
 
     #[test]
