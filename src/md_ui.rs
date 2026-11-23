@@ -1023,7 +1023,7 @@ fn draw_help(frame: &mut Frame, app: &mut MdApp, theme: &Theme, area: Rect) {
             "/ 输入关键词，Enter 确认，Esc 取消，Ctrl+U 清空喵~",
         ),
         ("排序喵~", "s 按路径 / 大小 / 时间排序喵~"),
-        ("换主题喵~", "t 循环 Catppuccin 四套主题，并写进配置喵~"),
+        ("换主题喵~", "t 循环 Catppuccin 五套主题，并写进配置喵~"),
         ("全屏喵~", "F 只留预览，Esc 或 F 再按一次回来喵~"),
         ("编辑喵~", "e 用 $VISUAL 或 $EDITOR 打开当前文件喵~"),
         ("刷新喵~", "r 重新扫描当前目录和子目录喵~"),

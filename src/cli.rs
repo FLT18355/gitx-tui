@@ -28,10 +28,6 @@ pub enum Command {
     Settings {
         theme: Option<String>,
     },
-    Local {
-        path: PathBuf,
-        theme: Option<String>,
-    },
     Status {
         path: PathBuf,
     },
@@ -193,11 +189,7 @@ where
         [one] if matches!(one.as_str(), "commits" | "branches" | "switch") => Err(format!(
             "{one} 后面还要带仓库或分支参数喵~敲 gxt --help 看看用法吧喵~"
         )),
-        [one] if one != "help" && one != "version" => Ok(Command::Local {
-            path: path(one),
-            theme,
-        }),
-        _ => Err("参数太多啦喵~敲 gxt --help 看看用法吧喵~".to_string()),
+        _ => Err("不认识这个参数喵~敲 gxt --help 看看用法吧喵~".to_string()),
     }
 }
 
@@ -216,10 +208,9 @@ fn validate_theme(value: String) -> Result<String, String> {
 pub fn print_help() {
     println!(
         "gxt {}\n\
-终端 GitHub 工作台与本地 git TUI喵~\n\n\
+终端 GitHub 工作台喵~\n\n\
 用法：\n\
   gxt [--theme <主题>]             打开 GitHub 工作台喵~\n\
-  gxt <路径> [--theme <主题>]      打开本地仓库 TUI喵~\n\
   gxt settings [--theme <主题>]    打开全局设置 TUI喵~\n\
   gxt release                      打开个人发行版发布 TUI喵~\n\
   gxt md [目录或文件]              打开 Markdown 预览器喵~\n\
@@ -235,7 +226,7 @@ pub fn print_help() {
   gxt doctor                       环境自检喵~\n\n\
 选项：\n\
   -n, --limit <条数>                log 显示条数，默认 20 喵~\n\
-  --theme <主题>                   latte / frappe / macchiato / mocha 或自定义主题名喵~\n\
+  --theme <主题>                   latte / frappe / macchiato / mocha / violet 或自定义主题名喵~\n\
   -h, --help                       显示本帮助喵~\n\
   -V, --version                    显示版本喵~\n\n\
 配置文件：~/.config/gitx-tui/config.toml\n\
@@ -269,11 +260,7 @@ mod tests {
                 theme: Some(theme)
             } if theme == "latte"
         ));
-        assert!(matches!(
-            parse(args(&["/tmp/demo", "--theme=mocha"])).unwrap(),
-            Command::Local { path, theme: Some(theme) }
-                if path == std::path::Path::new("/tmp/demo") && theme == "mocha"
-        ));
+        assert!(parse(args(&["/tmp/demo", "--theme=mocha"])).is_err());
         assert!(matches!(parse(args(&["--help"])).unwrap(), Command::Help));
         assert!(matches!(
             parse(args(&["release"])).unwrap(),

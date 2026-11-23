@@ -46,7 +46,7 @@ impl Default for Config {
     fn default() -> Self {
         Self {
             theme: "mocha".to_string(),
-            transparent: false,
+            transparent: true,
             proxy: DEFAULT_PROXY.to_string(),
             repos_ttl_secs: 300,
             detail_ttl_secs: 900,
@@ -253,7 +253,7 @@ mod tests {
                 .expect("old config");
         assert!(!config.show_file_tree);
         assert!(!config.show_readme);
-        assert!(!config.transparent);
+        assert!(config.transparent);
         assert_eq!(config.download_dir, default_download_dir());
     }
 

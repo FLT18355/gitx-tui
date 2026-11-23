@@ -3,12 +3,13 @@ use ratatui::style::Color;
 use std::collections::BTreeMap;
 use std::fs;
 
-pub const FLAVORS: [&str; 4] = ["latte", "frappe", "macchiato", "mocha"];
+pub const FLAVORS: [&str; 5] = ["latte", "frappe", "macchiato", "mocha", "violet"];
 
 const LATTE: &str = include_str!("../themes/latte.toml");
 const FRAPPE: &str = include_str!("../themes/frappe.toml");
 const MACCHIATO: &str = include_str!("../themes/macchiato.toml");
 const MOCHA: &str = include_str!("../themes/mocha.toml");
+const VIOLET: &str = include_str!("../themes/violet.toml");
 
 #[derive(Debug, Clone)]
 pub struct Theme {
@@ -117,10 +118,19 @@ impl Theme {
     }
 
     pub fn color(&self, name: &str) -> Color {
-        // Only `base` goes transparent: mantles, cards and overlays stay readable.
-        if self.transparent && name == "base" {
+        // Transparent mode drops every surface background; text accents stay colored.
+        if self.transparent
+            && matches!(
+                name,
+                "base" | "mantle" | "crust" | "surface0" | "surface1" | "surface2"
+            )
+        {
             return Color::Reset;
         }
+        self.raw(name)
+    }
+
+    fn raw(&self, name: &str) -> Color {
         self.colors
             .get(name)
             .copied()
@@ -130,11 +140,7 @@ impl Theme {
 
     /// Text drawn on top of an accent-colored button or pill.
     pub fn on_accent(&self) -> Color {
-        if self.transparent {
-            self.color("crust")
-        } else {
-            self.color("base")
-        }
+        self.raw("crust")
     }
 }
 
@@ -151,6 +157,7 @@ fn builtin(flavor: &str) -> &'static str {
         "latte" => LATTE,
         "frappe" => FRAPPE,
         "macchiato" => MACCHIATO,
+        "violet" => VIOLET,
         _ => MOCHA,
     }
 }
@@ -212,15 +219,18 @@ mod tests {
     }
 
     #[test]
-    fn transparent_base_follows_terminal() {
+    fn transparent_surfaces_follow_terminal() {
         let paths = Paths::for_test("missing".into(), "missing".into());
         let mut theme = Theme::load(&paths, "mocha");
         assert_ne!(theme.color("base"), Color::Reset);
         theme.transparent = true;
-        assert_eq!(theme.color("base"), Color::Reset);
-        assert_eq!(theme.on_accent(), theme.color("crust"));
-        assert_ne!(theme.color("mantle"), Color::Reset);
-        assert_ne!(theme.color("surface0"), Color::Reset);
+        for name in [
+            "base", "mantle", "crust", "surface0", "surface1", "surface2",
+        ] {
+            assert_eq!(theme.color(name), Color::Reset);
+        }
+        assert_eq!(theme.on_accent(), theme.raw("crust"));
+        assert_ne!(theme.color("text"), Color::Reset);
     }
 
     #[test]

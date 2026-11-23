@@ -9231,7 +9231,7 @@ fn draw_settings_page(
         );
         frame.render_widget(
             Paragraph::new(
-                "Catppuccin 四套和自定义主题，点一下就能换喵~ 自定义放 ~/.config/gitx-tui/themes/",
+                "Catppuccin 五套和自定义主题，点一下就能换喵~ 自定义放 ~/.config/gitx-tui/themes/",
             )
             .style(Style::default().fg(theme.color("overlay0"))),
             Rect::new(
@@ -9316,30 +9316,41 @@ fn draw_settings_page(
             app.config.show_readme,
             Action::ToggleReadme,
         );
+        draw_toggle_row(
+            frame,
+            app,
+            theme,
+            hits,
+            Rect::new(left_column.x, y + 3, left_column.width, 1),
+            3,
+            "透明背景喵~",
+            app.config.transparent,
+            Action::ToggleTransparent,
+        );
         frame.render_widget(
             Paragraph::new(icons::label(icons::DOWNLOAD, "下载喵~")).style(
                 Style::default()
                     .fg(theme.color("text"))
                     .add_modifier(Modifier::BOLD),
             ),
-            Rect::new(left_column.x, y + 4, left_column.width, 1),
+            Rect::new(left_column.x, y + 5, left_column.width, 1),
         );
         draw_download_dir_row(
             frame,
             app,
             theme,
             hits,
-            Rect::new(left_column.x, y + 5, left_column.width, 1),
+            Rect::new(left_column.x, y + 6, left_column.width, 1),
         );
         let open_dir = icons::label(icons::DOWNLOAD_DIR, "打开下载目录喵~");
         let open_width = format::text_width(&open_dir) as u16 + 4;
-        if y + 6 < actions_y {
+        if y + 7 < actions_y {
             draw_button(
                 frame,
                 app,
                 theme,
                 hits,
-                Rect::new(left_column.x, y + 6, open_width, 1),
+                Rect::new(left_column.x, y + 7, open_width, 1),
                 &open_dir,
                 Action::OpenDownloadDir,
                 false,
@@ -9347,7 +9358,7 @@ fn draw_settings_page(
             frame.render_widget(
                 Paragraph::new("同名文件会自动改名，不会覆盖旧的哦喵~")
                     .style(Style::default().fg(theme.color("overlay0"))),
-                Rect::new(left_column.x, y + 7, left_column.width.saturating_sub(2), 1),
+                Rect::new(left_column.x, y + 8, left_column.width.saturating_sub(2), 1),
             );
         }
 
@@ -9421,7 +9432,7 @@ fn draw_settings_page(
                 Rect::new(right_column.x, y + 4 + index as u16, right_column.width, 1),
                 label,
                 kind,
-                5 + index,
+                6 + index,
             );
         }
         if y + 7 < actions_y {
@@ -9445,29 +9456,18 @@ fn draw_settings_page(
     }
 
     let mut x = inner.x;
-    let save_action = Action::SaveConfig;
-    let save_hover = app.hover.as_ref() == Some(&save_action);
     let save_width = 18;
-    fill(
+    let save_label = format!("{} 保存设置喵~", icons::SAVE);
+    draw_button(
         frame,
+        app,
+        theme,
+        hits,
         Rect::new(x, actions_y, save_width, 1),
-        if save_hover {
-            theme.color("sapphire")
-        } else {
-            theme.color("blue")
-        },
+        &save_label,
+        Action::SaveConfig,
+        true,
     );
-    frame.render_widget(
-        Paragraph::new(format!("{} 保存设置喵~", icons::SAVE))
-            .alignment(Alignment::Center)
-            .style(
-                Style::default()
-                    .fg(theme.on_accent())
-                    .add_modifier(Modifier::BOLD),
-            ),
-        Rect::new(x, actions_y, save_width, 1),
-    );
-    register(hits, Rect::new(x, actions_y, save_width, 1), save_action);
     x += save_width + 1;
     let clear_action = Action::ClearCache;
     let clear_hover = app.hover.as_ref() == Some(&clear_action);
@@ -9563,7 +9563,7 @@ fn draw_download_dir_row(
     hits: &mut Vec<HitBox>,
     rect: Rect,
 ) {
-    if app.settings_row == 3 {
+    if app.settings_row == 4 {
         fill(frame, rect, theme.color("surface0"));
     }
     frame.render_widget(
@@ -9610,7 +9610,7 @@ fn draw_download_dir_row(
         edit_action,
         false,
     );
-    register(hits, rect, Action::SetSettingsRow(3));
+    register(hits, rect, Action::SetSettingsRow(4));
 }
 
 fn draw_theme_card(
@@ -9671,7 +9671,7 @@ fn draw_theme_card(
 }
 
 fn draw_proxy_row(frame: &mut Frame, app: &App, theme: &Theme, hits: &mut Vec<HitBox>, rect: Rect) {
-    if app.settings_row == 4 {
+    if app.settings_row == 5 {
         fill(frame, rect, theme.color("surface0"));
     }
     frame.render_widget(
@@ -9711,7 +9711,7 @@ fn draw_proxy_row(frame: &mut Frame, app: &App, theme: &Theme, hits: &mut Vec<Hi
         Action::StartProxyEdit,
         false,
     );
-    register(hits, rect, Action::SetSettingsRow(4));
+    register(hits, rect, Action::SetSettingsRow(5));
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -9774,7 +9774,7 @@ fn draw_commit_limit_row(
     hits: &mut Vec<HitBox>,
     area: Rect,
 ) {
-    if app.settings_row == 8 {
+    if app.settings_row == 9 {
         fill(frame, area, theme.color("surface0"));
     }
     frame.render_widget(
@@ -9819,7 +9819,7 @@ fn draw_default_page_row(
     hits: &mut Vec<HitBox>,
     area: Rect,
 ) {
-    if app.settings_row == 9 {
+    if app.settings_row == 10 {
         fill(frame, area, theme.color("surface0"));
     }
     let page = Page::from_default_name(&app.config.default_page);
@@ -9890,7 +9890,9 @@ fn draw_button(
     primary: bool,
 ) {
     let hovered = app.hover.as_ref() == Some(&action);
-    let background = if primary {
+    let background = if theme.transparent {
+        Color::Reset
+    } else if primary {
         if hovered {
             theme.color("sapphire")
         } else {
@@ -9901,7 +9903,19 @@ fn draw_button(
     } else {
         theme.color("surface0")
     };
-    let foreground = if primary {
+    let foreground = if theme.transparent {
+        if primary {
+            if hovered {
+                theme.color("sapphire")
+            } else {
+                theme.color("blue")
+            }
+        } else if hovered {
+            theme.color("text")
+        } else {
+            theme.color("subtext1")
+        }
+    } else if primary {
         theme.on_accent()
     } else if hovered {
         theme.color("text")
@@ -13920,6 +13934,42 @@ mod tests {
         let compact = text.split_whitespace().collect::<String>();
         assert!(!compact.contains("帮助喵~"));
         assert!(compact.contains("首页喵~"));
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn transparent_mode_resets_button_and_page_backgrounds() {
+        let dir = std::env::temp_dir().join(format!("gitx-transparent-ui-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        let paths = crate::config::Paths::for_test(dir.join("config"), dir.join("cache"));
+        let mut app = App::settings(paths, None);
+        let mut terminal = ratatui::Terminal::new(ratatui::backend::TestBackend::new(100, 36))
+            .expect("test terminal");
+        terminal
+            .draw(|frame| draw(frame, &mut app))
+            .expect("render transparent settings");
+        let buffer = terminal.backend().buffer();
+        assert_eq!(buffer.cell((0, 0)).expect("header cell").bg, Color::Reset);
+        let save = buffer
+            .content()
+            .iter()
+            .find(|cell| cell.symbol() == "保")
+            .expect("save button");
+        assert_eq!(save.bg, Color::Reset);
+
+        app.theme.transparent = false;
+        app.config.transparent = false;
+        terminal
+            .draw(|frame| draw(frame, &mut app))
+            .expect("render opaque settings");
+        let save = terminal
+            .backend()
+            .buffer()
+            .content()
+            .iter()
+            .find(|cell| cell.symbol() == "保")
+            .expect("opaque save button");
+        assert_ne!(save.bg, Color::Reset);
         let _ = std::fs::remove_dir_all(dir);
     }
 

@@ -8,10 +8,8 @@ mod config;
 mod format;
 mod icons;
 mod local;
-mod local_app;
 mod local_git;
 mod local_ops;
-mod local_ui;
 mod md_app;
 mod md_ui;
 mod model;
@@ -66,8 +64,7 @@ fn main() -> Result<()> {
         command @ (Command::Github { .. }
         | Command::Release
         | Command::Md { .. }
-        | Command::Settings { .. }
-        | Command::Local { .. }) => command,
+        | Command::Settings { .. }) => command,
     };
 
     let paths = Paths::discover();
@@ -86,7 +83,6 @@ fn main() -> Result<()> {
             let mut app = App::settings(paths, theme);
             run(&mut terminal, &mut app)
         }
-        Command::Local { path, theme } => local_app::run(&mut terminal, &path, theme),
         _ => unreachable!(),
     };
 

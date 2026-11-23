@@ -30,10 +30,6 @@ release-tui:
 settings:
     cargo run -- settings
 
-# 打开本地仓库 TUI
-local path=".":
-    cargo run -- {{path}}
-
 # 格式化代码
 fmt:
     cargo fmt

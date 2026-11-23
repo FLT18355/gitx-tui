@@ -2,7 +2,7 @@
 
 # 🐾 gitx-tui (`gxt`)
 
-**终端里的 GitHub 工作台和本地 git TUI**<br>
+**终端里的 GitHub 工作台**<br>
 *使用 Rust、ratatui 与 crossterm 写成喵~*
 
 [![Rust](https://img.shields.io/badge/Rust-2024-orange?style=flat-square&logo=rust)](https://www.rust-lang.org/)
@@ -27,8 +27,8 @@
 
 ## ✨ 关于
 
-**`gitx-tui`** 是你在终端里的 GitHub 工作台与本地 Git 管理器。
-GitHub 侧覆盖仓库、收藏、搜索、账号额度、仓库详情和 Actions；本地侧用 lazygit 风格查看改动、diff、分支、提交和标签，并支持暂存、提交、推送、拉取等全套操作。
+**`gitx-tui`** 是你在终端里的 GitHub 工作台。
+GitHub 侧覆盖仓库、收藏、搜索、账号额度、仓库详情和 Actions。
 
 界面全面使用 **Catppuccin 配色** 与 **Nerd Font 图标**，拒绝乱码，只留极客美学，没有 emoji 喵~
 
@@ -64,21 +64,6 @@ GitHub 侧覆盖仓库、收藏、搜索、账号额度、仓库详情和 Action
 </details>
 
 <details>
-<summary><b>💻 本地仓库 TUI (点击展开)</b></summary>
-
-- **多面板视图**：分支、标签、改动、提交、stash 五个列表加提交图谱页签，顶部渐变页签支持鼠标点击，支持分页和选择。
-- **差异预览**：选中文件、提交、分支、标签或 stash 时显示对应差异。
-- **暂存区管理**：暂存、取消暂存、全部暂存、全部取消暂存，逐行 blame 查看文件归属。
-- **提交与标签**：提交、amend、摘取（cherry-pick）、反转（revert）、创建/删除标签、推送标签、pull / pull --rebase，以及 `--force-with-lease` 安全强推。
-- **分支操作**：切换、合并、变基、改名、设置上游、删除选中分支，`Q` 中止进行中的合并或变基。
-- **Stash**：保存、恢复、应用和删除。
-- **提交图谱**：`7` 打开彩色提交图谱，展示全部分支和标签。
-- **导航与输入**：顶部渐变页签导航（`Tab` 循环、`1`~`7` 直达），底部快捷键随面板变化且支持鼠标点击；支持中文输入、横向滚动和显示宽度正确的光标。
-- **视觉统一**：沿用主 TUI 的渐变标题、页签下划线、分区渐变细线、会话计时和按语义着色的全站 Nerd Font 图标。
-
-</details>
-
-<details>
 <summary><b>📝 Markdown 预览器 (点击展开)</b></summary>
 
 - **扫描目录**：`gxt md [目录或文件]` 递归读取当前目录和子目录里的 `.md` / `.markdown` / `.mdx`，自动跳过 `.git`、`target`、`node_modules` 等目录。
@@ -105,7 +90,7 @@ GitHub 侧覆盖仓库、收藏、搜索、账号额度、仓库详情和 Action
 - **数据洞察**：`9` 或 `I` 查看语言分布、星标排行、通知与缓存小账本、GitHub API 额度条。
 - **主题工作室**：`T` 打开配色面板，预览色块并用 `Enter` 立即切换 Catppuccin 主题。
 - **随机探索**：`E` 从当前列表或收藏里随机打开一个仓库，专治选择困难喵~
-- **主题系统**：内置 Latte、Frappe、Macchiato、Mocha 四套 Catppuccin 配色，主题工作室可预览色块。
+- **主题系统**：内置 Latte、Frappe、Macchiato、Mocha、Violet 五套 Catppuccin 配色，主题工作室可预览色块。
 - **界面细节**：渐变标题与页签下划线、未读徽章、圆角统计卡、会话计时、猫咪空状态，以及按语义着色的全站 Nerd Font 图标；发行版搜索栏下方的分隔条与发行版行使用同一底色。
 - **统一条形图**：语言占比和账号 API 额度都使用首页同款图标 + 渐变进度条。
 - **发行版标签**：tag 使用彩底圆角标签，最新、预发布、草稿各有独立徽章。

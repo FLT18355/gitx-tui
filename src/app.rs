@@ -345,6 +345,7 @@ pub enum Action {
     StartDownloadDirEdit,
     ToggleFileTree,
     ToggleReadme,
+    ToggleTransparent,
     Ttl(TtlKind, i32),
     ClearCache,
     SaveConfig,
@@ -7293,7 +7294,7 @@ impl App {
         }
         if self.page == Page::Settings {
             if delta > 0 {
-                self.settings_row = (self.settings_row + 1).min(11);
+                self.settings_row = (self.settings_row + 1).min(12);
             } else {
                 self.settings_row = self.settings_row.saturating_sub(1);
             }
@@ -9136,7 +9137,7 @@ impl App {
                     return;
                 }
                 KeyCode::Tab => {
-                    self.settings_row = (self.settings_row + 1).min(11);
+                    self.settings_row = (self.settings_row + 1).min(12);
                     return;
                 }
                 KeyCode::BackTab => {
@@ -9451,7 +9452,7 @@ impl App {
             Page::Commits => self.move_commit_selection(1),
             Page::ReleaseDetail => self.move_release_asset_selection(1),
             Page::Notifications => self.move_notification_selection(1),
-            Page::Settings => self.settings_row = (self.settings_row + 1).min(11),
+            Page::Settings => self.settings_row = (self.settings_row + 1).min(12),
             Page::Home => self.move_home_selection(1),
             Page::IssueDetail => self.issue_scroll_by(1),
             Page::Gists => self.move_gist_selection(1),
@@ -9487,7 +9488,7 @@ impl App {
     fn key_end(&mut self) {
         match self.page {
             Page::Repo => self.set_repo_pane_scroll(u16::MAX),
-            Page::Settings => self.settings_row = 11,
+            Page::Settings => self.settings_row = 12,
             Page::Actions => {
                 self.select_action_run(self.action_runs.len().saturating_sub(1));
             }
@@ -9564,7 +9565,7 @@ impl App {
             Page::Compare => self.compare_scroll_by(10),
             Page::Files => self.file_scroll_by(10),
             Page::Network => self.move_network_selection(5),
-            Page::Settings => self.settings_row = (self.settings_row + 3).min(11),
+            Page::Settings => self.settings_row = (self.settings_row + 3).min(12),
             Page::Account => {}
             _ => self.next_list_page(),
         }
@@ -9670,11 +9671,12 @@ impl App {
             0 => self.cycle_theme(direction),
             1 => self.toggle_file_tree(),
             2 => self.toggle_readme(),
-            5 => self.adjust_ttl(TtlKind::Repositories, direction),
-            6 => self.adjust_ttl(TtlKind::Detail, direction),
-            7 => self.adjust_ttl(TtlKind::Search, direction),
-            8 => self.adjust_commit_limit(direction),
-            9 => self.cycle_default_page(direction),
+            3 => self.toggle_transparent(),
+            6 => self.adjust_ttl(TtlKind::Repositories, direction),
+            7 => self.adjust_ttl(TtlKind::Detail, direction),
+            8 => self.adjust_ttl(TtlKind::Search, direction),
+            9 => self.adjust_commit_limit(direction),
+            10 => self.cycle_default_page(direction),
             _ => {}
         }
     }
@@ -9684,15 +9686,16 @@ impl App {
             0 => self.cycle_theme(1),
             1 => self.toggle_file_tree(),
             2 => self.toggle_readme(),
-            3 => self.start_download_dir_edit(),
-            4 => self.start_proxy_edit(),
-            5 => self.adjust_ttl(TtlKind::Repositories, 1),
-            6 => self.adjust_ttl(TtlKind::Detail, 1),
-            7 => self.adjust_ttl(TtlKind::Search, 1),
-            8 => self.adjust_commit_limit(1),
-            9 => self.cycle_default_page(1),
-            10 => self.clear_cache(),
-            11 => self.save_config(true),
+            3 => self.toggle_transparent(),
+            4 => self.start_download_dir_edit(),
+            5 => self.start_proxy_edit(),
+            6 => self.adjust_ttl(TtlKind::Repositories, 1),
+            7 => self.adjust_ttl(TtlKind::Detail, 1),
+            8 => self.adjust_ttl(TtlKind::Search, 1),
+            9 => self.adjust_commit_limit(1),
+            10 => self.cycle_default_page(1),
+            11 => self.clear_cache(),
+            12 => self.save_config(true),
             _ => {}
         }
     }
@@ -9707,7 +9710,7 @@ impl App {
         let page = Page::DEFAULT_PAGES[next];
         self.config.default_page = page.default_name().to_string();
         self.config_dirty = true;
-        self.settings_row = 9;
+        self.settings_row = 10;
         self.set_status(
             StatusKind::Info,
             &format!(
@@ -9759,13 +9762,13 @@ impl App {
     pub fn start_proxy_edit(&mut self) {
         self.editing_proxy = true;
         self.proxy_input = TextInput::new(self.config.proxy.clone());
-        self.settings_row = 4;
+        self.settings_row = 5;
     }
 
     pub fn start_download_dir_edit(&mut self) {
         self.editing_download_dir = true;
         self.download_input = TextInput::new(self.config.download_dir.clone());
-        self.settings_row = 3;
+        self.settings_row = 4;
     }
 
     fn commit_download_dir_edit(&mut self) {
@@ -9843,6 +9846,21 @@ impl App {
                 "README 预览打开啦，会放在仓库页最下面哦喵~"
             } else {
                 "README 预览关掉啦喵~"
+            },
+        );
+    }
+
+    pub fn toggle_transparent(&mut self) {
+        self.settings_row = 3;
+        self.config.transparent = !self.config.transparent;
+        self.theme.transparent = self.config.transparent;
+        self.config_dirty = true;
+        self.set_status(
+            StatusKind::Info,
+            if self.config.transparent {
+                "透明背景打开啦，记得保存设置喵~"
+            } else {
+                "透明背景关掉啦喵~"
             },
         );
     }
@@ -9925,7 +9943,7 @@ impl App {
     }
 
     pub fn handle_settings_row(&mut self, row: usize) {
-        self.settings_row = row.min(11);
+        self.settings_row = row.min(12);
     }
 
     pub fn handle_paste(&mut self, text: &str) {
@@ -10116,13 +10134,14 @@ impl App {
             Action::StartDownloadDirEdit => self.start_download_dir_edit(),
             Action::ToggleFileTree => self.toggle_file_tree(),
             Action::ToggleReadme => self.toggle_readme(),
+            Action::ToggleTransparent => self.toggle_transparent(),
             Action::Ttl(kind, direction) => self.adjust_ttl(kind, direction),
             Action::ClearCache => self.clear_cache(),
             Action::SaveConfig => self.save_config(true),
             Action::OpenDownloadDir => self.open_download_dir(),
             Action::SetSettingsRow(row) => self.handle_settings_row(row),
             Action::CommitLimit(direction) => {
-                self.settings_row = 8;
+                self.settings_row = 9;
                 self.adjust_commit_limit(direction);
             }
             Action::OpenLanguages => self.open_languages(),
@@ -10877,10 +10896,24 @@ mod tests {
         app.config.default_page = "home".to_string();
         app.cycle_default_page(1);
         assert_eq!(app.config.default_page, "repositories");
-        assert_eq!(app.settings_row, 9);
+        assert_eq!(app.settings_row, 10);
         assert!(app.config_dirty);
         app.cycle_default_page(-1);
         assert_eq!(app.config.default_page, "home");
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn toggle_transparent_updates_theme_live() {
+        let root = std::env::temp_dir().join(format!("gitx-transparent-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        let paths = Paths::for_test(root.join("config"), root.join("cache"));
+        let mut app = App::settings(paths, None);
+        let before = app.config.transparent;
+        app.toggle_transparent();
+        assert_eq!(app.config.transparent, !before);
+        assert_eq!(app.theme.transparent, !before);
+        assert!(app.config_dirty);
         let _ = std::fs::remove_dir_all(root);
     }
 

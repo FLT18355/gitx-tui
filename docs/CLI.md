@@ -7,7 +7,6 @@
 | 命令 | 作用 |
 | --- | --- |
 | `gxt` | 打开 GitHub 工作台 |
-| `gxt <路径>` | 打开本地仓库 TUI |
 | `gxt settings` | 打开全局设置 TUI |
 | `gxt release` | 打开个人发行版发布 TUI（依赖 `gh`） |
 | `gxt md [目录或文件]` | 打开 Markdown 预览器，递归读取目录和子目录的 `.md` |
@@ -28,7 +27,7 @@
 
 | 选项 | 说明 |
 | --- | --- |
-| `--theme <latte\|frappe\|macchiato\|mocha>` | 指定主题 |
+| `--theme <latte\|frappe\|macchiato\|mocha\|violet>` | 指定主题 |
 | `-n`, `--limit <条数>` | `log` 显示条数，默认 20 |
 | `-h`, `--help` | 显示 CLI 帮助 |
 | `-V`, `--version` | 显示版本 |
@@ -37,7 +36,6 @@
 
 ```bash
 gxt
-gxt ~/code/demo
 gxt settings
 gxt release
 gxt md

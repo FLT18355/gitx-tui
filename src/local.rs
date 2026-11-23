@@ -9,16 +9,8 @@ pub struct StatusFile {
 }
 
 impl StatusFile {
-    pub fn staged(&self) -> bool {
-        self.index != ' ' && self.index != '?'
-    }
-
     pub fn untracked(&self) -> bool {
         self.index == '?' && self.worktree == '?'
-    }
-
-    pub fn unstaged(&self) -> bool {
-        self.worktree != ' ' || self.untracked()
     }
 
     pub fn status_label(&self) -> String {
@@ -41,7 +33,6 @@ impl StatusFile {
 
 #[derive(Debug, Clone)]
 pub struct Commit {
-    pub hash: String,
     pub short: String,
     pub author: String,
     pub when: String,
@@ -49,21 +40,7 @@ pub struct Commit {
 }
 
 #[derive(Debug, Clone)]
-pub struct Branch {
-    pub name: String,
-    pub current: bool,
-    pub upstream: String,
-}
-
-#[derive(Debug, Clone)]
 pub struct Tag {
-    pub name: String,
-    pub when: String,
-    pub subject: String,
-}
-
-#[derive(Debug, Clone)]
-pub struct Stash {
     pub name: String,
     pub when: String,
     pub subject: String,
@@ -78,9 +55,7 @@ pub struct LocalRepo {
     pub behind: u32,
     pub files: Vec<StatusFile>,
     pub commits: Vec<Commit>,
-    pub branches: Vec<Branch>,
     pub tags: Vec<Tag>,
-    pub stashes: Vec<Stash>,
 }
 
 impl LocalRepo {
@@ -106,23 +81,9 @@ impl LocalRepo {
         let (branch, upstream, ahead, behind, files) = parse_status(&status);
         let commits = git(
             &root,
-            &[
-                "log",
-                "-n",
-                "100",
-                "--pretty=format:%H%x1f%h%x1f%an%x1f%ar%x1f%s",
-            ],
+            &["log", "-n", "100", "--pretty=format:%h%x1f%an%x1f%ar%x1f%s"],
         )
         .map(|raw| parse_commits(&raw))
-        .unwrap_or_default();
-        let branches = git(
-            &root,
-            &[
-                "branch",
-                "--format=%(refname:short)\t%(HEAD)\t%(upstream:short)",
-            ],
-        )
-        .map(|raw| parse_branches(&raw))
         .unwrap_or_default();
         let tags = git(
             &root,
@@ -134,9 +95,6 @@ impl LocalRepo {
         )
         .map(|raw| parse_tags(&raw))
         .unwrap_or_default();
-        let stashes = git(&root, &["stash", "list", "--format=%gd%x1f%cr%x1f%s"])
-            .map(|raw| parse_stashes(&raw))
-            .unwrap_or_default();
         Ok(Self {
             root,
             branch,
@@ -145,18 +103,8 @@ impl LocalRepo {
             behind,
             files,
             commits,
-            branches,
             tags,
-            stashes,
         })
-    }
-
-    pub fn staged_count(&self) -> usize {
-        self.files.iter().filter(|file| file.staged()).count()
-    }
-
-    pub fn unstaged_count(&self) -> usize {
-        self.files.iter().filter(|file| file.unstaged()).count()
     }
 
     pub fn display_root(&self) -> String {
@@ -223,33 +171,15 @@ fn parse_commits(raw: &str) -> Vec<Commit> {
     raw.lines()
         .filter_map(|line| {
             let mut fields = line.split('\x1f');
-            let hash = fields.next()?.to_string();
             let short = fields.next()?.to_string();
             let author = fields.next()?.to_string();
             let when = fields.next()?.to_string();
             let summary = fields.next().unwrap_or("").to_string();
             Some(Commit {
-                hash,
                 short,
                 author,
                 when,
                 summary,
-            })
-        })
-        .collect()
-}
-
-fn parse_branches(raw: &str) -> Vec<Branch> {
-    raw.lines()
-        .filter_map(|line| {
-            let mut fields = line.split('\t');
-            let name = fields.next()?.to_string();
-            let current = fields.next().unwrap_or("") == "*";
-            let upstream = fields.next().unwrap_or("").to_string();
-            Some(Branch {
-                name,
-                current,
-                upstream,
             })
         })
         .collect()
@@ -271,23 +201,6 @@ fn parse_tags(raw: &str) -> Vec<Tag> {
         .collect()
 }
 
-fn parse_stashes(raw: &str) -> Vec<Stash> {
-    raw.lines()
-        .filter_map(|line| {
-            let mut fields = line.split('\x1f');
-            let name = fields.next()?.trim().to_string();
-            if name.is_empty() {
-                return None;
-            }
-            Some(Stash {
-                name,
-                when: fields.next().unwrap_or("").to_string(),
-                subject: fields.next().unwrap_or("").to_string(),
-            })
-        })
-        .collect()
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -301,8 +214,7 @@ mod tests {
         assert_eq!(ahead, 2);
         assert_eq!(behind, 1);
         assert_eq!(files.len(), 4);
-        assert!(files[0].unstaged());
-        assert!(files[1].staged());
+        assert!(!files[0].untracked());
         assert!(files[2].untracked());
         assert_eq!(files[3].path, "new.rs");
     }
@@ -331,28 +243,13 @@ mod tests {
     }
 
     #[test]
-    fn parses_commits_branches_and_tags() {
-        let commits = parse_commits("abc123\x1fa1b2c3\x1fme\x1f2 hours ago\x1ffix: 喵\n");
-        assert_eq!(commits[0].hash, "abc123");
+    fn parses_commits_and_tags() {
+        let commits = parse_commits("a1b2c3\x1fme\x1f2 hours ago\x1ffix: 喵\n");
         assert_eq!(commits[0].short, "a1b2c3");
+        assert_eq!(commits[0].author, "me");
         assert_eq!(commits[0].summary, "fix: 喵");
-        let branches = parse_branches("main\t*\torigin/main\nfeature\t\t\n");
-        assert!(branches[0].current);
-        assert_eq!(branches[0].upstream, "origin/main");
-        assert!(!branches[1].current);
         let tags = parse_tags("v0.1.2\t2 days ago\tRelease 0.1.2\n");
         assert_eq!(tags[0].name, "v0.1.2");
         assert_eq!(tags[0].subject, "Release 0.1.2");
-    }
-
-    #[test]
-    fn parses_stashes() {
-        let stashes = parse_stashes(
-            "stash@{0}\x1f2 hours ago\x1fWIP on main: abc fix nav\nstash@{1}\x1f1 day ago\x1fgxt stash\n",
-        );
-        assert_eq!(stashes.len(), 2);
-        assert_eq!(stashes[0].name, "stash@{0}");
-        assert_eq!(stashes[0].when, "2 hours ago");
-        assert_eq!(stashes[1].subject, "gxt stash");
     }
 }
