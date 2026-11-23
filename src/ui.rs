@@ -39,29 +39,51 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
     .split(area);
     let mut hits = Vec::new();
     app.layout = LayoutRects::default();
+    let slide = app.page_transition_offset(14);
+    let page_area = Rect::new(
+        chunks[1].x + slide,
+        chunks[1].y,
+        chunks[1].width.saturating_sub(slide),
+        chunks[1].height,
+    );
+    if slide > 0 {
+        for row in 0..chunks[1].height {
+            let t = row as f32 / chunks[1].height.max(1) as f32;
+            let color = if theme.gradients {
+                color_mix(theme.color("blue"), theme.color("mauve"), t)
+            } else {
+                theme.color("blue")
+            };
+            fill(
+                frame,
+                Rect::new(chunks[1].x, chunks[1].y + row, 1, 1),
+                color,
+            );
+        }
+    }
     draw_header(frame, app, &theme, chunks[0], &mut hits);
     match app.page {
-        Page::Home => draw_home_page(frame, app, &theme, chunks[1], &mut hits),
-        Page::Repositories => draw_repositories_page(frame, app, &theme, chunks[1], &mut hits),
-        Page::Starred => draw_starred_page(frame, app, &theme, chunks[1], &mut hits),
-        Page::Search => draw_search_page(frame, app, &theme, chunks[1], &mut hits),
-        Page::Trending => draw_trending_page(frame, app, &theme, chunks[1], &mut hits),
-        Page::Account => draw_account_page(frame, app, &theme, chunks[1], &mut hits),
-        Page::Profile => draw_profile_page(frame, app, &theme, chunks[1], &mut hits),
-        Page::Notifications => draw_notifications_page(frame, app, &theme, chunks[1], &mut hits),
-        Page::Settings => draw_settings_page(frame, app, &theme, chunks[1], &mut hits),
-        Page::Insights => draw_insights_page(frame, app, &theme, chunks[1], &mut hits),
-        Page::Repo => draw_repo_page(frame, app, &theme, chunks[1], &mut hits),
-        Page::Actions => draw_actions_page(frame, app, &theme, chunks[1], &mut hits),
-        Page::Issues => draw_issues_page(frame, app, &theme, chunks[1], &mut hits),
-        Page::Commits => draw_commits_page(frame, app, &theme, chunks[1], &mut hits),
-        Page::ReleaseDetail => draw_release_page(frame, app, &theme, chunks[1], &mut hits),
-        Page::Tags => draw_tags_page(frame, app, &theme, chunks[1], &mut hits),
-        Page::IssueDetail => draw_issue_thread_page(frame, app, &theme, chunks[1], &mut hits),
-        Page::Gists => draw_gists_page(frame, app, &theme, chunks[1], &mut hits),
-        Page::Compare => draw_compare_page(frame, app, &theme, chunks[1], &mut hits),
-        Page::Files => draw_file_page(frame, app, &theme, chunks[1], &mut hits),
-        Page::Network => draw_network_page(frame, app, &theme, chunks[1], &mut hits),
+        Page::Home => draw_home_page(frame, app, &theme, page_area, &mut hits),
+        Page::Repositories => draw_repositories_page(frame, app, &theme, page_area, &mut hits),
+        Page::Starred => draw_starred_page(frame, app, &theme, page_area, &mut hits),
+        Page::Search => draw_search_page(frame, app, &theme, page_area, &mut hits),
+        Page::Trending => draw_trending_page(frame, app, &theme, page_area, &mut hits),
+        Page::Account => draw_account_page(frame, app, &theme, page_area, &mut hits),
+        Page::Profile => draw_profile_page(frame, app, &theme, page_area, &mut hits),
+        Page::Notifications => draw_notifications_page(frame, app, &theme, page_area, &mut hits),
+        Page::Settings => draw_settings_page(frame, app, &theme, page_area, &mut hits),
+        Page::Insights => draw_insights_page(frame, app, &theme, page_area, &mut hits),
+        Page::Repo => draw_repo_page(frame, app, &theme, page_area, &mut hits),
+        Page::Actions => draw_actions_page(frame, app, &theme, page_area, &mut hits),
+        Page::Issues => draw_issues_page(frame, app, &theme, page_area, &mut hits),
+        Page::Commits => draw_commits_page(frame, app, &theme, page_area, &mut hits),
+        Page::ReleaseDetail => draw_release_page(frame, app, &theme, page_area, &mut hits),
+        Page::Tags => draw_tags_page(frame, app, &theme, page_area, &mut hits),
+        Page::IssueDetail => draw_issue_thread_page(frame, app, &theme, page_area, &mut hits),
+        Page::Gists => draw_gists_page(frame, app, &theme, page_area, &mut hits),
+        Page::Compare => draw_compare_page(frame, app, &theme, page_area, &mut hits),
+        Page::Files => draw_file_page(frame, app, &theme, page_area, &mut hits),
+        Page::Network => draw_network_page(frame, app, &theme, page_area, &mut hits),
     }
     draw_footer(frame, app, &theme, chunks[2], &hits);
 
@@ -105,12 +127,28 @@ fn draw_header(
     fill(frame, area, theme.color("mantle"));
     let anim = animation_phase(app, 3200);
     let wave = animation_wave(app, 1600);
+    let rule = |width: usize| {
+        if theme.gradients {
+            gradient_line_phase(
+                width,
+                "─",
+                theme.color("surface1"),
+                theme.color("overlay0"),
+                anim,
+            )
+        } else {
+            Line::from(Span::styled(
+                "─".repeat(width),
+                Style::default().fg(theme.color("surface1")),
+            ))
+        }
+    };
     let brand = Rect::new(area.x + 2, area.y, area.width.saturating_sub(4), 1);
     let mut title = vec![Span::styled(
         format!("{} ", icons::GITHUB),
         Style::default().fg(theme.color("blue")),
     )];
-    title.extend(
+    let brand_spans = if theme.gradients {
         gradient_segments_phase(
             &[
                 (
@@ -123,8 +161,24 @@ fn draw_header(
             theme.color("mauve"),
             anim,
         )
-        .into_iter()
-        .map(|(text, style)| Span::styled(text, style)),
+    } else {
+        vec![
+            (
+                "gxt".to_string(),
+                Style::default()
+                    .fg(theme.color("blue"))
+                    .add_modifier(Modifier::BOLD),
+            ),
+            (
+                " · github workspace".to_string(),
+                Style::default().fg(theme.color("blue")),
+            ),
+        ]
+    };
+    title.extend(
+        brand_spans
+            .into_iter()
+            .map(|(text, style)| Span::styled(text, style)),
     );
     if area.width > 96 {
         title.push(Span::styled(
@@ -141,13 +195,7 @@ fn draw_header(
             Rect::new(area.x + 2, area.y + 1, area.width.saturating_sub(4), 1),
         );
         frame.render_widget(
-            Paragraph::new(gradient_line_phase(
-                area.width as usize,
-                "─",
-                theme.color("surface1"),
-                theme.color("overlay0"),
-                anim,
-            )),
+            Paragraph::new(rule(area.width as usize)),
             Rect::new(area.x, area.y + 2, area.width, 1),
         );
         return;
@@ -330,7 +378,11 @@ fn draw_header(
         fill(frame, rect, bg);
         let style = if selected {
             Style::default()
-                .fg(color_mix(theme.color("blue"), theme.color("mauve"), wave))
+                .fg(if theme.gradients {
+                    color_mix(theme.color("blue"), theme.color("mauve"), wave)
+                } else {
+                    theme.color("blue")
+                })
                 .add_modifier(Modifier::BOLD)
         } else if hovered {
             Style::default().fg(theme.color("text"))
@@ -360,24 +412,26 @@ fn draw_header(
         );
     }
     frame.render_widget(
-        Paragraph::new(gradient_line_phase(
-            area.width as usize,
-            "─",
-            theme.color("surface1"),
-            theme.color("overlay0"),
-            anim,
-        )),
+        Paragraph::new(rule(area.width as usize)),
         Rect::new(area.x, area.y + 2, area.width, 1),
     );
     if let Some(rect) = selected_rect {
-        frame.render_widget(
-            Paragraph::new(Line::from(gradient_chars_phase(
+        let underline = if theme.gradients {
+            Line::from(gradient_chars_phase(
                 rect.width as usize,
                 "━",
                 theme.color("blue"),
                 theme.color("mauve"),
                 anim,
-            ))),
+            ))
+        } else {
+            Line::from(Span::styled(
+                "━".repeat(rect.width as usize),
+                Style::default().fg(theme.color("blue")),
+            ))
+        };
+        frame.render_widget(
+            Paragraph::new(underline),
             Rect::new(rect.x, area.y + 2, rect.width, 1),
         );
     }
@@ -385,11 +439,15 @@ fn draw_header(
 
 fn draw_footer(frame: &mut Frame, app: &App, theme: &Theme, area: Rect, _hits: &[HitBox]) {
     fill(frame, area, theme.color("crust"));
-    let busy_color = color_mix(
-        theme.color("peach"),
-        theme.color("yellow"),
-        animation_wave(app, 1400),
-    );
+    let busy_color = if theme.gradients {
+        color_mix(
+            theme.color("peach"),
+            theme.color("yellow"),
+            animation_wave(app, 1400),
+        )
+    } else {
+        theme.color("peach")
+    };
     let status_rect = Rect::new(area.x + 2, area.y, area.width.saturating_sub(26), 1);
     let (text, color) = if let Some(download) = app.download_summary() {
         (format!("{}  {}", app.spinner(), download), busy_color)
@@ -2000,8 +2058,13 @@ fn draw_metric_bar(
             .style(Style::default().fg(theme.color("subtext0"))),
         Rect::new(area.x, area.y, label_width, 1),
     );
+    let bar_end = if theme.gradients {
+        color_mix(color, theme.color("mauve"), 0.6)
+    } else {
+        color
+    };
     let mut spans = vec![Span::styled(format!("{icon} "), Style::default().fg(color))];
-    spans.extend(gradient_chars(filled, "▰", color, color));
+    spans.extend(gradient_chars(filled, "▰", color, bar_end));
     spans.extend(gradient_chars(
         inner_bar.saturating_sub(filled),
         "▱",
@@ -2076,16 +2139,32 @@ fn draw_section_header(
     if area.width == 0 {
         return;
     }
-    let mut spans = vec![
-        Span::styled(format!("{icon} "), Style::default().fg(theme.color("blue"))),
-        Span::styled(
+    let mut spans = vec![Span::styled(
+        format!("{icon} "),
+        Style::default().fg(theme.color("blue")),
+    )];
+    if theme.gradients {
+        spans.extend(
+            gradient_segments(
+                &[(
+                    title.to_string(),
+                    Style::default().add_modifier(Modifier::BOLD),
+                )],
+                theme.color("blue"),
+                theme.color("mauve"),
+            )
+            .into_iter()
+            .map(|(text, style)| Span::styled(text, style)),
+        );
+    } else {
+        spans.push(Span::styled(
             title.to_string(),
             Style::default()
                 .fg(theme.color("text"))
                 .add_modifier(Modifier::BOLD),
-        ),
-        Span::styled("  ", Style::default()),
-    ];
+        ));
+    }
+    spans.push(Span::styled("  ", Style::default()));
     let used = format::text_width(&format!("{icon} {title}  "));
     let note = if area.width as usize > used + format::text_width(note) + 6 {
         note.to_string()
@@ -2096,12 +2175,19 @@ fn draw_section_header(
     let rule_width = (area.width as usize)
         .saturating_sub(used + note_width + 2)
         .max(1);
-    spans.extend(gradient_chars(
-        rule_width,
-        "─",
-        theme.color("surface1"),
-        theme.color("surface2"),
-    ));
+    if theme.gradients {
+        spans.extend(gradient_chars(
+            rule_width,
+            "─",
+            theme.color("surface1"),
+            theme.color("surface2"),
+        ));
+    } else {
+        spans.push(Span::styled(
+            "─".repeat(rule_width),
+            Style::default().fg(theme.color("surface1")),
+        ));
+    }
     if !note.is_empty() {
         spans.push(Span::styled(
             format!("  {note}"),
@@ -3625,14 +3711,33 @@ fn draw_page_title(
     refresh_action: Action,
     hits: &mut Vec<HitBox>,
 ) {
-    frame.render_widget(
-        Paragraph::new(title).style(
-            Style::default()
-                .fg(theme.color("text"))
-                .add_modifier(Modifier::BOLD),
-        ),
-        Rect::new(inner.x, inner.y, inner.width.saturating_sub(12), 1),
-    );
+    let title_area = Rect::new(inner.x, inner.y, inner.width.saturating_sub(12), 1);
+    if theme.gradients {
+        let spans = gradient_segments_phase(
+            &[(
+                title.to_string(),
+                Style::default().add_modifier(Modifier::BOLD),
+            )],
+            theme.color("blue"),
+            theme.color("mauve"),
+            animation_phase(app, 3600),
+        )
+        .into_iter()
+        .map(|(text, style)| Span::styled(text, style));
+        frame.render_widget(
+            Paragraph::new(Line::from(spans.collect::<Vec<_>>())),
+            title_area,
+        );
+    } else {
+        frame.render_widget(
+            Paragraph::new(title).style(
+                Style::default()
+                    .fg(theme.color("text"))
+                    .add_modifier(Modifier::BOLD),
+            ),
+            title_area,
+        );
+    }
     frame.render_widget(
         Paragraph::new(format::truncate(subtitle, inner.width as usize))
             .style(Style::default().fg(theme.color("subtext0"))),
@@ -7313,11 +7418,15 @@ fn draw_file_tree_panel(
     if let Some(loading) = app.tree_loading.as_ref()
         && loading == &repo.display_full_name()
     {
-        let loading_color = color_mix(
-            theme.color("peach"),
-            theme.color("yellow"),
-            animation_wave(app, 1200),
-        );
+        let loading_color = if theme.gradients {
+            color_mix(
+                theme.color("peach"),
+                theme.color("yellow"),
+                animation_wave(app, 1200),
+            )
+        } else {
+            theme.color("peach")
+        };
         frame.render_widget(
             Paragraph::new(format!("{} 人家正在翻文件树喵~...", app.spinner()))
                 .style(Style::default().fg(loading_color)),
@@ -9452,30 +9561,41 @@ fn draw_settings_page(
             app.config.transparent,
             Action::ToggleTransparent,
         );
+        draw_toggle_row(
+            frame,
+            app,
+            theme,
+            hits,
+            Rect::new(left_column.x, y + 4, left_column.width, 1),
+            4,
+            "渐变效果喵~",
+            app.config.gradients,
+            Action::ToggleGradients,
+        );
         frame.render_widget(
             Paragraph::new(icons::label(icons::DOWNLOAD, "下载喵~")).style(
                 Style::default()
                     .fg(theme.color("text"))
                     .add_modifier(Modifier::BOLD),
             ),
-            Rect::new(left_column.x, y + 5, left_column.width, 1),
+            Rect::new(left_column.x, y + 6, left_column.width, 1),
         );
         draw_download_dir_row(
             frame,
             app,
             theme,
             hits,
-            Rect::new(left_column.x, y + 6, left_column.width, 1),
+            Rect::new(left_column.x, y + 7, left_column.width, 1),
         );
         let open_dir = icons::label(icons::DOWNLOAD_DIR, "打开下载目录喵~");
         let open_width = format::text_width(&open_dir) as u16 + 4;
-        if y + 7 < actions_y {
+        if y + 8 < actions_y {
             draw_button(
                 frame,
                 app,
                 theme,
                 hits,
-                Rect::new(left_column.x, y + 7, open_width, 1),
+                Rect::new(left_column.x, y + 8, open_width, 1),
                 &open_dir,
                 Action::OpenDownloadDir,
                 false,
@@ -9483,7 +9603,7 @@ fn draw_settings_page(
             frame.render_widget(
                 Paragraph::new("同名文件会自动改名，不会覆盖旧的哦喵~")
                     .style(Style::default().fg(theme.color("overlay0"))),
-                Rect::new(left_column.x, y + 8, left_column.width.saturating_sub(2), 1),
+                Rect::new(left_column.x, y + 9, left_column.width.saturating_sub(2), 1),
             );
         }
 
@@ -9557,7 +9677,7 @@ fn draw_settings_page(
                 Rect::new(right_column.x, y + 4 + index as u16, right_column.width, 1),
                 label,
                 kind,
-                6 + index,
+                7 + index,
             );
         }
         if y + 7 < actions_y {
@@ -9688,7 +9808,7 @@ fn draw_download_dir_row(
     hits: &mut Vec<HitBox>,
     rect: Rect,
 ) {
-    if app.settings_row == 4 {
+    if app.settings_row == 5 {
         fill(frame, rect, theme.color("surface0"));
     }
     frame.render_widget(
@@ -9735,7 +9855,7 @@ fn draw_download_dir_row(
         edit_action,
         false,
     );
-    register(hits, rect, Action::SetSettingsRow(4));
+    register(hits, rect, Action::SetSettingsRow(5));
 }
 
 fn draw_theme_card(
@@ -9750,11 +9870,15 @@ fn draw_theme_card(
     let action = Action::SetTheme(flavor.to_string());
     let hovered = app.hover.as_ref() == Some(&action);
     let preview = Theme::load(&app.paths, flavor);
-    let accent = color_mix(
-        theme.color("blue"),
-        theme.color("mauve"),
-        animation_wave(app, 1600),
-    );
+    let accent = if theme.gradients {
+        color_mix(
+            theme.color("blue"),
+            theme.color("mauve"),
+            animation_wave(app, 1600),
+        )
+    } else {
+        theme.color("blue")
+    };
     let bg = if selected {
         theme.color("surface0")
     } else {
@@ -9801,7 +9925,7 @@ fn draw_theme_card(
 }
 
 fn draw_proxy_row(frame: &mut Frame, app: &App, theme: &Theme, hits: &mut Vec<HitBox>, rect: Rect) {
-    if app.settings_row == 5 {
+    if app.settings_row == 6 {
         fill(frame, rect, theme.color("surface0"));
     }
     frame.render_widget(
@@ -9841,7 +9965,7 @@ fn draw_proxy_row(frame: &mut Frame, app: &App, theme: &Theme, hits: &mut Vec<Hi
         Action::StartProxyEdit,
         false,
     );
-    register(hits, rect, Action::SetSettingsRow(5));
+    register(hits, rect, Action::SetSettingsRow(6));
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -9904,7 +10028,7 @@ fn draw_commit_limit_row(
     hits: &mut Vec<HitBox>,
     area: Rect,
 ) {
-    if app.settings_row == 9 {
+    if app.settings_row == 10 {
         fill(frame, area, theme.color("surface0"));
     }
     frame.render_widget(
@@ -9939,7 +10063,7 @@ fn draw_commit_limit_row(
         );
         register(hits, rect, action);
     }
-    register(hits, area, Action::SetSettingsRow(9));
+    register(hits, area, Action::SetSettingsRow(10));
 }
 
 fn draw_default_page_row(
@@ -9949,7 +10073,7 @@ fn draw_default_page_row(
     hits: &mut Vec<HitBox>,
     area: Rect,
 ) {
-    if app.settings_row == 10 {
+    if app.settings_row == 11 {
         fill(frame, area, theme.color("surface0"));
     }
     let page = Page::from_default_name(&app.config.default_page);
@@ -9978,7 +10102,7 @@ fn draw_default_page_row(
             .style(Style::default().fg(theme.color("overlay0"))),
         Rect::new(area.x, area.y, area.width.saturating_sub(1), 1),
     );
-    register(hits, area, Action::SetSettingsRow(10));
+    register(hits, area, Action::SetSettingsRow(11));
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -10034,8 +10158,16 @@ fn draw_button(
 ) {
     let hovered = app.hover.as_ref() == Some(&action);
     let wave = animation_wave(app, 1100);
-    let primary_hover = color_mix(theme.color("blue"), theme.color("sapphire"), wave);
-    let secondary_hover = color_mix(theme.color("surface1"), theme.color("surface2"), wave);
+    let primary_hover = if theme.gradients {
+        color_mix(theme.color("blue"), theme.color("sapphire"), wave)
+    } else {
+        theme.color("sapphire")
+    };
+    let secondary_hover = if theme.gradients {
+        color_mix(theme.color("surface1"), theme.color("surface2"), wave)
+    } else {
+        theme.color("surface1")
+    };
     let background = if theme.transparent {
         Color::Reset
     } else if primary {

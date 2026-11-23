@@ -13,6 +13,7 @@
 ```toml
 theme = "mocha"
 transparent = false
+gradients = true
 proxy = "https://v4.gh-proxy.org"
 repos_ttl_secs = 300
 detail_ttl_secs = 900
@@ -29,6 +30,7 @@ default_page = "home"
 | --- | --- |
 | `theme` | `latte`、`frappe`、`macchiato`、`mocha`、`violet`，或 `~/.config/gitx-tui/themes/` 里的自定义主题名 |
 | `transparent` | 默认关闭；开启后页面、标题栏、页脚、卡片、按钮和弹窗背景透明，终端壁纸会透出来；彩色标签和强调色保持不透明 |
+| `gradients` | 默认开启；关闭后标题、页签、分隔线、进度条和强调色改用单色 |
 | `proxy` | 公开 API 与发行版下载的加速地址 |
 | `repos_ttl_secs` | 仓库和收藏列表缓存时间 |
 | `detail_ttl_secs` | 仓库详情、文件树、README、发行版、Actions、议题和通知缓存时间 |
