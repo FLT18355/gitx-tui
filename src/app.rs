@@ -1132,6 +1132,7 @@ pub struct App {
     pub tree_branch: String,
     pub tree_fetched_at: Option<i64>,
     pub tree_loading: Option<String>,
+    pub tree_dir: String,
     pub tree_scroll: u16,
     pub tree_scroll_max: u16,
     pub readme: Option<ReadmeContent>,
@@ -1450,6 +1451,7 @@ impl App {
             tree_branch: String::new(),
             tree_fetched_at: None,
             tree_loading: None,
+            tree_dir: String::new(),
             tree_scroll: 0,
             tree_scroll_max: 0,
             readme: None,
@@ -3174,6 +3176,7 @@ impl App {
         }
         if name != old_name {
             self.tree = None;
+            self.tree_dir.clear();
             self.readme = None;
             self.commits.clear();
             self.branches.clear();
@@ -5560,6 +5563,7 @@ impl App {
         self.tree_branch = branch.clone();
         self.tree_scroll = 0;
         self.tree_scroll_max = 0;
+        self.tree_dir.clear();
         if let Some(cached) = self
             .cache
             .load::<TreeResponse>(&tree_cache_key(&name, &branch))
@@ -5718,6 +5722,7 @@ impl App {
         self.tree_for = None;
         self.tree_fetched_at = None;
         self.tree_loading = None;
+        self.tree_dir.clear();
         self.readme = None;
         self.readme_for = None;
         self.readme_fetched_at = None;
@@ -6064,6 +6069,7 @@ impl App {
         self.tree = None;
         self.readme = None;
         self.tree_for = None;
+        self.tree_dir.clear();
         self.readme_for = None;
         self.tree_fetched_at = None;
         self.readme_fetched_at = None;
@@ -7204,6 +7210,7 @@ impl App {
             self.releases.clear();
             self.releases_fetched_at = None;
             self.tree = None;
+            self.tree_dir.clear();
             self.readme = None;
             self.branches.clear();
             self.commits.clear();
@@ -7222,26 +7229,21 @@ impl App {
             self.open_file(path);
             return;
         }
-        let Some(repo) = self.page_repo.clone().or_else(|| self.selected_repo()) else {
-            return;
-        };
-        let branch = if self.tree_branch.is_empty() {
-            repo.default_branch.clone()
-        } else {
-            self.tree_branch.clone()
-        };
-        let branch = if branch.is_empty() {
-            "main".to_string()
-        } else {
-            branch
-        };
-        let kind = if directory { "tree" } else { "blob" };
-        let url = format!(
-            "{}/{kind}/{branch}/{}",
-            repo.html_url.trim_end_matches('/'),
-            path.trim_start_matches('/')
+        self.tree_dir = path.trim_matches('/').to_string();
+        self.tree_scroll = 0;
+        self.tree_scroll_max = 0;
+        self.repo_pane = RepoPane::Tree;
+        self.set_status(
+            StatusKind::Info,
+            &format!(
+                "进入 {} 啦喵~",
+                if self.tree_dir.is_empty() {
+                    "仓库根目录".to_string()
+                } else {
+                    format::clean_text(&self.tree_dir)
+                }
+            ),
         );
-        self.open_url(&url);
     }
 
     pub fn scroll(&mut self, x: u16, y: u16, delta: i32) {

@@ -4,7 +4,10 @@ use crate::app::{
 };
 use crate::format;
 use crate::icons;
-use crate::model::{Issue, IssueState, Repo, RepoSort, SearchSort, StarSort, TrendingPeriod};
+use crate::model::{
+    Issue, IssueState, Repo, RepoSort, SearchSort, StarSort, TreeEntry, TreeResponse,
+    TrendingPeriod,
+};
 use crate::theme::Theme;
 use ratatui::Frame;
 use ratatui::layout::{Alignment, Constraint, Layout, Position, Rect};
@@ -3955,12 +3958,14 @@ fn draw_repo_page(
             ),
         );
     }
-    let action_span = |label: &str| format::text_width(label) as u16 + 5;
-    let total = buttons
+    let widths: Vec<u16> = buttons
         .iter()
-        .map(|(label, ..)| action_span(label))
-        .fold(0u16, u16::saturating_add)
-        .saturating_sub(1);
+        .map(|(label, ..)| format::text_width(label) as u16 + 4)
+        .collect();
+    let total = widths
+        .iter()
+        .fold(0u16, |sum, width| sum.saturating_add(*width))
+        .saturating_add((buttons.len() as u16).saturating_sub(1));
     let overflow = total > inner.width;
     let offset = if overflow {
         app.repo_actions_offset.min(buttons.len().saturating_sub(1))
@@ -3969,59 +3974,93 @@ fn draw_repo_page(
     };
     app.repo_actions_offset = offset;
     let arrow_width = 3u16;
-    let mut action_x = inner.x;
-    if overflow && offset > 0 {
+    let left_arrow = overflow && offset > 0;
+    let right = inner.x + inner.width;
+    let start = inner.x + if left_arrow { arrow_width + 1 } else { 0 };
+    let mut end = right;
+    let mut fit = 0usize;
+    let mut used = 0u16;
+    for width in widths.iter().skip(offset) {
+        let gap = if fit == 0 { 0 } else { 1 };
+        if start + used + gap + width > end {
+            break;
+        }
+        used += gap + width;
+        fit += 1;
+    }
+    let right_arrow = fit < widths.len() - offset;
+    if right_arrow {
+        end = right.saturating_sub(arrow_width + 1);
+        fit = 0;
+        used = 0;
+        for width in widths.iter().skip(offset) {
+            let gap = if fit == 0 { 0 } else { 1 };
+            if start + used + gap + width > end {
+                break;
+            }
+            used += gap + width;
+            fit += 1;
+        }
+    }
+    let fit = fit.max(1).min(widths.len() - offset);
+    let group_width = widths[offset..offset + fit]
+        .iter()
+        .fold(0u16, |sum, width| sum.saturating_add(*width))
+        .saturating_add((fit as u16).saturating_sub(1));
+    let fresh = !left_arrow && !right_arrow;
+    let spread = if fresh || right_arrow {
+        end.saturating_sub(start).saturating_sub(group_width)
+    } else {
+        0
+    };
+    let gaps = fit.saturating_sub(1) as u16;
+    let gap_extra = spread.checked_div(gaps).unwrap_or(0);
+    let gap_rest = spread.checked_rem(gaps).unwrap_or(0);
+    let mut action_x = if !right_arrow && left_arrow {
+        end.saturating_sub(group_width)
+    } else {
+        start
+    };
+    if left_arrow {
         draw_button(
             frame,
             app,
             theme,
             hits,
-            Rect::new(action_x, actions_y, arrow_width, 1),
+            Rect::new(inner.x, actions_y, arrow_width, 1),
             "<",
             Action::RepoActionsLeft,
             false,
         );
-        action_x += arrow_width + 1;
     }
-    let mut action_right = inner.x + inner.width;
-    if overflow {
-        let remaining = buttons
-            .iter()
-            .skip(offset)
-            .map(|(label, ..)| action_span(label))
-            .fold(0u16, u16::saturating_add)
-            .saturating_sub(1);
-        if remaining > action_right.saturating_sub(action_x) {
-            let arrow_x = action_right.saturating_sub(arrow_width);
-            draw_button(
-                frame,
-                app,
-                theme,
-                hits,
-                Rect::new(arrow_x, actions_y, arrow_width, 1),
-                ">",
-                Action::RepoActionsRight,
-                false,
-            );
-            action_right = arrow_x.saturating_sub(1);
-        }
-    }
-    for (label, action, primary) in buttons.iter().skip(offset) {
-        let button_width = format::text_width(label) as u16 + 4;
-        if action_x + button_width > action_right {
-            break;
-        }
+    if right_arrow {
         draw_button(
             frame,
             app,
             theme,
             hits,
-            Rect::new(action_x, actions_y, button_width, 1),
+            Rect::new(end + 1, actions_y, arrow_width, 1),
+            ">",
+            Action::RepoActionsRight,
+            false,
+        );
+    }
+    for slot in 0..fit {
+        if slot > 0 {
+            action_x += 1 + gap_extra + u16::from(slot as u16 <= gap_rest);
+        }
+        let (label, action, primary) = &buttons[offset + slot];
+        draw_button(
+            frame,
+            app,
+            theme,
+            hits,
+            Rect::new(action_x, actions_y, widths[offset + slot], 1),
             label,
             action.clone(),
             *primary,
         );
-        action_x += button_width + 1;
+        action_x += widths[offset + slot];
     }
     let divider_y = inner.y + 6;
     fill(
@@ -6522,6 +6561,7 @@ fn draw_action_jobs_panel(
         app.action_jobs_scroll,
         theme,
         hits,
+        app.hover.as_ref(),
     );
 }
 
@@ -7203,25 +7243,24 @@ fn draw_file_tree_panel(
     register(hits, area, Action::FocusRepoPane(RepoPane::Tree));
     let focused = app.repo_pane == RepoPane::Tree;
     let title = icons::label(icons::FOLDER_OPEN, "文件树喵~");
+    let current_dir = app.tree_dir.as_str();
     let counts = app
         .tree
         .as_ref()
         .map(|tree| {
-            let directories = tree
-                .tree
-                .iter()
-                .filter(|entry| entry.kind == "tree")
-                .count();
-            let files = tree
-                .tree
-                .iter()
-                .filter(|entry| entry.kind == "blob")
-                .count();
+            let entries = tree_children(tree, current_dir);
+            let directories = entries.iter().filter(|entry| entry.kind == "tree").count();
+            let files = entries.iter().filter(|entry| entry.kind == "blob").count();
             format!("{directories} 目录 · {files} 文件")
         })
         .unwrap_or_default();
+    let dir_label = if current_dir.is_empty() {
+        "根目录".to_string()
+    } else {
+        format::truncate(current_dir, 24)
+    };
     let heading = format!(
-        "{}   {} {}   {counts}",
+        "{}   {} {}   {dir_label}   {counts}",
         title,
         icons::BRANCH,
         format::truncate(&app.branch_for(repo), 18)
@@ -7283,13 +7322,9 @@ fn draw_file_tree_panel(
         );
         return;
     };
-    let mut entries: Vec<_> = tree
-        .tree
-        .iter()
-        .filter(|entry| entry.kind == "blob" || entry.kind == "tree")
-        .collect();
-    entries.sort_by_cached_key(|entry| tree_sort_key(&entry.path, entry.kind == "tree"));
-    if entries.is_empty() {
+    let dir = app.tree_dir.clone();
+    let entries = tree_children(tree, &dir);
+    if entries.is_empty() && dir.is_empty() {
         draw_center_message(
             frame,
             theme,
@@ -7299,46 +7334,57 @@ fn draw_file_tree_panel(
         );
         return;
     }
-    let mut last_child: std::collections::HashMap<String, String> =
-        std::collections::HashMap::new();
-    for entry in &entries {
-        let (parent, name) = path_parent_and_name(&entry.path);
-        last_child.insert(parent, name);
-    }
     let mut lines: Vec<Line> = Vec::new();
     let mut actions = Vec::new();
+    if !dir.is_empty() {
+        let parent = dir
+            .rsplit_once('/')
+            .map(|(parent, _)| parent.to_string())
+            .unwrap_or_default();
+        actions.push((
+            0,
+            Action::OpenTreePath {
+                path: parent,
+                directory: true,
+            },
+        ));
+        lines.push(Line::from(vec![
+            Span::styled(
+                format!("{} ", icons::BACK),
+                Style::default().fg(theme.color("blue")),
+            ),
+            Span::styled(
+                ".. 返回上一级喵~",
+                Style::default().fg(theme.color("subtext1")),
+            ),
+        ]));
+    }
     for entry in entries.iter().take(1200) {
-        let (parent, name) = path_parent_and_name(&entry.path);
+        let name = entry
+            .path
+            .rsplit_once('/')
+            .map(|(_, name)| name)
+            .unwrap_or(&entry.path)
+            .to_string();
         let directory = entry.kind == "tree";
         let icon = if directory {
             icons::FOLDER_OPEN
         } else {
             file_icon(&name)
         };
-        let parts: Vec<&str> = entry.path.split('/').collect();
-        let depth = parts.len().saturating_sub(1).min(8);
-        let mut prefix = String::new();
-        for level in 0..depth {
-            let ancestor = parts[..=level].join("/");
-            let (ancestor_parent, ancestor_name) = path_parent_and_name(&ancestor);
-            let ancestor_is_last = last_child
-                .get(&ancestor_parent)
-                .is_some_and(|last| last == &ancestor_name);
-            prefix.push_str(if ancestor_is_last { "   " } else { "│  " });
-        }
-        let is_last = last_child.get(&parent).is_some_and(|last| last == &name);
-        prefix.push_str(if is_last { "└─ " } else { "├─ " });
-        let prefix_width = format::text_width(&prefix);
+        let marker = if directory { "▸ " } else { "  " };
         let size_text = if directory {
             String::new()
         } else {
             entry.size.map(format::format_size).unwrap_or_default()
         };
         let size_width = format::text_width(&size_text);
+        let prefix = format!("  {marker}");
+        let prefix_width = format::text_width(&prefix);
         let label = format::truncate(
             &format::clean_text(&name),
             (body.width as usize)
-                .saturating_sub(prefix_width + size_width + 3)
+                .saturating_sub(prefix_width + size_width + 5)
                 .max(1),
         );
         let action = Action::OpenTreePath {
@@ -7376,6 +7422,12 @@ fn draw_file_tree_panel(
         }
         lines.push(Line::from(spans));
     }
+    if entries.is_empty() {
+        lines.push(Line::from(Span::styled(
+            "这个文件夹空空的喵~",
+            Style::default().fg(theme.color("overlay0")),
+        )));
+    }
     if tree.truncated || entries.len() > 1200 {
         lines.push(Line::from(Span::styled(
             "文件太多啦，只展示了一部分喵~",
@@ -7384,7 +7436,33 @@ fn draw_file_tree_panel(
     }
     app.tree_scroll_max = lines.len().saturating_sub(body.height as usize) as u16;
     app.tree_scroll = app.tree_scroll.min(app.tree_scroll_max);
-    render_scrolled(frame, body, lines, actions, app.tree_scroll, theme, hits);
+    render_scrolled(
+        frame,
+        body,
+        lines,
+        actions,
+        app.tree_scroll,
+        theme,
+        hits,
+        app.hover.as_ref(),
+    );
+}
+
+fn tree_children<'a>(tree: &'a TreeResponse, dir: &str) -> Vec<&'a TreeEntry> {
+    let mut entries: Vec<_> = tree
+        .tree
+        .iter()
+        .filter(|entry| entry.kind == "blob" || entry.kind == "tree")
+        .filter(|entry| {
+            entry
+                .path
+                .rsplit_once('/')
+                .map(|(parent, _)| parent == dir)
+                .unwrap_or(dir.is_empty())
+        })
+        .collect();
+    entries.sort_by_cached_key(|entry| tree_sort_key(&entry.path, entry.kind == "tree"));
+    entries
 }
 
 fn tree_sort_key(path: &str, directory: bool) -> Vec<(u8, String)> {
@@ -7393,13 +7471,6 @@ fn tree_sort_key(path: &str, directory: bool) -> Vec<(u8, String)> {
     let mut key: Vec<(u8, String)> = parts.iter().map(|part| (0, part.to_lowercase())).collect();
     key.push((u8::from(!directory), last.to_lowercase()));
     key
-}
-
-fn path_parent_and_name(path: &str) -> (String, String) {
-    match path.rsplit_once('/') {
-        Some((parent, name)) => (parent.to_string(), name.to_string()),
-        None => (String::new(), path.to_string()),
-    }
 }
 
 fn draw_releases_panel(
@@ -9809,7 +9880,7 @@ fn draw_commit_limit_row(
         );
         register(hits, rect, action);
     }
-    register(hits, area, Action::SetSettingsRow(8));
+    register(hits, area, Action::SetSettingsRow(9));
 }
 
 fn draw_default_page_row(
@@ -9848,20 +9919,36 @@ fn draw_default_page_row(
             .style(Style::default().fg(theme.color("overlay0"))),
         Rect::new(area.x, area.y, area.width.saturating_sub(1), 1),
     );
-    register(hits, area, Action::SetSettingsRow(9));
+    register(hits, area, Action::SetSettingsRow(10));
 }
 
+#[allow(clippy::too_many_arguments)]
 fn render_scrolled(
     frame: &mut Frame,
     area: Rect,
-    lines: Vec<Line>,
+    mut lines: Vec<Line>,
     actions: Vec<(usize, Action)>,
     scroll: u16,
     theme: &Theme,
     hits: &mut Vec<HitBox>,
+    hover: Option<&Action>,
 ) {
     if area.height == 0 {
         return;
+    }
+    for (line_index, action) in &actions {
+        if hover == Some(action)
+            && let Some(line) = lines.get_mut(*line_index)
+        {
+            line.style = if theme.transparent {
+                line.style
+                    .add_modifier(Modifier::BOLD | Modifier::UNDERLINED)
+            } else {
+                line.style
+                    .bg(theme.color("surface0"))
+                    .add_modifier(Modifier::BOLD)
+            };
+        }
     }
     frame.render_widget(Paragraph::new(Text::from(lines)).scroll((scroll, 0)), area);
     let scroll = scroll as usize;
@@ -9871,11 +9958,8 @@ fn render_scrolled(
         }
         let y = area.y + (line_index - scroll) as u16;
         let rect = Rect::new(area.x, y, area.width, 1);
-        let hovered = false;
-        let _ = hovered;
         register(hits, rect, action);
     }
-    let _ = theme;
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -13943,6 +14027,8 @@ mod tests {
         let _ = std::fs::remove_dir_all(&dir);
         let paths = crate::config::Paths::for_test(dir.join("config"), dir.join("cache"));
         let mut app = App::settings(paths, None);
+        app.theme.transparent = true;
+        app.config.transparent = true;
         let mut terminal = ratatui::Terminal::new(ratatui::backend::TestBackend::new(100, 36))
             .expect("test terminal");
         terminal
@@ -14019,6 +14105,133 @@ mod tests {
                 .iter()
                 .any(|hit| hit.action == Action::OpenActions)
         );
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn file_tree_browses_folders_and_hovers_rows() {
+        let dir = std::env::temp_dir().join(format!("gitx-tree-ui-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        let paths = crate::config::Paths::for_test(dir.join("config"), dir.join("cache"));
+        let mut app = App::settings(paths, None);
+        app.settings_only = false;
+        app.config.show_file_tree = true;
+        app.page = Page::Repo;
+        app.page_repo = Some(Repo {
+            name: "demo".to_string(),
+            full_name: "me/demo".to_string(),
+            default_branch: "main".to_string(),
+            ..Default::default()
+        });
+        app.tree = Some(TreeResponse {
+            tree: vec![
+                TreeEntry {
+                    path: "README.md".to_string(),
+                    kind: "blob".to_string(),
+                    size: Some(128),
+                    ..Default::default()
+                },
+                TreeEntry {
+                    path: "src".to_string(),
+                    kind: "tree".to_string(),
+                    ..Default::default()
+                },
+                TreeEntry {
+                    path: "src/main.rs".to_string(),
+                    kind: "blob".to_string(),
+                    ..Default::default()
+                },
+            ],
+            ..Default::default()
+        });
+        let mut terminal = ratatui::Terminal::new(ratatui::backend::TestBackend::new(120, 40))
+            .expect("test terminal");
+        terminal
+            .draw(|frame| draw(frame, &mut app))
+            .expect("render tree root");
+        let text = buffer_text(terminal.backend().buffer());
+        assert!(text.contains("README.md"));
+        assert!(text.contains("src"));
+        assert!(!text.contains("main.rs"));
+
+        app.hover = Some(Action::OpenTreePath {
+            path: "README.md".to_string(),
+            directory: false,
+        });
+        terminal.clear().expect("clear terminal");
+        terminal
+            .draw(|frame| draw(frame, &mut app))
+            .expect("render hovered tree row");
+        let buffer = terminal.backend().buffer();
+        let width = buffer.area.width as usize;
+        let row = buffer
+            .content()
+            .chunks(width)
+            .find(|row| row.iter().any(|cell| cell.symbol() == "R"))
+            .expect("README row");
+        assert!(
+            row.iter()
+                .any(|cell| cell.bg == app.theme.color("surface0")),
+            "hovered row should be highlighted"
+        );
+
+        app.handle_action(Action::OpenTreePath {
+            path: "src".to_string(),
+            directory: true,
+        });
+        terminal.clear().expect("clear terminal");
+        terminal
+            .draw(|frame| draw(frame, &mut app))
+            .expect("render tree folder");
+        assert_eq!(app.tree_dir, "src");
+        let text = buffer_text(terminal.backend().buffer());
+        let compact = text.split_whitespace().collect::<String>();
+        assert!(compact.contains("main.rs"));
+        assert!(!compact.contains("README.md"));
+        assert!(compact.contains("返回上一级"));
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn repo_action_row_fills_width_without_trailing_gap() {
+        let dir =
+            std::env::temp_dir().join(format!("gitx-repo-actions-wide-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        let paths = crate::config::Paths::for_test(dir.join("config"), dir.join("cache"));
+        let mut app = App::settings(paths, None);
+        app.settings_only = false;
+        app.page = Page::Repo;
+        app.page_repo = Some(Repo {
+            name: "demo".to_string(),
+            full_name: "me/demo".to_string(),
+            default_branch: "main".to_string(),
+            ..Default::default()
+        });
+        let mut terminal = ratatui::Terminal::new(ratatui::backend::TestBackend::new(220, 40))
+            .expect("test terminal");
+        terminal
+            .draw(|frame| draw(frame, &mut app))
+            .expect("render wide repo actions");
+        assert!(
+            !app.hitboxes
+                .iter()
+                .any(|hit| hit.action == Action::RepoActionsRight)
+        );
+        let row = app
+            .hitboxes
+            .iter()
+            .find(|hit| matches!(hit.action, Action::OpenActions))
+            .expect("last action button")
+            .rect
+            .y;
+        let right = app
+            .hitboxes
+            .iter()
+            .filter(|hit| hit.rect.y == row)
+            .map(|hit| hit.rect.x + hit.rect.width)
+            .max()
+            .expect("action row");
+        assert_eq!(right, 218, "buttons should reach the right edge");
         let _ = std::fs::remove_dir_all(dir);
     }
 
