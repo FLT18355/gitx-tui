@@ -22,10 +22,6 @@ run *args:
 md *args:
     cargo run -- md {{args}}
 
-# 打开个人发行版发布 TUI
-release-tui:
-    cargo run -- release
-
 # 打开设置 TUI
 settings:
     cargo run -- settings

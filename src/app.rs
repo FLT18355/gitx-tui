@@ -197,6 +197,7 @@ pub enum Overlay {
     DeleteGist,
     NewPull,
     MergePr,
+    PublishRelease,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -346,7 +347,6 @@ pub enum Action {
     ToggleFileTree,
     ToggleReadme,
     ToggleTransparent,
-    ToggleGradients,
     Ttl(TtlKind, i32),
     ClearCache,
     SaveConfig,
@@ -373,6 +373,12 @@ pub enum Action {
     OpenRepoEdit,
     EditRepoRow(usize),
     SaveRepoEdit,
+    OpenPublishRelease,
+    FocusReleaseField(ReleaseField),
+    ToggleReleaseField(ReleaseField),
+    SubmitRelease,
+    ConfirmRelease,
+    ClearReleaseDraft,
     RefreshRateLimit,
     OpenActions,
     OpenBranches,
@@ -635,6 +641,15 @@ pub struct RepoEdit {
     pub has_issues: bool,
     pub has_discussions: bool,
     pub has_wiki: bool,
+    pub has_projects: bool,
+    pub is_template: bool,
+    pub allow_squash_merge: bool,
+    pub allow_merge_commit: bool,
+    pub allow_rebase_merge: bool,
+    pub allow_auto_merge: bool,
+    pub delete_branch_on_merge: bool,
+    pub allow_update_branch: bool,
+    pub web_commit_signoff_required: bool,
     pub row: usize,
     pub editing: bool,
     pub saving: bool,
@@ -654,6 +669,15 @@ impl RepoEdit {
             has_issues: repo.has_issues,
             has_discussions: repo.has_discussions,
             has_wiki: repo.has_wiki,
+            has_projects: repo.has_projects,
+            is_template: repo.is_template,
+            allow_squash_merge: repo.allow_squash_merge,
+            allow_merge_commit: repo.allow_merge_commit,
+            allow_rebase_merge: repo.allow_rebase_merge,
+            allow_auto_merge: repo.allow_auto_merge,
+            delete_branch_on_merge: repo.delete_branch_on_merge,
+            allow_update_branch: repo.allow_update_branch,
+            web_commit_signoff_required: repo.web_commit_signoff_required,
             row: 0,
             editing: false,
             saving: false,
@@ -679,6 +703,140 @@ fn repo_edit_input(edit: &mut RepoEdit, row: usize) -> Option<&mut TextInput> {
         2 => Some(&mut edit.homepage),
         3 => Some(&mut edit.topics),
         _ => None,
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ReleaseField {
+    Tag,
+    Title,
+    Target,
+    Assets,
+    Notes,
+    Draft,
+    Prerelease,
+    GenerateNotes,
+    Latest,
+}
+
+impl ReleaseField {
+    fn next(self) -> Self {
+        match self {
+            Self::Tag => Self::Title,
+            Self::Title => Self::Target,
+            Self::Target => Self::Assets,
+            Self::Assets => Self::Notes,
+            Self::Notes => Self::Draft,
+            Self::Draft => Self::Prerelease,
+            Self::Prerelease => Self::GenerateNotes,
+            Self::GenerateNotes => Self::Latest,
+            Self::Latest => Self::Tag,
+        }
+    }
+
+    fn prev(self) -> Self {
+        match self {
+            Self::Tag => Self::Latest,
+            Self::Title => Self::Tag,
+            Self::Target => Self::Title,
+            Self::Assets => Self::Target,
+            Self::Notes => Self::Assets,
+            Self::Draft => Self::Notes,
+            Self::Prerelease => Self::Draft,
+            Self::GenerateNotes => Self::Prerelease,
+            Self::Latest => Self::GenerateNotes,
+        }
+    }
+
+    fn text_input_mut(self, draft: &mut ReleaseDraft) -> Option<&mut TextInput> {
+        match self {
+            Self::Tag => Some(&mut draft.tag),
+            Self::Title => Some(&mut draft.title),
+            Self::Target => Some(&mut draft.target),
+            Self::Assets => Some(&mut draft.assets),
+            Self::Notes => Some(&mut draft.notes),
+            _ => None,
+        }
+    }
+}
+
+#[derive(Clone)]
+pub struct ReleaseDraft {
+    pub repo: Repo,
+    pub tag: TextInput,
+    pub title: TextInput,
+    pub target: TextInput,
+    pub assets: TextInput,
+    pub notes: TextInput,
+    pub draft: bool,
+    pub prerelease: bool,
+    pub generate_notes: bool,
+    pub latest: bool,
+    pub field: ReleaseField,
+    pub publishing: bool,
+    pub confirming: bool,
+    pub error: Option<String>,
+}
+
+impl ReleaseDraft {
+    pub(crate) fn new(repo: Repo) -> Self {
+        let target = repo.default_branch.clone();
+        Self {
+            repo,
+            tag: TextInput::new(""),
+            title: TextInput::new(""),
+            target: TextInput::new(target),
+            assets: TextInput::new(""),
+            notes: TextInput::new(""),
+            draft: false,
+            prerelease: false,
+            generate_notes: true,
+            latest: false,
+            field: ReleaseField::Tag,
+            publishing: false,
+            confirming: false,
+            error: None,
+        }
+    }
+
+    fn assets_list(&self) -> Vec<String> {
+        // shortcut: comma separates paths; use a file picker if commas in filenames matter.
+        self.assets
+            .value
+            .split(',')
+            .map(|part| part.trim().trim_matches('"').trim_matches('\'').trim())
+            .filter(|part| !part.is_empty())
+            .map(|part| {
+                crate::config::expand_tilde(part)
+                    .to_string_lossy()
+                    .into_owned()
+            })
+            .collect()
+    }
+
+    fn payload(&self) -> serde_json::Value {
+        let mut payload = serde_json::json!({
+            "tag_name": self.tag.value.trim(),
+            "draft": self.draft,
+            "prerelease": self.prerelease,
+            "make_latest": if self.latest { "true" } else { "false" },
+        });
+        let map = payload.as_object_mut().expect("release payload object");
+        let title = self.title.value.trim();
+        if !title.is_empty() {
+            map.insert("name".to_string(), title.into());
+        }
+        let notes = self.notes.value.trim();
+        if !notes.is_empty() {
+            map.insert("body".to_string(), notes.into());
+        } else if self.generate_notes {
+            map.insert("generate_release_notes".to_string(), true.into());
+        }
+        let target = self.target.value.trim();
+        if !target.is_empty() {
+            map.insert("target_commitish".to_string(), target.into());
+        }
+        payload
     }
 }
 
@@ -774,6 +932,10 @@ enum Msg {
     },
     RateLimit(Result<crate::model::RateLimit, String>),
     RepoUpdated(Result<Repo, String>),
+    ReleasePublished {
+        repo: String,
+        result: Result<(Release, usize, Option<String>), String>,
+    },
     ActionRuns {
         name: String,
         result: Result<Vec<crate::model::WorkflowRun>, String>,
@@ -1165,6 +1327,7 @@ pub struct App {
     pending_commit_detail: Option<PendingCommitDetail>,
 
     pub repo_edit: Option<RepoEdit>,
+    pub release_draft: Option<ReleaseDraft>,
     pub settings_row: usize,
     pub editing_proxy: bool,
     pub proxy_input: TextInput,
@@ -1235,7 +1398,6 @@ impl App {
             .unwrap_or_else(|| config.theme.clone());
         let mut theme = Theme::load(&paths, &theme_name);
         theme.transparent = config.transparent;
-        theme.gradients = config.gradients;
         let themes = Theme::available(&paths);
         let client = if settings_only {
             ApiClient::without_auth(config.proxy.clone())
@@ -1482,6 +1644,7 @@ impl App {
             commit_detail_loading: None,
             pending_commit_detail: None,
             repo_edit: None,
+            release_draft: None,
             settings_row: 0,
             editing_proxy: false,
             proxy_input: TextInput::new(""),
@@ -2149,6 +2312,43 @@ impl App {
                         } else {
                             self.set_status(StatusKind::Error, &error);
                         }
+                    }
+                }
+            }
+            Msg::ReleasePublished { repo, result } => {
+                let repo_obj = self.release_draft.as_ref().map(|draft| draft.repo.clone());
+                if let Some(draft) = self.release_draft.as_mut() {
+                    draft.publishing = false;
+                }
+                match result {
+                    Ok((release, uploaded, asset_error)) => {
+                        self.release_draft = None;
+                        self.overlay = None;
+                        if let Some(repo_obj) = repo_obj.or_else(|| self.repo_by_name(&repo)) {
+                            self.fetch_releases(&repo_obj);
+                        }
+                        if let Some(error) = asset_error {
+                            self.set_status(StatusKind::Error, &format!("发行版建好啦，但{error}"));
+                        } else if uploaded == 0 {
+                            self.set_status(
+                                StatusKind::Ok,
+                                &format!("{} {} 发布好啦喵~", repo, release.tag_name),
+                            );
+                        } else {
+                            self.set_status(
+                                StatusKind::Ok,
+                                &format!(
+                                    "{} {} 发布好啦，{uploaded} 个附件也传上去啦喵~",
+                                    repo, release.tag_name
+                                ),
+                            );
+                        }
+                    }
+                    Err(error) => {
+                        if let Some(draft) = self.release_draft.as_mut() {
+                            draft.error = Some(error.clone());
+                        }
+                        self.set_status(StatusKind::Error, &error);
                     }
                 }
             }
@@ -4348,7 +4548,7 @@ impl App {
         let Some(edit) = self.repo_edit.as_mut() else {
             return;
         };
-        let next = (edit.row as i32 + delta).clamp(0, 8) as usize;
+        let next = (edit.row as i32 + delta).clamp(0, 17) as usize;
         edit.row = next;
     }
 
@@ -4372,6 +4572,15 @@ impl App {
             6 => edit.has_issues = !edit.has_issues,
             7 => edit.has_discussions = !edit.has_discussions,
             8 => edit.has_wiki = !edit.has_wiki,
+            9 => edit.has_projects = !edit.has_projects,
+            10 => edit.is_template = !edit.is_template,
+            11 => edit.allow_squash_merge = !edit.allow_squash_merge,
+            12 => edit.allow_merge_commit = !edit.allow_merge_commit,
+            13 => edit.allow_rebase_merge = !edit.allow_rebase_merge,
+            14 => edit.allow_auto_merge = !edit.allow_auto_merge,
+            15 => edit.delete_branch_on_merge = !edit.delete_branch_on_merge,
+            16 => edit.allow_update_branch = !edit.allow_update_branch,
+            17 => edit.web_commit_signoff_required = !edit.web_commit_signoff_required,
             _ => {}
         }
     }
@@ -4401,6 +4610,15 @@ impl App {
         let has_issues = edit.has_issues;
         let has_discussions = edit.has_discussions;
         let has_wiki = edit.has_wiki;
+        let has_projects = edit.has_projects;
+        let is_template = edit.is_template;
+        let allow_squash_merge = edit.allow_squash_merge;
+        let allow_merge_commit = edit.allow_merge_commit;
+        let allow_rebase_merge = edit.allow_rebase_merge;
+        let allow_auto_merge = edit.allow_auto_merge;
+        let delete_branch_on_merge = edit.delete_branch_on_merge;
+        let allow_update_branch = edit.allow_update_branch;
+        let web_commit_signoff_required = edit.web_commit_signoff_required;
         let patch = serde_json::json!({
             "name": name,
             "description": if description.is_empty() { serde_json::Value::Null } else { serde_json::Value::String(description) },
@@ -4411,6 +4629,15 @@ impl App {
             "has_issues": has_issues,
             "has_discussions": has_discussions,
             "has_wiki": has_wiki,
+            "has_projects": has_projects,
+            "is_template": is_template,
+            "allow_squash_merge": allow_squash_merge,
+            "allow_merge_commit": allow_merge_commit,
+            "allow_rebase_merge": allow_rebase_merge,
+            "allow_auto_merge": allow_auto_merge,
+            "delete_branch_on_merge": delete_branch_on_merge,
+            "allow_update_branch": allow_update_branch,
+            "web_commit_signoff_required": web_commit_signoff_required,
         });
         let tx = self.tx.clone();
         let client = self.client.clone();
@@ -4418,6 +4645,215 @@ impl App {
             let result = client.update_repository(&full_name, &patch);
             let _ = tx.send(Msg::RepoUpdated(result));
         });
+    }
+
+    pub fn open_publish_release(&mut self) {
+        let Some(repo) = self.effective_repo() else {
+            self.set_status(StatusKind::Info, "先挑一个仓库嘛，人家才知道发哪个喵~");
+            return;
+        };
+        if !self.is_own_repo(&repo) {
+            self.set_status(StatusKind::Info, "只能给自己的仓库发发行版哦喵~");
+            return;
+        }
+        if !self.client.token_present() {
+            self.set_status(StatusKind::Error, "还没登录呢，发不了发行版喵~");
+            return;
+        }
+        self.release_draft = Some(ReleaseDraft::new(repo));
+        self.overlay = Some(Overlay::PublishRelease);
+    }
+
+    fn toggle_release_field(&mut self, field: ReleaseField) {
+        let Some(draft) = self.release_draft.as_mut() else {
+            return;
+        };
+        draft.field = field;
+        match field {
+            ReleaseField::Draft => draft.draft = !draft.draft,
+            ReleaseField::Prerelease => draft.prerelease = !draft.prerelease,
+            ReleaseField::GenerateNotes => draft.generate_notes = !draft.generate_notes,
+            ReleaseField::Latest => draft.latest = !draft.latest,
+            _ => {}
+        }
+    }
+
+    pub fn handle_release_key(&mut self, key: KeyEvent) {
+        let Some(draft) = self.release_draft.as_mut() else {
+            self.overlay = None;
+            return;
+        };
+        if draft.publishing {
+            return;
+        }
+        if draft.confirming {
+            match key.code {
+                KeyCode::Enter => self.confirm_release(),
+                KeyCode::Esc => {
+                    draft.confirming = false;
+                    self.set_status(StatusKind::Info, "取消发布啦喵~");
+                }
+                _ => {}
+            }
+            return;
+        }
+        match key.code {
+            KeyCode::Esc => {
+                self.overlay = None;
+                self.release_draft = None;
+                return;
+            }
+            KeyCode::Tab => {
+                draft.field = draft.field.next();
+                return;
+            }
+            KeyCode::BackTab => {
+                draft.field = draft.field.prev();
+                return;
+            }
+            _ => {}
+        }
+        let field = draft.field;
+        match field {
+            ReleaseField::Draft
+            | ReleaseField::Prerelease
+            | ReleaseField::GenerateNotes
+            | ReleaseField::Latest => {
+                if matches!(key.code, KeyCode::Enter | KeyCode::Char(' ')) {
+                    self.toggle_release_field(field);
+                }
+            }
+            _ => {
+                if key.code == KeyCode::Enter && field != ReleaseField::Notes {
+                    draft.field = field.next();
+                    return;
+                }
+                let Some(input) = field.text_input_mut(draft) else {
+                    return;
+                };
+                match key.code {
+                    KeyCode::Enter => input.insert('\n'),
+                    KeyCode::Backspace => input.backspace(),
+                    KeyCode::Delete => input.delete(),
+                    KeyCode::Left => input.left(),
+                    KeyCode::Right => input.right(),
+                    KeyCode::Home => input.home(),
+                    KeyCode::End => input.end(),
+                    KeyCode::Char(ch) if !ch.is_control() => input.insert(ch),
+                    _ => {}
+                }
+            }
+        }
+    }
+
+    pub fn submit_release(&mut self) {
+        let Some(draft) = self.release_draft.as_mut() else {
+            return;
+        };
+        if draft.publishing {
+            return;
+        }
+        let tag = draft.tag.value.trim().to_string();
+        if tag.is_empty() {
+            draft.field = ReleaseField::Tag;
+            draft.error = Some("标签不能空着喵~".to_string());
+            return;
+        }
+        if tag.chars().any(char::is_whitespace) {
+            draft.field = ReleaseField::Tag;
+            draft.error = Some("标签里不能有空格喵~".to_string());
+            return;
+        }
+        if draft.notes.value.trim().is_empty() && !draft.generate_notes {
+            draft.field = ReleaseField::GenerateNotes;
+            draft.error = Some("说明空着时要打开「自动生成说明」喵~".to_string());
+            return;
+        }
+        for asset in draft.assets_list() {
+            if !std::path::Path::new(&asset).is_file() {
+                draft.field = ReleaseField::Assets;
+                draft.error = Some(format!("附件找不到喵~：{asset}（要写本地文件路径哦）"));
+                return;
+            }
+        }
+        draft.error = None;
+        draft.confirming = true;
+        let repo = draft.repo.display_full_name();
+        self.set_status(
+            StatusKind::Info,
+            &format!("要发布 {repo} {tag} 吗？Enter 确认，Esc 取消喵~"),
+        );
+    }
+
+    pub fn confirm_release(&mut self) {
+        let Some(draft) = self.release_draft.clone() else {
+            return;
+        };
+        if draft.publishing {
+            return;
+        }
+        let repo = draft.repo.display_full_name();
+        let tag = draft.tag.value.trim().to_string();
+        let payload = draft.payload();
+        let assets = draft.assets_list();
+        if let Some(current) = self.release_draft.as_mut() {
+            current.publishing = true;
+            current.confirming = false;
+            current.error = None;
+        }
+        self.set_status(
+            StatusKind::Info,
+            &format!("正在给 {repo} 发布 {tag} 喵~..."),
+        );
+        let tx = self.tx.clone();
+        let client = self.client.clone();
+        std::thread::spawn(move || {
+            let result = match client.create_release(&repo, &payload) {
+                Ok(release) => {
+                    let mut uploaded = 0;
+                    let mut asset_error = None;
+                    for asset in &assets {
+                        match client.upload_release_asset(
+                            &repo,
+                            release.id,
+                            std::path::Path::new(asset),
+                        ) {
+                            Ok(()) => uploaded += 1,
+                            Err(error) => {
+                                asset_error = Some(format!("附件 {asset} 没传上：{error}"));
+                                break;
+                            }
+                        }
+                    }
+                    Ok((release, uploaded, asset_error))
+                }
+                Err(error) => Err(error),
+            };
+            let _ = tx.send(Msg::ReleasePublished { repo, result });
+        });
+    }
+
+    fn clear_release_draft(&mut self) {
+        let Some(draft) = self.release_draft.as_mut() else {
+            return;
+        };
+        if draft.publishing {
+            return;
+        }
+        let target = draft.target.value.clone();
+        draft.tag = TextInput::new("");
+        draft.title = TextInput::new("");
+        draft.assets = TextInput::new("");
+        draft.notes = TextInput::new("");
+        draft.target = TextInput::new(target);
+        draft.draft = false;
+        draft.prerelease = false;
+        draft.generate_notes = true;
+        draft.latest = false;
+        draft.field = ReleaseField::Tag;
+        draft.confirming = false;
+        draft.error = None;
+        self.set_status(StatusKind::Info, "发布表单清空啦喵~");
     }
 
     fn handle_repo_edit_key(&mut self, key: KeyEvent) {
@@ -4492,7 +4928,7 @@ impl App {
             }
             KeyCode::Char('G') | KeyCode::End => {
                 if let Some(edit) = self.repo_edit.as_mut() {
-                    edit.row = 8;
+                    edit.row = 17;
                 }
             }
             KeyCode::Enter | KeyCode::Char('\r') | KeyCode::Char('\n') => match row {
@@ -4503,15 +4939,13 @@ impl App {
                 }
                 4 => self.toggle_repo_visibility(),
                 5 => self.toggle_repo_archived(),
-                6 => self.toggle_repo_flag(6),
-                7 => self.toggle_repo_flag(7),
-                8 => self.toggle_repo_flag(8),
+                6..=17 => self.toggle_repo_flag(row),
                 _ => {}
             },
             KeyCode::Left | KeyCode::Right => match row {
                 4 => self.toggle_repo_visibility(),
                 5 => self.toggle_repo_archived(),
-                6..=8 => self.toggle_repo_flag(row),
+                6..=17 => self.toggle_repo_flag(row),
                 _ => {}
             },
             KeyCode::Char('s') => self.save_repo_edit(),
@@ -6424,6 +6858,11 @@ impl App {
                 action: Action::Refresh,
             },
             PaletteItem {
+                label: "发布发行版".to_string(),
+                hint: "n · 只给自己的仓库发".to_string(),
+                action: Action::OpenPublishRelease,
+            },
+            PaletteItem {
                 label: "保存设置".to_string(),
                 hint: "Ctrl+S · 写入配置文件".to_string(),
                 action: Action::SaveConfig,
@@ -7298,7 +7737,7 @@ impl App {
         }
         if self.page == Page::Settings {
             if delta > 0 {
-                self.settings_row = (self.settings_row + 1).min(13);
+                self.settings_row = (self.settings_row + 1).min(12);
             } else {
                 self.settings_row = self.settings_row.saturating_sub(1);
             }
@@ -8603,6 +9042,8 @@ impl App {
                 self.submit_new_pull();
             } else if self.overlay == Some(Overlay::EditRepo) {
                 self.save_repo_edit();
+            } else if self.overlay == Some(Overlay::PublishRelease) {
+                self.submit_release();
             } else if self.overlay == Some(Overlay::RepoLanguages) {
                 return;
             } else if self.page == Page::IssueDetail && self.issue_comment_focus {
@@ -8703,6 +9144,10 @@ impl App {
         }
         if self.overlay == Some(Overlay::EditRepo) {
             self.handle_repo_edit_key(key);
+            return;
+        }
+        if self.overlay == Some(Overlay::PublishRelease) {
+            self.handle_release_key(key);
             return;
         }
         if self.overlay == Some(Overlay::Cache) {
@@ -9141,7 +9586,7 @@ impl App {
                     return;
                 }
                 KeyCode::Tab => {
-                    self.settings_row = (self.settings_row + 1).min(13);
+                    self.settings_row = (self.settings_row + 1).min(12);
                     return;
                 }
                 KeyCode::BackTab => {
@@ -9247,6 +9692,10 @@ impl App {
                 }
                 KeyCode::Char('v') if self.page == Page::Repo => {
                     self.open_tags();
+                    return;
+                }
+                KeyCode::Char('n') if matches!(self.page, Page::Repo | Page::ReleaseDetail) => {
+                    self.open_publish_release();
                     return;
                 }
                 KeyCode::Char('y') if self.page == Page::ReleaseDetail => {
@@ -9456,7 +9905,7 @@ impl App {
             Page::Commits => self.move_commit_selection(1),
             Page::ReleaseDetail => self.move_release_asset_selection(1),
             Page::Notifications => self.move_notification_selection(1),
-            Page::Settings => self.settings_row = (self.settings_row + 1).min(13),
+            Page::Settings => self.settings_row = (self.settings_row + 1).min(12),
             Page::Home => self.move_home_selection(1),
             Page::IssueDetail => self.issue_scroll_by(1),
             Page::Gists => self.move_gist_selection(1),
@@ -9492,7 +9941,7 @@ impl App {
     fn key_end(&mut self) {
         match self.page {
             Page::Repo => self.set_repo_pane_scroll(u16::MAX),
-            Page::Settings => self.settings_row = 13,
+            Page::Settings => self.settings_row = 12,
             Page::Actions => {
                 self.select_action_run(self.action_runs.len().saturating_sub(1));
             }
@@ -9569,7 +10018,7 @@ impl App {
             Page::Compare => self.compare_scroll_by(10),
             Page::Files => self.file_scroll_by(10),
             Page::Network => self.move_network_selection(5),
-            Page::Settings => self.settings_row = (self.settings_row + 3).min(13),
+            Page::Settings => self.settings_row = (self.settings_row + 3).min(12),
             Page::Account => {}
             _ => self.next_list_page(),
         }
@@ -9676,12 +10125,11 @@ impl App {
             1 => self.toggle_file_tree(),
             2 => self.toggle_readme(),
             3 => self.toggle_transparent(),
-            4 => self.toggle_gradients(),
-            7 => self.adjust_ttl(TtlKind::Repositories, direction),
-            8 => self.adjust_ttl(TtlKind::Detail, direction),
-            9 => self.adjust_ttl(TtlKind::Search, direction),
-            10 => self.adjust_commit_limit(direction),
-            11 => self.cycle_default_page(direction),
+            6 => self.adjust_ttl(TtlKind::Repositories, direction),
+            7 => self.adjust_ttl(TtlKind::Detail, direction),
+            8 => self.adjust_ttl(TtlKind::Search, direction),
+            9 => self.adjust_commit_limit(direction),
+            10 => self.cycle_default_page(direction),
             _ => {}
         }
     }
@@ -9692,16 +10140,15 @@ impl App {
             1 => self.toggle_file_tree(),
             2 => self.toggle_readme(),
             3 => self.toggle_transparent(),
-            4 => self.toggle_gradients(),
-            5 => self.start_download_dir_edit(),
-            6 => self.start_proxy_edit(),
-            7 => self.adjust_ttl(TtlKind::Repositories, 1),
-            8 => self.adjust_ttl(TtlKind::Detail, 1),
-            9 => self.adjust_ttl(TtlKind::Search, 1),
-            10 => self.adjust_commit_limit(1),
-            11 => self.cycle_default_page(1),
-            12 => self.clear_cache(),
-            13 => self.save_config(true),
+            4 => self.start_download_dir_edit(),
+            5 => self.start_proxy_edit(),
+            6 => self.adjust_ttl(TtlKind::Repositories, 1),
+            7 => self.adjust_ttl(TtlKind::Detail, 1),
+            8 => self.adjust_ttl(TtlKind::Search, 1),
+            9 => self.adjust_commit_limit(1),
+            10 => self.cycle_default_page(1),
+            11 => self.clear_cache(),
+            12 => self.save_config(true),
             _ => {}
         }
     }
@@ -9716,7 +10163,7 @@ impl App {
         let page = Page::DEFAULT_PAGES[next];
         self.config.default_page = page.default_name().to_string();
         self.config_dirty = true;
-        self.settings_row = 11;
+        self.settings_row = 10;
         self.set_status(
             StatusKind::Info,
             &format!(
@@ -9753,7 +10200,6 @@ impl App {
         }
         let mut theme = Theme::load(&self.paths, &flavor);
         theme.transparent = self.config.transparent;
-        theme.gradients = self.config.gradients;
         self.theme = theme;
         self.config.theme = flavor;
         self.config_dirty = true;
@@ -9769,13 +10215,13 @@ impl App {
     pub fn start_proxy_edit(&mut self) {
         self.editing_proxy = true;
         self.proxy_input = TextInput::new(self.config.proxy.clone());
-        self.settings_row = 6;
+        self.settings_row = 5;
     }
 
     pub fn start_download_dir_edit(&mut self) {
         self.editing_download_dir = true;
         self.download_input = TextInput::new(self.config.download_dir.clone());
-        self.settings_row = 5;
+        self.settings_row = 4;
     }
 
     fn commit_download_dir_edit(&mut self) {
@@ -9872,21 +10318,6 @@ impl App {
         );
     }
 
-    pub fn toggle_gradients(&mut self) {
-        self.settings_row = 4;
-        self.config.gradients = !self.config.gradients;
-        self.theme.gradients = self.config.gradients;
-        self.config_dirty = true;
-        self.set_status(
-            StatusKind::Info,
-            if self.config.gradients {
-                "渐变效果打开啦，记得保存设置喵~"
-            } else {
-                "渐变效果关掉啦喵~"
-            },
-        );
-    }
-
     fn commit_proxy_edit(&mut self) {
         let value = self
             .proxy_input
@@ -9965,7 +10396,7 @@ impl App {
     }
 
     pub fn handle_settings_row(&mut self, row: usize) {
-        self.settings_row = row.min(13);
+        self.settings_row = row.min(12);
     }
 
     pub fn handle_paste(&mut self, text: &str) {
@@ -10086,6 +10517,25 @@ impl App {
                     }
                     return;
                 }
+                if self.overlay == Some(Overlay::PublishRelease) {
+                    let busy = self
+                        .release_draft
+                        .as_ref()
+                        .is_some_and(|draft| draft.publishing);
+                    if busy {
+                        return;
+                    }
+                    if let Some(hit) = self.hit_at(mouse.column, mouse.row).cloned() {
+                        self.handle_action(hit.action);
+                    } else if !self
+                        .layout
+                        .contains(self.layout.overlay, mouse.column, mouse.row)
+                    {
+                        self.overlay = None;
+                        self.release_draft = None;
+                    }
+                    return;
+                }
                 if let Some(hit) = self.hit_at(mouse.column, mouse.row).cloned() {
                     self.handle_action(hit.action);
                 }
@@ -10157,14 +10607,13 @@ impl App {
             Action::ToggleFileTree => self.toggle_file_tree(),
             Action::ToggleReadme => self.toggle_readme(),
             Action::ToggleTransparent => self.toggle_transparent(),
-            Action::ToggleGradients => self.toggle_gradients(),
             Action::Ttl(kind, direction) => self.adjust_ttl(kind, direction),
             Action::ClearCache => self.clear_cache(),
             Action::SaveConfig => self.save_config(true),
             Action::OpenDownloadDir => self.open_download_dir(),
             Action::SetSettingsRow(row) => self.handle_settings_row(row),
             Action::CommitLimit(direction) => {
-                self.settings_row = 10;
+                self.settings_row = 9;
                 self.adjust_commit_limit(direction);
             }
             Action::OpenLanguages => self.open_languages(),
@@ -10197,8 +10646,17 @@ impl App {
                 if self.overlay == Some(Overlay::MergePr) && self.issue_action_loading {
                     return;
                 }
+                if self.overlay == Some(Overlay::PublishRelease)
+                    && self
+                        .release_draft
+                        .as_ref()
+                        .is_some_and(|draft| draft.publishing)
+                {
+                    return;
+                }
                 self.overlay = None;
                 self.repo_edit = None;
+                self.release_draft = None;
                 self.fork_repo = None;
                 self.delete_repo = None;
                 self.cancel_run = None;
@@ -10221,6 +10679,24 @@ impl App {
                 }
             }
             Action::SaveRepoEdit => self.save_repo_edit(),
+            Action::OpenPublishRelease => self.open_publish_release(),
+            Action::FocusReleaseField(field) => {
+                if let Some(draft) = self.release_draft.as_mut() {
+                    draft.field = field;
+                    match field {
+                        ReleaseField::Tag => draft.tag.end(),
+                        ReleaseField::Title => draft.title.end(),
+                        ReleaseField::Target => draft.target.end(),
+                        ReleaseField::Assets => draft.assets.end(),
+                        ReleaseField::Notes => draft.notes.end(),
+                        _ => {}
+                    }
+                }
+            }
+            Action::ToggleReleaseField(field) => self.toggle_release_field(field),
+            Action::SubmitRelease => self.submit_release(),
+            Action::ConfirmRelease => self.confirm_release(),
+            Action::ClearReleaseDraft => self.clear_release_draft(),
             Action::RefreshRateLimit => self.fetch_rate_limit(true),
             Action::OpenActions => self.open_actions(),
             Action::OpenBranches => self.open_branches(),
@@ -10657,6 +11133,36 @@ mod tests {
     }
 
     #[test]
+    fn release_draft_builds_payload_and_asset_list() {
+        let repo = Repo {
+            full_name: "me/demo".to_string(),
+            default_branch: "main".to_string(),
+            ..Default::default()
+        };
+        let mut draft = ReleaseDraft::new(repo);
+        assert_eq!(draft.target.value, "main");
+        assert_eq!(draft.payload()["tag_name"], "");
+        assert_eq!(draft.payload()["generate_release_notes"], true);
+        draft.tag = TextInput::new("v1.0.7");
+        draft.title = TextInput::new("Release 1.0.7");
+        draft.notes = TextInput::new("notes");
+        draft.draft = true;
+        draft.prerelease = true;
+        draft.latest = true;
+        draft.assets = TextInput::new("/tmp/a.zip, \"/tmp/b.tar.gz\"");
+        let payload = draft.payload();
+        assert_eq!(payload["tag_name"], "v1.0.7");
+        assert_eq!(payload["name"], "Release 1.0.7");
+        assert_eq!(payload["body"], "notes");
+        assert_eq!(payload["draft"], true);
+        assert_eq!(payload["prerelease"], true);
+        assert_eq!(payload["make_latest"], "true");
+        assert_eq!(payload["target_commitish"], "main");
+        assert!(payload.get("generate_release_notes").is_none());
+        assert_eq!(draft.assets_list(), vec!["/tmp/a.zip", "/tmp/b.tar.gz"]);
+    }
+
+    #[test]
     fn workflow_inputs_must_be_json_object() {
         assert!(parse_workflow_inputs("").unwrap().is_none());
         assert!(parse_workflow_inputs("{}").unwrap().is_none());
@@ -10919,7 +11425,7 @@ mod tests {
         app.config.default_page = "home".to_string();
         app.cycle_default_page(1);
         assert_eq!(app.config.default_page, "repositories");
-        assert_eq!(app.settings_row, 11);
+        assert_eq!(app.settings_row, 10);
         assert!(app.config_dirty);
         app.cycle_default_page(-1);
         assert_eq!(app.config.default_page, "home");
@@ -10936,19 +11442,6 @@ mod tests {
         app.toggle_transparent();
         assert_eq!(app.config.transparent, !before);
         assert_eq!(app.theme.transparent, !before);
-        assert!(app.config_dirty);
-        let _ = std::fs::remove_dir_all(root);
-    }
-
-    #[test]
-    fn toggle_gradients_updates_theme_live() {
-        let root = std::env::temp_dir().join(format!("gitx-gradients-{}", std::process::id()));
-        let paths = Paths::for_test(root.join("config"), root.join("cache"));
-        let mut app = App::settings(paths, None);
-        assert!(app.theme.gradients);
-        app.toggle_gradients();
-        assert!(!app.config.gradients);
-        assert!(!app.theme.gradients);
         assert!(app.config_dirty);
         let _ = std::fs::remove_dir_all(root);
     }

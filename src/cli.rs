@@ -20,7 +20,6 @@ pub enum Command {
     Github {
         theme: Option<String>,
     },
-    Release,
     Md {
         path: PathBuf,
         theme: Option<String>,
@@ -105,7 +104,6 @@ where
     match positional.as_slice() {
         [] => Ok(Command::Github { theme }),
         [one] if one == "settings" => Ok(Command::Settings { theme }),
-        [one] if one == "release" => Ok(Command::Release),
         [one] if one == "md" => Ok(Command::Md {
             path: path("."),
             theme,
@@ -116,7 +114,6 @@ where
         }),
         [one, ..] if one == "md" => Err("md 后面最多带一个目录或文件喵~".to_string()),
         [one, ..] if one == "settings" => Err("settings 后面不用带参数喵~".to_string()),
-        [one, ..] if one == "release" => Err("release 后面不用带参数喵~".to_string()),
         [one] if one == "status" => Ok(Command::Status { path: path(".") }),
         [one, two] if one == "status" => Ok(Command::Status { path: path(two) }),
         [one] if one == "log" => Ok(Command::Log {
@@ -212,7 +209,6 @@ pub fn print_help() {
 用法：\n\
   gxt [--theme <主题>]             打开 GitHub 工作台喵~\n\
   gxt settings [--theme <主题>]    打开全局设置 TUI喵~\n\
-  gxt release                      打开个人发行版发布 TUI喵~\n\
   gxt md [目录或文件]              打开 Markdown 预览器喵~\n\
   gxt status [路径]                打印本地仓库状态喵~\n\
   gxt log [路径] [-n <条数>]       打印最近提交喵~\n\
@@ -262,10 +258,6 @@ mod tests {
         ));
         assert!(parse(args(&["/tmp/demo", "--theme=mocha"])).is_err());
         assert!(matches!(parse(args(&["--help"])).unwrap(), Command::Help));
-        assert!(matches!(
-            parse(args(&["release"])).unwrap(),
-            Command::Release
-        ));
         assert!(matches!(
             parse(args(&["md"])).unwrap(),
             Command::Md { path, theme: None } if path == std::path::Path::new(".")

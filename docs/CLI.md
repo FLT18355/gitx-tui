@@ -8,7 +8,6 @@
 | --- | --- |
 | `gxt` | 打开 GitHub 工作台 |
 | `gxt settings` | 打开全局设置 TUI |
-| `gxt release` | 打开个人发行版发布 TUI（依赖 `gh`） |
 | `gxt md [目录或文件]` | 打开 Markdown 预览器，递归读取目录和子目录的 `.md` |
 | `gxt status [路径]` | 打印本地仓库状态 |
 | `gxt log [路径] [-n <条数>]` | 打印最近提交 |
@@ -37,7 +36,6 @@
 ```bash
 gxt
 gxt settings
-gxt release
 gxt md
 gxt md ~/notes
 gxt md README.md --theme latte

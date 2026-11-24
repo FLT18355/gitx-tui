@@ -29,7 +29,6 @@ pub fn expand_tilde(value: &str) -> PathBuf {
 pub struct Config {
     pub theme: String,
     pub transparent: bool,
-    pub gradients: bool,
     pub proxy: String,
     pub repos_ttl_secs: u64,
     pub detail_ttl_secs: u64,
@@ -48,7 +47,6 @@ impl Default for Config {
         Self {
             theme: "mocha".to_string(),
             transparent: false,
-            gradients: true,
             proxy: DEFAULT_PROXY.to_string(),
             repos_ttl_secs: 300,
             detail_ttl_secs: 900,
@@ -256,7 +254,6 @@ mod tests {
         assert!(!config.show_file_tree);
         assert!(!config.show_readme);
         assert!(!config.transparent);
-        assert!(config.gradients);
         assert_eq!(config.download_dir, default_download_dir());
     }
 

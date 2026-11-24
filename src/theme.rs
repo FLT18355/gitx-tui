@@ -17,8 +17,6 @@ pub struct Theme {
     pub name: String,
     /// Draw page backgrounds with the terminal default, letting its wallpaper show.
     pub transparent: bool,
-    /// Draw multi-color gradients in headers, rules and highlights.
-    pub gradients: bool,
     colors: BTreeMap<String, Color>,
 }
 
@@ -115,7 +113,6 @@ impl Theme {
             flavor: flavor.to_string(),
             name,
             transparent: false,
-            gradients: true,
             colors,
         })
     }

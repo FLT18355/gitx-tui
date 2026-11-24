@@ -1,6 +1,6 @@
 use crate::app::{
     Action, App, CompareSide, CompareView, GistField, HitBox, IssueKind, LayoutRects, NetworkTab,
-    Overlay, Page, PullField, RepoPane, StatusKind, TextInput, TtlKind, cache_groups,
+    Overlay, Page, PullField, ReleaseField, RepoPane, StatusKind, TextInput, TtlKind, cache_groups,
 };
 use crate::format;
 use crate::icons;
@@ -88,6 +88,9 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
         Some(Overlay::DeleteGist) => draw_delete_gist_overlay(frame, app, &theme, area, &mut hits),
         Some(Overlay::NewPull) => draw_new_pull_overlay(frame, app, &theme, area, &mut hits),
         Some(Overlay::MergePr) => draw_merge_overlay(frame, app, &theme, area, &mut hits),
+        Some(Overlay::PublishRelease) => {
+            draw_publish_release_overlay(frame, app, &theme, area, &mut hits)
+        }
         None => app.layout.overlay = Rect::default(),
     }
 
@@ -103,56 +106,29 @@ fn draw_header(
     hits: &mut Vec<HitBox>,
 ) {
     fill(frame, area, theme.color("mantle"));
-    let anim = animation_phase(app, 3200);
-    let wave = animation_wave(app, 1600);
     let rule = |width: usize| {
-        if theme.gradients {
-            gradient_line_phase(
-                width,
-                "─",
-                theme.color("surface1"),
-                theme.color("overlay0"),
-                anim,
-            )
-        } else {
-            Line::from(Span::styled(
-                "─".repeat(width),
-                Style::default().fg(theme.color("surface1")),
-            ))
-        }
+        Line::from(Span::styled(
+            "─".repeat(width),
+            Style::default().fg(theme.color("surface1")),
+        ))
     };
     let brand = Rect::new(area.x + 2, area.y, area.width.saturating_sub(4), 1);
     let mut title = vec![Span::styled(
         format!("{} ", icons::GITHUB),
         Style::default().fg(theme.color("blue")),
     )];
-    let brand_spans = if theme.gradients {
-        gradient_segments_phase(
-            &[
-                (
-                    "gxt".to_string(),
-                    Style::default().add_modifier(Modifier::BOLD),
-                ),
-                (" · github workspace".to_string(), Style::default()),
-            ],
-            theme.color("blue"),
-            theme.color("mauve"),
-            anim,
-        )
-    } else {
-        vec![
-            (
-                "gxt".to_string(),
-                Style::default()
-                    .fg(theme.color("blue"))
-                    .add_modifier(Modifier::BOLD),
-            ),
-            (
-                " · github workspace".to_string(),
-                Style::default().fg(theme.color("blue")),
-            ),
-        ]
-    };
+    let brand_spans = vec![
+        (
+            "gxt".to_string(),
+            Style::default()
+                .fg(theme.color("blue"))
+                .add_modifier(Modifier::BOLD),
+        ),
+        (
+            " · github workspace".to_string(),
+            Style::default().fg(theme.color("blue")),
+        ),
+    ];
     title.extend(
         brand_spans
             .into_iter()
@@ -356,11 +332,7 @@ fn draw_header(
         fill(frame, rect, bg);
         let style = if selected {
             Style::default()
-                .fg(if theme.gradients {
-                    color_mix(theme.color("blue"), theme.color("mauve"), wave)
-                } else {
-                    theme.color("blue")
-                })
+                .fg(theme.color("blue"))
                 .add_modifier(Modifier::BOLD)
         } else if hovered {
             Style::default().fg(theme.color("text"))
@@ -394,20 +366,10 @@ fn draw_header(
         Rect::new(area.x, area.y + 2, area.width, 1),
     );
     if let Some(rect) = selected_rect {
-        let underline = if theme.gradients {
-            Line::from(gradient_chars_phase(
-                rect.width as usize,
-                "━",
-                theme.color("blue"),
-                theme.color("mauve"),
-                anim,
-            ))
-        } else {
-            Line::from(Span::styled(
-                "━".repeat(rect.width as usize),
-                Style::default().fg(theme.color("blue")),
-            ))
-        };
+        let underline = Line::from(Span::styled(
+            "━".repeat(rect.width as usize),
+            Style::default().fg(theme.color("blue")),
+        ));
         frame.render_widget(
             Paragraph::new(underline),
             Rect::new(rect.x, area.y + 2, rect.width, 1),
@@ -417,15 +379,7 @@ fn draw_header(
 
 fn draw_footer(frame: &mut Frame, app: &App, theme: &Theme, area: Rect, _hits: &[HitBox]) {
     fill(frame, area, theme.color("crust"));
-    let busy_color = if theme.gradients {
-        color_mix(
-            theme.color("peach"),
-            theme.color("yellow"),
-            animation_wave(app, 1400),
-        )
-    } else {
-        theme.color("peach")
-    };
+    let busy_color = theme.color("peach");
     let status_rect = Rect::new(area.x + 2, area.y, area.width.saturating_sub(26), 1);
     let (text, color) = if let Some(download) = app.download_summary() {
         (format!("{}  {}", app.spinner(), download), busy_color)
@@ -2036,18 +1990,11 @@ fn draw_metric_bar(
             .style(Style::default().fg(theme.color("subtext0"))),
         Rect::new(area.x, area.y, label_width, 1),
     );
-    let bar_end = if theme.gradients {
-        color_mix(color, theme.color("mauve"), 0.6)
-    } else {
-        color
-    };
     let mut spans = vec![Span::styled(format!("{icon} "), Style::default().fg(color))];
-    spans.extend(gradient_chars(filled, "▰", color, bar_end));
-    spans.extend(gradient_chars(
-        inner_bar.saturating_sub(filled),
-        "▱",
-        theme.color("surface1"),
-        theme.color("surface1"),
+    spans.push(Span::styled("▰".repeat(filled), Style::default().fg(color)));
+    spans.push(Span::styled(
+        "▱".repeat(inner_bar.saturating_sub(filled)),
+        Style::default().fg(theme.color("surface1")),
     ));
     frame.render_widget(
         Paragraph::new(Line::from(spans)),
@@ -2121,27 +2068,12 @@ fn draw_section_header(
         format!("{icon} "),
         Style::default().fg(theme.color("blue")),
     )];
-    if theme.gradients {
-        spans.extend(
-            gradient_segments(
-                &[(
-                    title.to_string(),
-                    Style::default().add_modifier(Modifier::BOLD),
-                )],
-                theme.color("blue"),
-                theme.color("mauve"),
-            )
-            .into_iter()
-            .map(|(text, style)| Span::styled(text, style)),
-        );
-    } else {
-        spans.push(Span::styled(
-            title.to_string(),
-            Style::default()
-                .fg(theme.color("text"))
-                .add_modifier(Modifier::BOLD),
-        ));
-    }
+    spans.push(Span::styled(
+        title.to_string(),
+        Style::default()
+            .fg(theme.color("text"))
+            .add_modifier(Modifier::BOLD),
+    ));
     spans.push(Span::styled("  ", Style::default()));
     let used = format::text_width(&format!("{icon} {title}  "));
     let note = if area.width as usize > used + format::text_width(note) + 6 {
@@ -2153,19 +2085,10 @@ fn draw_section_header(
     let rule_width = (area.width as usize)
         .saturating_sub(used + note_width + 2)
         .max(1);
-    if theme.gradients {
-        spans.extend(gradient_chars(
-            rule_width,
-            "─",
-            theme.color("surface1"),
-            theme.color("surface2"),
-        ));
-    } else {
-        spans.push(Span::styled(
-            "─".repeat(rule_width),
-            Style::default().fg(theme.color("surface1")),
-        ));
-    }
+    spans.push(Span::styled(
+        "─".repeat(rule_width),
+        Style::default().fg(theme.color("surface1")),
+    ));
     if !note.is_empty() {
         spans.push(Span::styled(
             format!("  {note}"),
@@ -3567,6 +3490,11 @@ fn draw_repository_detail(
                 Action::OpenRepoEdit,
                 false,
             ));
+            buttons.push((
+                icons::label(icons::TAG, "发布喵~"),
+                Action::OpenPublishRelease,
+                false,
+            ));
         }
         for (label, action, primary) in buttons {
             let width = format::text_width(&label) as u16 + 4;
@@ -3690,32 +3618,14 @@ fn draw_page_title(
     hits: &mut Vec<HitBox>,
 ) {
     let title_area = Rect::new(inner.x, inner.y, inner.width.saturating_sub(12), 1);
-    if theme.gradients {
-        let spans = gradient_segments_phase(
-            &[(
-                title.to_string(),
-                Style::default().add_modifier(Modifier::BOLD),
-            )],
-            theme.color("blue"),
-            theme.color("mauve"),
-            animation_phase(app, 3600),
-        )
-        .into_iter()
-        .map(|(text, style)| Span::styled(text, style));
-        frame.render_widget(
-            Paragraph::new(Line::from(spans.collect::<Vec<_>>())),
-            title_area,
-        );
-    } else {
-        frame.render_widget(
-            Paragraph::new(title).style(
-                Style::default()
-                    .fg(theme.color("text"))
-                    .add_modifier(Modifier::BOLD),
-            ),
-            title_area,
-        );
-    }
+    frame.render_widget(
+        Paragraph::new(title).style(
+            Style::default()
+                .fg(theme.color("text"))
+                .add_modifier(Modifier::BOLD),
+        ),
+        title_area,
+    );
     frame.render_widget(
         Paragraph::new(format::truncate(subtitle, inner.width as usize))
             .style(Style::default().fg(theme.color("subtext0"))),
@@ -4107,11 +4017,7 @@ fn draw_repo_page(
     let gaps = fit.saturating_sub(1) as u16;
     let gap_extra = spread.checked_div(gaps).unwrap_or(0);
     let gap_rest = spread.checked_rem(gaps).unwrap_or(0);
-    let mut action_x = if !right_arrow && left_arrow {
-        end.saturating_sub(group_width)
-    } else {
-        start
-    };
+    let mut action_x = start;
     if left_arrow {
         draw_button(
             frame,
@@ -7396,18 +7302,9 @@ fn draw_file_tree_panel(
     if let Some(loading) = app.tree_loading.as_ref()
         && loading == &repo.display_full_name()
     {
-        let loading_color = if theme.gradients {
-            color_mix(
-                theme.color("peach"),
-                theme.color("yellow"),
-                animation_wave(app, 1200),
-            )
-        } else {
-            theme.color("peach")
-        };
         frame.render_widget(
             Paragraph::new(format!("{} 人家正在翻文件树喵~...", app.spinner()))
-                .style(Style::default().fg(loading_color)),
+                .style(Style::default().fg(theme.color("peach"))),
             Rect::new(body.x, body.y, body.width, 1),
         );
         return;
@@ -7587,6 +7484,13 @@ fn draw_releases_panel(
     fill(frame, area, theme.color("mantle"));
     register(hits, area, Action::FocusRepoPane(RepoPane::Releases));
     let focused = app.repo_pane == RepoPane::Releases;
+    let publish = icons::label(icons::TAG, "发布喵~");
+    let publish_width = format::text_width(&publish) as u16 + 4;
+    let title_width = if app.is_own_repo(repo) && area.width > publish_width + 12 {
+        area.width.saturating_sub(publish_width + 3)
+    } else {
+        area.width.saturating_sub(2)
+    };
     frame.render_widget(
         Paragraph::new(icons::label(icons::TAG, "发行版喵~")).style(if focused {
             Style::default()
@@ -7595,8 +7499,25 @@ fn draw_releases_panel(
         } else {
             Style::default().fg(theme.color("text"))
         }),
-        Rect::new(area.x + 1, area.y, area.width.saturating_sub(2), 1),
+        Rect::new(area.x + 1, area.y, title_width, 1),
     );
+    if app.is_own_repo(repo) && area.width > publish_width + 12 {
+        draw_button(
+            frame,
+            app,
+            theme,
+            hits,
+            Rect::new(
+                area.x + area.width.saturating_sub(publish_width + 1),
+                area.y,
+                publish_width,
+                1,
+            ),
+            &publish,
+            Action::OpenPublishRelease,
+            false,
+        );
+    }
     let dir_label = format!("{} {}", icons::DOWNLOAD, app.download_path_label());
     frame.render_widget(
         Paragraph::new(format::truncate(
@@ -8173,119 +8094,28 @@ fn parse_link(chars: &[char], start: usize) -> Option<(String, String, usize)> {
     Some((label, url, cursor + 1))
 }
 
-fn color_mix(start: Color, end: Color, t: f32) -> Color {
-    let (Color::Rgb(sr, sg, sb), Color::Rgb(er, eg, eb)) = (start, end) else {
-        return start;
-    };
-    let mix = |a: u8, b: u8| (a as f32 + (b as f32 - a as f32) * t) as u8;
-    Color::Rgb(mix(sr, er), mix(sg, eg), mix(sb, eb))
-}
-
-fn animation_phase(app: &App, period_ms: u64) -> f32 {
-    let period = period_ms.max(1);
-    (app.started_at.elapsed().as_millis() as u64 % period) as f32 / period as f32
-}
-
-fn animation_wave(app: &App, period_ms: u64) -> f32 {
-    let phase = animation_phase(app, period_ms);
-    1.0 - (phase * 2.0 - 1.0).abs()
-}
-
-fn gradient_chars(count: usize, glyph: &str, start: Color, end: Color) -> Vec<Span<'static>> {
-    gradient_chars_phase(count, glyph, start, end, 0.0)
-}
-
-fn gradient_chars_phase(
-    count: usize,
-    glyph: &str,
-    start: Color,
-    end: Color,
-    phase: f32,
-) -> Vec<Span<'static>> {
-    if count == 0 {
-        return Vec::new();
-    }
-    let denominator = count.saturating_sub(1).max(1) as f32;
-    (0..count)
-        .map(|index| {
-            let shifted = (index as f32 / denominator + phase).rem_euclid(1.0);
-            let t = 1.0 - (shifted * 2.0 - 1.0).abs();
-            Span::styled(
-                glyph.to_string(),
-                Style::default().fg(color_mix(start, end, t)),
-            )
-        })
-        .collect()
-}
-
-fn gradient_line(count: usize, glyph: &str, start: Color, end: Color) -> Line<'static> {
-    Line::from(gradient_chars(count.max(1), glyph, start, end))
-}
-
-fn gradient_line_phase(
-    count: usize,
-    glyph: &str,
-    start: Color,
-    end: Color,
-    phase: f32,
-) -> Line<'static> {
-    Line::from(gradient_chars_phase(count.max(1), glyph, start, end, phase))
-}
-
-fn gradient_segments(
-    segments: &[(String, Style)],
-    start: Color,
-    end: Color,
-) -> Vec<(String, Style)> {
-    gradient_segments_phase(segments, start, end, 0.0)
-}
-
-fn gradient_segments_phase(
-    segments: &[(String, Style)],
-    start: Color,
-    end: Color,
-    phase: f32,
-) -> Vec<(String, Style)> {
-    let total = segments
-        .iter()
-        .map(|(text, _)| text.chars().count())
-        .sum::<usize>()
-        .max(1);
-    let mut out = Vec::new();
-    let mut index = 0;
-    for (text, style) in segments {
-        for ch in text.chars() {
-            let shifted = if total > 1 {
-                (index as f32 / (total - 1) as f32 + phase).rem_euclid(1.0)
-            } else {
-                phase.rem_euclid(1.0)
-            };
-            let t = 1.0 - (shifted * 2.0 - 1.0).abs();
-            out.push((ch.to_string(), style.fg(color_mix(start, end, t))));
-            index += 1;
-        }
-    }
-    out
-}
-
 fn horizontal_rule(width: usize, theme: &Theme) -> Line<'static> {
     if width < 12 {
-        return gradient_line(width, "─", theme.color("overlay0"), theme.color("surface2"));
+        return Line::from(Span::styled(
+            "─".repeat(width),
+            Style::default().fg(theme.color("overlay0")),
+        ));
     }
     let left = (width - 3) / 2;
     let right = width - 3 - left;
-    let mut spans = gradient_chars(left, "─", theme.color("overlay0"), theme.color("surface2"));
+    let mut spans = vec![Span::styled(
+        "─".repeat(left),
+        Style::default().fg(theme.color("overlay0")),
+    )];
     spans.push(Span::styled(
         " ◆ ",
         Style::default()
             .fg(theme.color("pink"))
             .add_modifier(Modifier::BOLD),
     ));
-    spans.extend(gradient_chars(
-        right,
-        "─",
-        theme.color("surface2"),
-        theme.color("overlay0"),
+    spans.push(Span::styled(
+        "─".repeat(right),
+        Style::default().fg(theme.color("surface2")),
     ));
     Line::from(spans)
 }
@@ -8535,11 +8365,9 @@ fn task_progress_line(done: usize, total: usize, width: usize, theme: &Theme) ->
                 .add_modifier(Modifier::BOLD),
         ),
     ];
-    spans.extend(gradient_chars(
-        filled,
-        "█",
-        theme.color("green"),
-        theme.color("teal"),
+    spans.push(Span::styled(
+        "█".repeat(filled),
+        Style::default().fg(theme.color("green")),
     ));
     spans.push(Span::styled(
         "░".repeat(bar - filled),
@@ -8728,11 +8556,9 @@ pub(crate) fn markdown_lines(text: &str, width: usize, theme: &Theme) -> Vec<Lin
                 Span::styled("╭", Style::default().fg(theme.color("surface2"))),
                 Span::styled(label, card_bg.fg(accent).add_modifier(Modifier::BOLD)),
             ];
-            top.extend(gradient_chars(
-                width.saturating_sub(label_width + 2),
-                "─",
-                accent,
-                theme.color("mauve"),
+            top.push(Span::styled(
+                "─".repeat(width.saturating_sub(label_width + 2)),
+                Style::default().fg(accent),
             ));
             top.push(Span::styled(
                 "╮",
@@ -8777,11 +8603,9 @@ pub(crate) fn markdown_lines(text: &str, width: usize, theme: &Theme) -> Vec<Lin
                 "╰",
                 Style::default().fg(theme.color("surface2")),
             )];
-            bottom.extend(gradient_chars(
-                width.saturating_sub(2),
-                "─",
-                accent,
-                theme.color("mauve"),
+            bottom.push(Span::styled(
+                "─".repeat(width.saturating_sub(2)),
+                Style::default().fg(accent),
             ));
             bottom.push(Span::styled(
                 "╯",
@@ -8882,10 +8706,9 @@ pub(crate) fn markdown_lines(text: &str, width: usize, theme: &Theme) -> Vec<Lin
         }
         if let Some(level) = heading_level(trimmed) {
             let text = trimmed[level..].trim().trim_end_matches('#').trim_end();
-            let (start, end, prefix, rule) = match level {
+            let (start, prefix, rule) = match level {
                 1 => (
                     theme.color("blue"),
-                    theme.color("mauve"),
                     vec![Span::styled(
                         "▌ ",
                         Style::default()
@@ -8896,7 +8719,6 @@ pub(crate) fn markdown_lines(text: &str, width: usize, theme: &Theme) -> Vec<Lin
                 ),
                 2 => (
                     theme.color("lavender"),
-                    theme.color("teal"),
                     vec![Span::styled(
                         "▎ ",
                         Style::default().fg(theme.color("mauve")),
@@ -8905,7 +8727,6 @@ pub(crate) fn markdown_lines(text: &str, width: usize, theme: &Theme) -> Vec<Lin
                 ),
                 3 => (
                     theme.color("peach"),
-                    theme.color("yellow"),
                     vec![Span::styled(
                         "▍ ",
                         Style::default().fg(theme.color("peach")),
@@ -8914,7 +8735,6 @@ pub(crate) fn markdown_lines(text: &str, width: usize, theme: &Theme) -> Vec<Lin
                 ),
                 _ => (
                     theme.color("subtext0"),
-                    theme.color("overlay1"),
                     vec![
                         Span::raw("  "),
                         Span::styled("· ", Style::default().fg(theme.color("overlay0"))),
@@ -8927,22 +8747,18 @@ pub(crate) fn markdown_lines(text: &str, width: usize, theme: &Theme) -> Vec<Lin
             } else {
                 Modifier::empty()
             });
-            let mut segments = inline_segments(text, style, theme);
-            if level <= 3 {
-                segments = gradient_segments(&segments, start, end);
-            }
+            let segments = inline_segments(text, style, theme);
             out.extend(prefixed_lines(&prefix, &segments, width, 8));
             if let Some((glyph, rule_width, strong)) = rule {
-                if strong {
-                    out.push(gradient_line(rule_width, glyph, start, end));
+                let color = if strong {
+                    start
                 } else {
-                    out.push(gradient_line(
-                        rule_width,
-                        glyph,
-                        theme.color("surface2"),
-                        theme.color("overlay0"),
-                    ));
-                }
+                    theme.color("surface2")
+                };
+                out.push(Line::from(Span::styled(
+                    glyph.repeat(rule_width),
+                    Style::default().fg(color),
+                )));
             } else {
                 out.push(Line::default());
             }
@@ -9520,22 +9336,9 @@ fn draw_settings_page(
         );
     }
     if y + 3 < actions_y {
-        draw_toggle_row(
-            frame,
-            app,
-            theme,
-            hits,
-            row(3),
-            4,
-            "渐变效果喵~",
-            app.config.gradients,
-            Action::ToggleGradients,
-        );
+        draw_download_dir_row(frame, app, theme, hits, row(3));
     }
     if y + 4 < actions_y {
-        draw_download_dir_row(frame, app, theme, hits, row(4));
-    }
-    if y + 5 < actions_y {
         let open_dir = icons::label(icons::DOWNLOAD_DIR, "打开下载目录喵~");
         let open_width = format::text_width(&open_dir) as u16 + 4;
         draw_button(
@@ -9543,14 +9346,14 @@ fn draw_settings_page(
             app,
             theme,
             hits,
-            Rect::new(right_column.x, y + 5, open_width, 1),
+            Rect::new(right_column.x, y + 4, open_width, 1),
             &open_dir,
             Action::OpenDownloadDir,
             false,
         );
     }
-    if y + 6 < actions_y {
-        draw_proxy_row(frame, app, theme, hits, row(6));
+    if y + 5 < actions_y {
+        draw_proxy_row(frame, app, theme, hits, row(5));
     }
     for (index, (label, kind)) in [
         ("仓库列表缓存喵~", TtlKind::Repositories),
@@ -9560,16 +9363,16 @@ fn draw_settings_page(
     .into_iter()
     .enumerate()
     {
-        let offset = 7 + index as u16;
+        let offset = 6 + index as u16;
         if y + offset < actions_y {
-            draw_ttl_row(frame, app, theme, hits, row(offset), label, kind, 7 + index);
+            draw_ttl_row(frame, app, theme, hits, row(offset), label, kind, 6 + index);
         }
     }
-    if y + 10 < actions_y {
-        draw_commit_limit_row(frame, app, theme, hits, row(10));
+    if y + 9 < actions_y {
+        draw_commit_limit_row(frame, app, theme, hits, row(9));
     }
-    if y + 11 < actions_y {
-        draw_default_page_row(frame, app, theme, hits, row(11));
+    if y + 10 < actions_y {
+        draw_default_page_row(frame, app, theme, hits, row(10));
     }
 
     let mut x = inner.x;
@@ -9680,7 +9483,7 @@ fn draw_download_dir_row(
     hits: &mut Vec<HitBox>,
     rect: Rect,
 ) {
-    if app.settings_row == 5 {
+    if app.settings_row == 4 {
         fill(frame, rect, theme.color("surface0"));
     }
     frame.render_widget(
@@ -9727,7 +9530,7 @@ fn draw_download_dir_row(
         edit_action,
         false,
     );
-    register(hits, rect, Action::SetSettingsRow(5));
+    register(hits, rect, Action::SetSettingsRow(4));
 }
 
 fn draw_theme_row(
@@ -9742,15 +9545,7 @@ fn draw_theme_row(
     let action = Action::SetTheme(flavor.to_string());
     let hovered = app.hover.as_ref() == Some(&action);
     let preview = Theme::load(&app.paths, flavor);
-    let accent = if theme.gradients {
-        color_mix(
-            theme.color("blue"),
-            theme.color("mauve"),
-            animation_wave(app, 1600),
-        )
-    } else {
-        theme.color("blue")
-    };
+    let accent = theme.color("blue");
     if selected || hovered {
         fill(frame, area, theme.color("surface0"));
     }
@@ -9800,7 +9595,7 @@ fn draw_theme_row(
 }
 
 fn draw_proxy_row(frame: &mut Frame, app: &App, theme: &Theme, hits: &mut Vec<HitBox>, rect: Rect) {
-    if app.settings_row == 6 {
+    if app.settings_row == 5 {
         fill(frame, rect, theme.color("surface0"));
     }
     frame.render_widget(
@@ -9840,7 +9635,7 @@ fn draw_proxy_row(frame: &mut Frame, app: &App, theme: &Theme, hits: &mut Vec<Hi
         Action::StartProxyEdit,
         false,
     );
-    register(hits, rect, Action::SetSettingsRow(6));
+    register(hits, rect, Action::SetSettingsRow(5));
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -9903,7 +9698,7 @@ fn draw_commit_limit_row(
     hits: &mut Vec<HitBox>,
     area: Rect,
 ) {
-    if app.settings_row == 10 {
+    if app.settings_row == 9 {
         fill(frame, area, theme.color("surface0"));
     }
     frame.render_widget(
@@ -9938,7 +9733,7 @@ fn draw_commit_limit_row(
         );
         register(hits, rect, action);
     }
-    register(hits, area, Action::SetSettingsRow(10));
+    register(hits, area, Action::SetSettingsRow(9));
 }
 
 fn draw_default_page_row(
@@ -9948,7 +9743,7 @@ fn draw_default_page_row(
     hits: &mut Vec<HitBox>,
     area: Rect,
 ) {
-    if app.settings_row == 11 {
+    if app.settings_row == 10 {
         fill(frame, area, theme.color("surface0"));
     }
     let page = Page::from_default_name(&app.config.default_page);
@@ -9977,7 +9772,7 @@ fn draw_default_page_row(
             .style(Style::default().fg(theme.color("overlay0"))),
         Rect::new(area.x, area.y, area.width.saturating_sub(1), 1),
     );
-    register(hits, area, Action::SetSettingsRow(11));
+    register(hits, area, Action::SetSettingsRow(10));
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -10032,17 +9827,8 @@ fn draw_button(
     primary: bool,
 ) {
     let hovered = app.hover.as_ref() == Some(&action);
-    let wave = animation_wave(app, 1100);
-    let primary_hover = if theme.gradients {
-        color_mix(theme.color("blue"), theme.color("sapphire"), wave)
-    } else {
-        theme.color("sapphire")
-    };
-    let secondary_hover = if theme.gradients {
-        color_mix(theme.color("surface1"), theme.color("surface2"), wave)
-    } else {
-        theme.color("surface1")
-    };
+    let primary_hover = theme.color("sapphire");
+    let secondary_hover = theme.color("surface1");
     let background = if theme.transparent {
         Color::Reset
     } else if primary {
@@ -10522,8 +10308,7 @@ fn draw_repo_edit_overlay(
         Rect::new(inner.x, inner.y + 1, inner.width, 1),
     );
 
-    let mut y = inner.y + 3;
-    for (row, label) in [
+    let labels = [
         "名称",
         "简介",
         "主页",
@@ -10533,13 +10318,20 @@ fn draw_repo_edit_overlay(
         "议题",
         "讨论",
         "Wiki",
-    ]
-    .iter()
-    .enumerate()
-    {
-        if y >= inner.y + inner.height - 3 {
-            break;
-        }
+        "项目",
+        "模板",
+        "压缩合并",
+        "合并提交",
+        "变基合并",
+        "自动合并",
+        "删分支",
+        "更新分支",
+        "签名提交",
+    ];
+    let visible = inner.height.saturating_sub(7).max(1) as usize;
+    let offset = edit.row.saturating_sub(visible.saturating_sub(1));
+    let mut y = inner.y + 3;
+    for (row, label) in labels.iter().enumerate().skip(offset).take(visible) {
         let active = edit.row == row;
         let editing = active && edit.editing;
         if active {
@@ -10557,10 +10349,11 @@ fn draw_repo_edit_overlay(
             } else {
                 Style::default().fg(theme.color("subtext0"))
             }),
-            Rect::new(inner.x + 1, y, 11, 1),
+            Rect::new(inner.x + 1, y, 13, 1),
         );
-        let value_x = inner.x + 12;
-        let value_width = inner.width.saturating_sub(12);
+        let value_x = inner.x + 14;
+        let value_width = inner.width.saturating_sub(14);
+        let toggle = |on: bool| format!("{}喵~", if on { "开启" } else { "关闭" });
         let (value, cursor) = match row {
             0 => visible_input(&edit.name, editing, value_width),
             1 => visible_input(&edit.description, editing, value_width),
@@ -10582,39 +10375,18 @@ fn draw_repo_edit_overlay(
                 },
                 0,
             ),
-            6 => (
-                format!(
-                    "Issues {}",
-                    if edit.has_issues {
-                        "开启喵~"
-                    } else {
-                        "关闭喵~"
-                    }
-                ),
-                0,
-            ),
-            7 => (
-                format!(
-                    "Discussions {}",
-                    if edit.has_discussions {
-                        "开启喵~"
-                    } else {
-                        "关闭喵~"
-                    }
-                ),
-                0,
-            ),
-            _ => (
-                format!(
-                    "Wiki {}",
-                    if edit.has_wiki {
-                        "开启喵~"
-                    } else {
-                        "关闭喵~"
-                    }
-                ),
-                0,
-            ),
+            6 => (toggle(edit.has_issues), 0),
+            7 => (toggle(edit.has_discussions), 0),
+            8 => (toggle(edit.has_wiki), 0),
+            9 => (toggle(edit.has_projects), 0),
+            10 => (toggle(edit.is_template), 0),
+            11 => (toggle(edit.allow_squash_merge), 0),
+            12 => (toggle(edit.allow_merge_commit), 0),
+            13 => (toggle(edit.allow_rebase_merge), 0),
+            14 => (toggle(edit.allow_auto_merge), 0),
+            15 => (toggle(edit.delete_branch_on_merge), 0),
+            16 => (toggle(edit.allow_update_branch), 0),
+            _ => (toggle(edit.web_commit_signoff_required), 0),
         };
         let empty = match row {
             0 => edit.name.is_empty(),
@@ -10707,6 +10479,266 @@ fn draw_repo_edit_overlay(
             Rect::new(inner.x, actions_y - 2, inner.width, 1),
         );
     }
+}
+
+fn draw_publish_release_overlay(
+    frame: &mut Frame,
+    app: &mut App,
+    theme: &Theme,
+    area: Rect,
+    hits: &mut Vec<HitBox>,
+) {
+    let Some(draft) = app.release_draft.clone() else {
+        return;
+    };
+    let (rect, inner) = overlay_panel(
+        frame,
+        theme,
+        area,
+        88,
+        26,
+        &icons::label(icons::TAG, "发布个人发行版喵~"),
+    );
+    app.layout.overlay = rect;
+    frame.render_widget(
+        Paragraph::new(format!(
+            "{} · 只对自己的仓库有效 · Tab 换栏 · Ctrl+S 发布 · Esc 关闭喵~",
+            draft.repo.display_full_name()
+        ))
+        .style(Style::default().fg(theme.color("overlay0"))),
+        Rect::new(inner.x, inner.y + 1, inner.width, 1),
+    );
+
+    let tag_rect = Rect::new(inner.x, inner.y + 3, inner.width, 1);
+    draw_overlay_input(
+        frame,
+        theme,
+        tag_rect,
+        "标签喵~",
+        &draft.tag,
+        draft.field == ReleaseField::Tag,
+        "v1.0.7（必填）",
+    );
+    register(hits, tag_rect, Action::FocusReleaseField(ReleaseField::Tag));
+    let title_rect = Rect::new(inner.x, inner.y + 4, inner.width, 1);
+    draw_overlay_input(
+        frame,
+        theme,
+        title_rect,
+        "标题喵~",
+        &draft.title,
+        draft.field == ReleaseField::Title,
+        "留空就用标签喵~",
+    );
+    register(
+        hits,
+        title_rect,
+        Action::FocusReleaseField(ReleaseField::Title),
+    );
+    let target_rect = Rect::new(inner.x, inner.y + 5, inner.width, 1);
+    draw_overlay_input(
+        frame,
+        theme,
+        target_rect,
+        "目标喵~",
+        &draft.target,
+        draft.field == ReleaseField::Target,
+        "分支或提交，留空用默认分支喵~",
+    );
+    register(
+        hits,
+        target_rect,
+        Action::FocusReleaseField(ReleaseField::Target),
+    );
+    let assets_rect = Rect::new(inner.x, inner.y + 6, inner.width, 1);
+    draw_overlay_input(
+        frame,
+        theme,
+        assets_rect,
+        "附件喵~",
+        &draft.assets,
+        draft.field == ReleaseField::Assets,
+        "本地文件路径，逗号分隔喵~",
+    );
+    register(
+        hits,
+        assets_rect,
+        Action::FocusReleaseField(ReleaseField::Assets),
+    );
+
+    let mut x = inner.x;
+    for (field, label, enabled) in [
+        (ReleaseField::Draft, "草稿", draft.draft),
+        (ReleaseField::Prerelease, "预发布", draft.prerelease),
+        (
+            ReleaseField::GenerateNotes,
+            "自动说明",
+            draft.generate_notes,
+        ),
+        (ReleaseField::Latest, "标记最新", draft.latest),
+    ] {
+        let text = format!("{} {label}", if enabled { "[x]" } else { "[ ]" });
+        let width = (format::text_width(&text) as u16 + 3).min(inner.width);
+        if x + width > inner.x + inner.width {
+            break;
+        }
+        let chip = Rect::new(x, inner.y + 7, width, 1);
+        let hovered = app.hover.as_ref() == Some(&Action::ToggleReleaseField(field));
+        fill(
+            frame,
+            chip,
+            if hovered {
+                theme.color("surface1")
+            } else if enabled {
+                theme.color("surface0")
+            } else {
+                theme.color("mantle")
+            },
+        );
+        frame.render_widget(
+            Paragraph::new(format!(" {text} ")).style(Style::default().fg(if enabled {
+                theme.color("green")
+            } else {
+                theme.color("subtext0")
+            })),
+            chip,
+        );
+        register(hits, chip, Action::ToggleReleaseField(field));
+        x += width + 1;
+    }
+
+    let buttons_y = inner.y + inner.height.saturating_sub(1);
+    let error_y = buttons_y.saturating_sub(1);
+    let notes_y = inner.y + 8;
+    let notes_outer = Rect::new(
+        inner.x,
+        notes_y,
+        inner.width,
+        error_y.saturating_sub(notes_y).max(1),
+    );
+    let notes_focused = draft.field == ReleaseField::Notes;
+    let block = Block::new()
+        .borders(Borders::ALL)
+        .border_style(Style::default().fg(if notes_focused {
+            theme.color("blue")
+        } else {
+            theme.color("surface1")
+        }));
+    let body = block.inner(notes_outer);
+    frame.render_widget(block, notes_outer);
+    if body.height > 0 {
+        let width = body.width.max(1) as usize;
+        let height = body.height as usize;
+        let (lines, cursor_row, cursor_column) =
+            format::multiline_layout(&draft.notes.value, draft.notes.cursor, width);
+        let start = if notes_focused {
+            cursor_row.saturating_sub(height.saturating_sub(1))
+        } else {
+            0
+        };
+        let visible: Vec<Line> = if draft.notes.is_empty() {
+            vec![Line::from(Span::styled(
+                "发行说明喵~ 留空就自动生成，Enter 换行喵~",
+                Style::default().fg(theme.color("overlay0")),
+            ))]
+        } else {
+            lines
+                .iter()
+                .skip(start)
+                .take(height)
+                .map(|line| {
+                    Line::from(Span::styled(
+                        line.clone(),
+                        Style::default().fg(theme.color("text")),
+                    ))
+                })
+                .collect()
+        };
+        frame.render_widget(Paragraph::new(visible), body);
+        if notes_focused && !draft.publishing {
+            let row = cursor_row.saturating_sub(start).min(height - 1);
+            let column = cursor_column.min(width.saturating_sub(1));
+            frame.set_cursor_position(Position::new(body.x + column as u16, body.y + row as u16));
+        }
+    }
+    register(
+        hits,
+        notes_outer,
+        Action::FocusReleaseField(ReleaseField::Notes),
+    );
+
+    if let Some(error) = draft.error.as_deref() {
+        frame.render_widget(
+            Paragraph::new(format::truncate(error, inner.width as usize))
+                .style(Style::default().fg(theme.color("red"))),
+            Rect::new(inner.x, error_y, inner.width, 1),
+        );
+    } else if draft.confirming {
+        frame.render_widget(
+            Paragraph::new(format::truncate(
+                &format!(
+                    "要发布 {} {} 吗？Enter 确认，Esc 取消喵~",
+                    draft.repo.display_full_name(),
+                    draft.tag.value.trim()
+                ),
+                inner.width as usize,
+            ))
+            .style(Style::default().fg(theme.color("peach"))),
+            Rect::new(inner.x, error_y, inner.width, 1),
+        );
+    }
+
+    let cancel = icons::label(icons::BACK, "取消喵~");
+    let cancel_width = format::text_width(&cancel) as u16 + 4;
+    draw_button(
+        frame,
+        app,
+        theme,
+        hits,
+        Rect::new(inner.x, buttons_y, cancel_width, 1),
+        &cancel,
+        Action::CloseOverlay,
+        false,
+    );
+    let clear = icons::label(icons::TRASH, "清空喵~");
+    let clear_width = format::text_width(&clear) as u16 + 4;
+    draw_button(
+        frame,
+        app,
+        theme,
+        hits,
+        Rect::new(inner.x + cancel_width + 1, buttons_y, clear_width, 1),
+        &clear,
+        Action::ClearReleaseDraft,
+        false,
+    );
+    let publish = if draft.publishing {
+        format!("{} 发布中...", app.spinner())
+    } else if draft.confirming {
+        icons::label(icons::CHECK, "确认发布喵~")
+    } else {
+        icons::label(icons::CHECK, "发布喵~")
+    };
+    let publish_width = format::text_width(&publish) as u16 + 4;
+    draw_button(
+        frame,
+        app,
+        theme,
+        hits,
+        Rect::new(
+            inner.x + inner.width.saturating_sub(publish_width),
+            buttons_y,
+            publish_width,
+            1,
+        ),
+        &publish,
+        if draft.confirming {
+            Action::ConfirmRelease
+        } else {
+            Action::SubmitRelease
+        },
+        true,
+    );
 }
 
 fn draw_languages_overlay(
@@ -14174,6 +14206,97 @@ mod tests {
                 .iter()
                 .any(|hit| hit.action == Action::OpenActions)
         );
+        let arrow = app
+            .hitboxes
+            .iter()
+            .find(|hit| hit.action == Action::RepoActionsLeft)
+            .expect("left arrow");
+        let first_button_x = app
+            .hitboxes
+            .iter()
+            .filter(|hit| {
+                hit.rect.y == arrow.rect.y
+                    && !matches!(
+                        hit.action,
+                        Action::RepoActionsLeft | Action::RepoActionsRight
+                    )
+            })
+            .map(|hit| hit.rect.x)
+            .min()
+            .expect("action button");
+        assert_eq!(first_button_x, arrow.rect.x + 4);
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn repo_edit_overlay_scrolls_to_extra_settings() {
+        let dir = std::env::temp_dir().join(format!("gitx-repo-edit-rows-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        let paths = crate::config::Paths::for_test(dir.join("config"), dir.join("cache"));
+        let mut app = App::settings(paths, None);
+        let repo = crate::model::Repo {
+            full_name: "me/demo".to_string(),
+            name: "demo".to_string(),
+            default_branch: "main".to_string(),
+            ..Default::default()
+        };
+        let mut edit = crate::app::RepoEdit::from_repo(&repo);
+        edit.row = 17;
+        app.repo_edit = Some(edit);
+        app.overlay = Some(Overlay::EditRepo);
+        let mut terminal = ratatui::Terminal::new(ratatui::backend::TestBackend::new(100, 30))
+            .expect("test terminal");
+        terminal
+            .draw(|frame| draw(frame, &mut app))
+            .expect("render repo edit overlay");
+        let text = buffer_text(terminal.backend().buffer())
+            .split_whitespace()
+            .collect::<String>();
+        for label in ["签名提交", "更新分支", "压缩合并"] {
+            assert!(text.contains(label), "missing {label}");
+        }
+        assert!(
+            app.hitboxes
+                .iter()
+                .any(|hit| hit.action == Action::EditRepoRow(17))
+        );
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn publish_release_overlay_renders_and_registers_hits() {
+        let dir = std::env::temp_dir().join(format!("gitx-release-overlay-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        let paths = crate::config::Paths::for_test(dir.join("config"), dir.join("cache"));
+        let mut app = App::settings(paths, None);
+        let repo = crate::model::Repo {
+            full_name: "me/demo".to_string(),
+            default_branch: "main".to_string(),
+            ..Default::default()
+        };
+        app.release_draft = Some(crate::app::ReleaseDraft::new(repo));
+        app.overlay = Some(Overlay::PublishRelease);
+        let mut terminal = ratatui::Terminal::new(ratatui::backend::TestBackend::new(100, 30))
+            .expect("test terminal");
+        terminal
+            .draw(|frame| draw(frame, &mut app))
+            .expect("render release overlay");
+        let text = buffer_text(terminal.backend().buffer())
+            .split_whitespace()
+            .collect::<String>();
+        for label in ["发布个人发行版", "标签", "附件", "自动说明", "发布"] {
+            assert!(text.contains(label), "missing {label}");
+        }
+        assert!(
+            app.hitboxes
+                .iter()
+                .any(|hit| hit.action == Action::FocusReleaseField(ReleaseField::Tag))
+        );
+        assert!(
+            app.hitboxes
+                .iter()
+                .any(|hit| hit.action == Action::SubmitRelease)
+        );
         let _ = std::fs::remove_dir_all(dir);
     }
 
@@ -14194,7 +14317,6 @@ mod tests {
         for label in [
             "主题喵~",
             "文件树预览",
-            "渐变效果",
             "下载目录",
             "API代理",
             "默认页",
@@ -14203,24 +14325,6 @@ mod tests {
             assert!(text.contains(label), "missing {label}");
         }
         let _ = std::fs::remove_dir_all(dir);
-    }
-
-    #[test]
-    fn animated_gradients_shift_with_phase() {
-        let paths = crate::config::Paths::for_test("missing".into(), "missing".into());
-        let theme = Theme::load(&paths, "mocha");
-        let start = theme.color("blue");
-        let end = theme.color("mauve");
-        let first = gradient_chars_phase(12, "━", start, end, 0.0);
-        let shifted = gradient_chars_phase(12, "━", start, end, 0.5);
-        let wrapped = gradient_chars_phase(12, "━", start, end, 1.0);
-        assert!(
-            first
-                .iter()
-                .zip(&shifted)
-                .any(|(a, b)| a.style.fg != b.style.fg)
-        );
-        assert_eq!(first[0].style.fg, wrapped[0].style.fg);
     }
 
     #[test]

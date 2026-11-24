@@ -215,6 +215,54 @@ impl ApiClient {
         }
     }
 
+    pub fn create_release(
+        &self,
+        full_name: &str,
+        payload: &serde_json::Value,
+    ) -> Result<Release, String> {
+        let url = format!("{API}/repos/{full_name}/releases");
+        let response = self.send_json_auth("post", &url, payload, "发布发行版")?;
+        serde_json::from_str(&response)
+            .map_err(|err| format!("GitHub 送回来的发行版数据人家看不懂：{err}喵~"))
+    }
+
+    pub fn upload_release_asset(
+        &self,
+        full_name: &str,
+        release_id: u64,
+        path: &Path,
+    ) -> Result<(), String> {
+        let Some(token) = self.token.as_deref() else {
+            return Err("还没有登录 GitHub，传不了附件哦喵~先运行 gh auth login 吧喵~".to_string());
+        };
+        let name = path
+            .file_name()
+            .and_then(|name| name.to_str())
+            .ok_or_else(|| format!("附件名看不懂喵~：{}", path.display()))?;
+        let bytes = fs::read(path).map_err(|err| format!("附件读不出来：{err}喵~"))?;
+        let url = format!(
+            "https://uploads.github.com/repos/{full_name}/releases/{release_id}/assets?name={}",
+            percent_encode(name)
+        );
+        let response = self
+            .download_agent
+            .post(&url)
+            .header("Accept", "application/vnd.github+json")
+            .header("X-GitHub-Api-Version", "2022-11-28")
+            .header("Authorization", format!("Bearer {token}"))
+            .header("Content-Type", "application/octet-stream")
+            .send(bytes)
+            .map_err(|err| format_transport_error(&err))?;
+        let status = response.status().as_u16();
+        let mut response = response;
+        let body = response.body_mut().read_to_string().unwrap_or_default();
+        if (200..300).contains(&status) {
+            Ok(())
+        } else {
+            Err(status_message(status, &body))
+        }
+    }
+
     pub fn action_runs(&self, full_name: &str, private: bool) -> Result<Vec<WorkflowRun>, String> {
         let url = format!("{API}/repos/{full_name}/actions/runs?per_page=30");
         let response: WorkflowRunsResponse = if private {

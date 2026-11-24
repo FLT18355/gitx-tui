@@ -117,7 +117,6 @@ fn config_value(config: &Config, key: &str) -> Result<String, String> {
     match key {
         "theme" => Ok(config.theme.clone()),
         "transparent" => Ok(config.transparent.to_string()),
-        "gradients" => Ok(config.gradients.to_string()),
         "proxy" => Ok(config.proxy.clone()),
         "repos_ttl_secs" => Ok(config.repos_ttl_secs.to_string()),
         "detail_ttl_secs" => Ok(config.detail_ttl_secs.to_string()),
@@ -127,7 +126,7 @@ fn config_value(config: &Config, key: &str) -> Result<String, String> {
         "download_dir" => Ok(config.download_dir.clone()),
         "commit_limit" => Ok(config.commit_limit.to_string()),
         _ => Err(format!(
-            "不认识的配置键：{key}喵~支持 theme / transparent / gradients / proxy / repos_ttl_secs / detail_ttl_secs / search_ttl_secs / show_file_tree / show_readme / download_dir / commit_limit"
+            "不认识的配置键：{key}喵~支持 theme / transparent / proxy / repos_ttl_secs / detail_ttl_secs / search_ttl_secs / show_file_tree / show_readme / download_dir / commit_limit"
         )),
     }
 }
@@ -161,7 +160,6 @@ fn set_config_value(
         }
         "proxy" => config.proxy = value.trim().to_string(),
         "transparent" => config.transparent = boolean()?,
-        "gradients" => config.gradients = boolean()?,
         "repos_ttl_secs" => config.repos_ttl_secs = number()?,
         "detail_ttl_secs" => config.detail_ttl_secs = number()?,
         "search_ttl_secs" => config.search_ttl_secs = number()?,

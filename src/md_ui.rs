@@ -71,11 +71,11 @@ fn draw_header(frame: &mut Frame, app: &mut MdApp, theme: &Theme, area: Rect) {
         format!("{} ", icons::BOOK),
         Style::default().fg(theme.color("blue")),
     )];
-    title.extend(chrome::gradient_text(
+    title.push(Span::styled(
         "gxt · markdown studio",
-        theme.color("blue"),
-        theme.color("mauve"),
-        true,
+        Style::default()
+            .fg(theme.color("blue"))
+            .add_modifier(Modifier::BOLD),
     ));
     if area.width > 96 {
         title.push(Span::styled(
@@ -182,21 +182,17 @@ fn draw_header(frame: &mut Frame, app: &mut MdApp, theme: &Theme, area: Rect) {
     }
 
     frame.render_widget(
-        Paragraph::new(chrome::gradient_line(
-            area.width as usize,
-            "─",
-            theme.color("surface1"),
-            theme.color("overlay0"),
-        )),
+        Paragraph::new(Line::from(Span::styled(
+            "─".repeat(area.width as usize),
+            Style::default().fg(theme.color("surface1")),
+        ))),
         Rect::new(area.x, area.y + 2, area.width, 1),
     );
     if let Some(rect) = active_rect {
         frame.render_widget(
-            Paragraph::new(Line::from(chrome::gradient_chars(
-                rect.width as usize,
-                "━",
-                theme.color("blue"),
-                theme.color("mauve"),
+            Paragraph::new(Line::from(Span::styled(
+                "━".repeat(rect.width as usize),
+                Style::default().fg(theme.color("blue")),
             ))),
             Rect::new(rect.x, area.y + 2, rect.width, 1),
         );
@@ -354,11 +350,9 @@ fn draw_files(frame: &mut Frame, app: &mut MdApp, theme: &Theme, area: Rect) {
     let sort = format!("{} 排序 {}", icons::CHART, app.sort.label());
     let used = format::text_width("文件  0000 篇") as u16;
     let rule = area.width.saturating_sub(used + 12);
-    title.extend(chrome::gradient_chars(
-        rule as usize,
-        "─",
-        theme.color("surface1"),
-        theme.color("surface2"),
+    title.push(Span::styled(
+        "─".repeat(rule as usize),
+        Style::default().fg(theme.color("surface1")),
     ));
     frame.render_widget(
         Paragraph::new(Line::from(title)),
@@ -373,12 +367,10 @@ fn draw_files(frame: &mut Frame, app: &mut MdApp, theme: &Theme, area: Rect) {
         );
     }
     frame.render_widget(
-        Paragraph::new(chrome::gradient_line(
-            area.width as usize,
-            "─",
-            theme.color("surface1"),
-            theme.color("surface2"),
-        )),
+        Paragraph::new(Line::from(Span::styled(
+            "─".repeat(area.width as usize),
+            Style::default().fg(theme.color("surface1")),
+        ))),
         Rect::new(area.x, area.y + 1, area.width, 1),
     );
 
@@ -540,23 +532,19 @@ fn draw_outline(frame: &mut Frame, app: &mut MdApp, theme: &Theme, area: Rect) {
         ),
     ];
     let used = format::text_width("大纲  00 个标题  ") as u16;
-    title.extend(chrome::gradient_chars(
-        area.width.saturating_sub(used + 1) as usize,
-        "─",
-        theme.color("surface1"),
-        theme.color("surface2"),
+    title.push(Span::styled(
+        "─".repeat(area.width.saturating_sub(used + 1) as usize),
+        Style::default().fg(theme.color("surface1")),
     ));
     frame.render_widget(
         Paragraph::new(Line::from(title)),
         Rect::new(area.x + 1, area.y, area.width.saturating_sub(2), 1),
     );
     frame.render_widget(
-        Paragraph::new(chrome::gradient_line(
-            area.width as usize,
-            "─",
-            theme.color("surface1"),
-            theme.color("surface2"),
-        )),
+        Paragraph::new(Line::from(Span::styled(
+            "─".repeat(area.width as usize),
+            Style::default().fg(theme.color("surface1")),
+        ))),
         Rect::new(area.x, area.y + 1, area.width, 1),
     );
 
@@ -745,12 +733,10 @@ fn draw_preview(frame: &mut Frame, app: &mut MdApp, theme: &Theme, area: Rect) {
         );
     }
     frame.render_widget(
-        Paragraph::new(chrome::gradient_line(
-            area.width as usize,
-            "─",
-            theme.color("surface1"),
-            theme.color("surface2"),
-        )),
+        Paragraph::new(Line::from(Span::styled(
+            "─".repeat(area.width as usize),
+            Style::default().fg(theme.color("surface1")),
+        ))),
         Rect::new(area.x, area.y + 1, area.width, 1),
     );
     if app.doc.is_some() {
@@ -762,11 +748,9 @@ fn draw_preview(frame: &mut Frame, app: &mut MdApp, theme: &Theme, area: Rect) {
         };
         if progress > 0 {
             frame.render_widget(
-                Paragraph::new(Line::from(chrome::gradient_chars(
-                    progress as usize,
-                    "━",
-                    theme.color("blue"),
-                    theme.color("mauve"),
+                Paragraph::new(Line::from(Span::styled(
+                    "━".repeat(progress as usize),
+                    Style::default().fg(theme.color("blue")),
                 ))),
                 Rect::new(area.x, area.y + 1, progress, 1),
             );

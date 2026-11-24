@@ -1,7 +1,6 @@
 use crate::icons;
 use crate::theme::Theme;
-use ratatui::style::{Color, Style};
-use ratatui::text::{Line, Span};
+use ratatui::style::Color;
 
 pub fn colorize_icons(buffer: &mut ratatui::buffer::Buffer, theme: &Theme) {
     let area = *buffer.area();
@@ -116,50 +115,6 @@ fn icon_tint(symbol: &str, theme: &Theme) -> Color {
         let code = symbol.chars().next().unwrap_or('?') as usize;
         palette[code % palette.len()]
     }
-}
-
-pub fn color_mix(start: Color, end: Color, t: f32) -> Color {
-    let (Color::Rgb(sr, sg, sb), Color::Rgb(er, eg, eb)) = (start, end) else {
-        return start;
-    };
-    let mix = |a: u8, b: u8| (a as f32 + (b as f32 - a as f32) * t) as u8;
-    Color::Rgb(mix(sr, er), mix(sg, eg), mix(sb, eb))
-}
-
-pub fn gradient_chars(count: usize, glyph: &str, start: Color, end: Color) -> Vec<Span<'static>> {
-    if count == 0 {
-        return Vec::new();
-    }
-    let denominator = count.saturating_sub(1).max(1) as f32;
-    (0..count)
-        .map(|index| {
-            let t = index as f32 / denominator;
-            Span::styled(
-                glyph.to_string(),
-                Style::default().fg(color_mix(start, end, t)),
-            )
-        })
-        .collect()
-}
-
-pub fn gradient_line(count: usize, glyph: &str, start: Color, end: Color) -> Line<'static> {
-    Line::from(gradient_chars(count.max(1), glyph, start, end))
-}
-pub fn gradient_text(text: &str, start: Color, end: Color, bold: bool) -> Vec<Span<'static>> {
-    let count = text.chars().count().max(1);
-    text.chars()
-        .enumerate()
-        .map(|(index, ch)| {
-            let t = index as f32 / count.saturating_sub(1).max(1) as f32;
-            let style = Style::default().fg(color_mix(start, end, t));
-            let style = if bold {
-                style.add_modifier(ratatui::style::Modifier::BOLD)
-            } else {
-                style
-            };
-            Span::styled(ch.to_string(), style)
-        })
-        .collect()
 }
 
 #[cfg(test)]

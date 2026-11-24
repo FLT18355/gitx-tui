@@ -75,6 +75,24 @@ pub struct Repo {
     #[serde(default)]
     pub has_wiki: bool,
     #[serde(default)]
+    pub has_projects: bool,
+    #[serde(default)]
+    pub is_template: bool,
+    #[serde(default)]
+    pub allow_squash_merge: bool,
+    #[serde(default)]
+    pub allow_merge_commit: bool,
+    #[serde(default)]
+    pub allow_rebase_merge: bool,
+    #[serde(default)]
+    pub allow_auto_merge: bool,
+    #[serde(default)]
+    pub delete_branch_on_merge: bool,
+    #[serde(default)]
+    pub allow_update_branch: bool,
+    #[serde(default)]
+    pub web_commit_signoff_required: bool,
+    #[serde(default)]
     pub license: Option<License>,
     #[serde(default)]
     pub size: u64,
