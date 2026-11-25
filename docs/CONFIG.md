@@ -21,7 +21,9 @@ search_history = []
 show_file_tree = false
 show_readme = false
 download_dir = "~/Downloads/gitx-tui"
+clone_dir = "~/gitx-tui/clones"
 pinned_repos = []
+recent_repos = []
 default_page = "home"
 ```
 
@@ -38,7 +40,9 @@ default_page = "home"
 | `show_file_tree` | 是否加载仓库文件树 |
 | `show_readme` | 是否加载 README |
 | `download_dir` | 下载目录，支持 `~/` 开头 |
+| `clone_dir` | `git clone` 的目录，支持 `~/` 开头 |
 | `pinned_repos` | 首页置顶仓库，`owner/name` 数组，最多 24 个 |
+| `recent_repos` | 首页最近访问的仓库，`owner/name` 数组，最多 8 个，打开仓库时自动记录 |
 | `default_page` | 启动页：`home`、`repositories`、`starred`、`search`、`trending`、`account`、`notifications`、`gists`、`insights`，默认 `home` |
 
 ## 主题

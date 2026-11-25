@@ -184,6 +184,7 @@ pub enum Overlay {
     Languages,
     RepoLanguages,
     EditRepo,
+    CloneRepo,
     Cache,
     RunWorkflow,
     Branches,
@@ -346,6 +347,7 @@ pub enum Action {
     StartDownloadDirEdit,
     StartCloneDirEdit,
     CloneRepo,
+    ConfirmClone,
     ToggleFileTree,
     ToggleReadme,
     ToggleTransparent,
@@ -634,6 +636,7 @@ pub fn cache_groups() -> Vec<CacheGroup> {
 #[derive(Clone)]
 pub struct RepoEdit {
     pub full_name: String,
+    pub base: Repo,
     pub name: TextInput,
     pub description: TextInput,
     pub homepage: TextInput,
@@ -662,6 +665,7 @@ impl RepoEdit {
     pub fn from_repo(repo: &Repo) -> Self {
         Self {
             full_name: repo.display_full_name(),
+            base: repo.clone(),
             name: TextInput::new(repo.name.clone()),
             description: TextInput::new(repo.description.clone().unwrap_or_default()),
             homepage: TextInput::new(repo.homepage.clone().unwrap_or_default()),
@@ -1350,6 +1354,7 @@ pub struct App {
     pub cache_stats: CacheStats,
     pub download_job: Option<DownloadJob>,
     pub clone_job: Option<String>,
+    pub clone_target: Option<Repo>,
     pub star_loading: Option<String>,
     pub language_selected: usize,
     pub language_offset: usize,
@@ -1672,6 +1677,7 @@ impl App {
             cache_stats,
             download_job: None,
             clone_job: None,
+            clone_target: None,
             star_loading: None,
             language_selected: 0,
             language_offset: 0,
@@ -4642,43 +4648,121 @@ impl App {
             edit.error = Some("仓库名不能空着呀喵~".to_string());
             return;
         }
+        let base = &edit.base;
+        let mut patch = serde_json::Map::new();
+        let mut set = |key: &str, changed: bool, value: serde_json::Value| {
+            if changed {
+                patch.insert(key.to_string(), value);
+            }
+        };
         let description = edit.description.value.trim().to_string();
+        let base_description = base.description.clone().unwrap_or_default();
+        set("name", name != base.name, serde_json::Value::String(name));
+        set(
+            "description",
+            description != base_description.trim(),
+            if description.is_empty() {
+                serde_json::Value::Null
+            } else {
+                serde_json::Value::String(description)
+            },
+        );
         let homepage = edit.homepage.value.trim().to_string();
+        let base_homepage = base.homepage.clone().unwrap_or_default();
+        set(
+            "homepage",
+            homepage != base_homepage.trim(),
+            if homepage.is_empty() {
+                serde_json::Value::Null
+            } else {
+                serde_json::Value::String(homepage)
+            },
+        );
         let topics = edit.topics_list();
-        let private = edit.private;
-        let archived = edit.archived;
-        let has_issues = edit.has_issues;
-        let has_discussions = edit.has_discussions;
-        let has_wiki = edit.has_wiki;
-        let has_projects = edit.has_projects;
-        let is_template = edit.is_template;
-        let allow_squash_merge = edit.allow_squash_merge;
-        let allow_merge_commit = edit.allow_merge_commit;
-        let allow_rebase_merge = edit.allow_rebase_merge;
-        let allow_auto_merge = edit.allow_auto_merge;
-        let delete_branch_on_merge = edit.delete_branch_on_merge;
-        let allow_update_branch = edit.allow_update_branch;
-        let web_commit_signoff_required = edit.web_commit_signoff_required;
-        let patch = serde_json::json!({
-            "name": name,
-            "description": if description.is_empty() { serde_json::Value::Null } else { serde_json::Value::String(description) },
-            "homepage": if homepage.is_empty() { serde_json::Value::Null } else { serde_json::Value::String(homepage) },
-            "topics": topics,
-            "private": private,
-            "archived": archived,
-            "has_issues": has_issues,
-            "has_discussions": has_discussions,
-            "has_wiki": has_wiki,
-            "has_projects": has_projects,
-            "is_template": is_template,
-            "allow_squash_merge": allow_squash_merge,
-            "allow_merge_commit": allow_merge_commit,
-            "allow_rebase_merge": allow_rebase_merge,
-            "allow_auto_merge": allow_auto_merge,
-            "delete_branch_on_merge": delete_branch_on_merge,
-            "allow_update_branch": allow_update_branch,
-            "web_commit_signoff_required": web_commit_signoff_required,
-        });
+        let base_topics: Vec<String> = base
+            .topics
+            .iter()
+            .map(|topic| topic.to_ascii_lowercase())
+            .collect();
+        set("topics", topics != base_topics, serde_json::json!(topics));
+        // 只提交改过的字段：列表缓存可能缺字段，整包提交会触发 422。
+        set(
+            "private",
+            edit.private != base.private,
+            serde_json::json!(edit.private),
+        );
+        set(
+            "archived",
+            edit.archived != base.archived,
+            serde_json::json!(edit.archived),
+        );
+        set(
+            "has_issues",
+            edit.has_issues != base.has_issues,
+            serde_json::json!(edit.has_issues),
+        );
+        set(
+            "has_discussions",
+            edit.has_discussions != base.has_discussions,
+            serde_json::json!(edit.has_discussions),
+        );
+        set(
+            "has_wiki",
+            edit.has_wiki != base.has_wiki,
+            serde_json::json!(edit.has_wiki),
+        );
+        set(
+            "has_projects",
+            edit.has_projects != base.has_projects,
+            serde_json::json!(edit.has_projects),
+        );
+        set(
+            "is_template",
+            edit.is_template != base.is_template,
+            serde_json::json!(edit.is_template),
+        );
+        set(
+            "allow_squash_merge",
+            edit.allow_squash_merge != base.allow_squash_merge,
+            serde_json::json!(edit.allow_squash_merge),
+        );
+        set(
+            "allow_merge_commit",
+            edit.allow_merge_commit != base.allow_merge_commit,
+            serde_json::json!(edit.allow_merge_commit),
+        );
+        set(
+            "allow_rebase_merge",
+            edit.allow_rebase_merge != base.allow_rebase_merge,
+            serde_json::json!(edit.allow_rebase_merge),
+        );
+        set(
+            "allow_auto_merge",
+            edit.allow_auto_merge != base.allow_auto_merge,
+            serde_json::json!(edit.allow_auto_merge),
+        );
+        set(
+            "delete_branch_on_merge",
+            edit.delete_branch_on_merge != base.delete_branch_on_merge,
+            serde_json::json!(edit.delete_branch_on_merge),
+        );
+        set(
+            "allow_update_branch",
+            edit.allow_update_branch != base.allow_update_branch,
+            serde_json::json!(edit.allow_update_branch),
+        );
+        set(
+            "web_commit_signoff_required",
+            edit.web_commit_signoff_required != base.web_commit_signoff_required,
+            serde_json::json!(edit.web_commit_signoff_required),
+        );
+        if patch.is_empty() {
+            self.repo_edit = None;
+            self.overlay = None;
+            self.set_status(StatusKind::Info, "什么都没改呀，人家就不打扰 GitHub 啦喵~");
+            return;
+        }
+        let patch = serde_json::Value::Object(patch);
         let tx = self.tx.clone();
         let client = self.client.clone();
         std::thread::spawn(move || {
@@ -6451,6 +6535,9 @@ impl App {
         if self.editing_download_dir {
             self.commit_download_dir_edit();
         }
+        if self.editing_clone_dir {
+            self.commit_clone_dir_edit();
+        }
         if self.editing_proxy {
             self.commit_proxy_edit();
         }
@@ -6672,7 +6759,7 @@ impl App {
                 .retain(|item| !item.display_full_name().eq_ignore_ascii_case(&name));
             self.home_selected = self
                 .home_selected
-                .min(self.pinned_list().len().saturating_sub(1));
+                .min(self.home_items_len().saturating_sub(1));
             match self.config.save(&self.paths) {
                 Ok(()) => self.set_status(StatusKind::Ok, &format!("{name} 从首页取下啦喵~")),
                 Err(error) => {
@@ -7594,6 +7681,75 @@ impl App {
         }
     }
 
+    pub fn clone_current_repo(&mut self) {
+        let Some(repo) = self.effective_repo() else {
+            self.set_status(StatusKind::Info, "先挑一个仓库嘛，人家才知道克隆哪个喵~");
+            return;
+        };
+        if self.clone_job.is_some() {
+            self.set_status(StatusKind::Info, "上一个仓库还在克隆呢，等人家忙完喵~");
+            return;
+        }
+        self.clone_target = Some(repo);
+        self.overlay = Some(Overlay::CloneRepo);
+    }
+
+    pub fn confirm_clone_repo(&mut self) {
+        let Some(repo) = self.clone_target.clone() else {
+            return;
+        };
+        self.overlay = None;
+        self.clone_target = None;
+        self.start_clone(&repo);
+    }
+
+    fn start_clone(&mut self, repo: &Repo) {
+        if self.clone_job.is_some() {
+            self.set_status(StatusKind::Info, "上一个仓库还在克隆呢，等人家忙完喵~");
+            return;
+        }
+        let full_name = repo.display_full_name();
+        let name = if repo.name.is_empty() {
+            full_name.rsplit('/').next().unwrap_or("repo").to_string()
+        } else {
+            repo.name.clone()
+        };
+        let directory = self.config.expanded_clone_dir();
+        if let Err(error) = std::fs::create_dir_all(&directory) {
+            self.set_status(
+                StatusKind::Error,
+                &format!("克隆目录建不出来：{error}喵~到设置里换一个路径嘛喵~"),
+            );
+            return;
+        }
+        let destination = directory.join(&name);
+        if destination.exists() {
+            self.set_status(
+                StatusKind::Error,
+                &format!(
+                    "{} 已经有同名目录啦喵~换个克隆目录或者先清理一下喵~",
+                    format::display_path(&destination)
+                ),
+            );
+            return;
+        }
+        let https = format!("https://github.com/{full_name}.git");
+        let url = self.client.proxy_url(&https);
+        self.clone_job = Some(name.clone());
+        self.set_status(
+            StatusKind::Info,
+            &format!(
+                "开始克隆 {full_name}，人家放到 {} 里啦喵~",
+                format::display_path(&directory)
+            ),
+        );
+        let tx = self.tx.clone();
+        std::thread::spawn(move || {
+            let result = run_git_clone(&url, &destination).map(|()| destination);
+            let _ = tx.send(Msg::RepoCloned { name, result });
+        });
+    }
+
     pub fn is_current_starred(&self) -> bool {
         let Some(repo) = self.effective_repo() else {
             return false;
@@ -7859,7 +8015,7 @@ impl App {
         }
         if self.page == Page::Settings {
             if delta > 0 {
-                self.settings_row = (self.settings_row + 1).min(12);
+                self.settings_row = (self.settings_row + 1).min(13);
             } else {
                 self.settings_row = self.settings_row.saturating_sub(1);
             }
@@ -9177,6 +9333,9 @@ impl App {
                 if self.editing_download_dir {
                     self.commit_download_dir_edit();
                 }
+                if self.editing_clone_dir {
+                    self.commit_clone_dir_edit();
+                }
                 self.save_config(true);
             }
             return;
@@ -9290,6 +9449,21 @@ impl App {
                 }
                 KeyCode::Enter | KeyCode::Char('\r') | KeyCode::Char('\n') => {
                     self.confirm_fork_repo();
+                }
+                _ => {}
+            }
+            return;
+        }
+        if self.overlay == Some(Overlay::CloneRepo) {
+            match key.code {
+                KeyCode::Esc | KeyCode::Char('q') => {
+                    if self.clone_job.is_none() {
+                        self.overlay = None;
+                        self.clone_target = None;
+                    }
+                }
+                KeyCode::Enter | KeyCode::Char('\r') | KeyCode::Char('\n') => {
+                    self.confirm_clone_repo();
                 }
                 _ => {}
             }
@@ -9727,7 +9901,7 @@ impl App {
                     return;
                 }
                 KeyCode::Tab => {
-                    self.settings_row = (self.settings_row + 1).min(12);
+                    self.settings_row = (self.settings_row + 1).min(13);
                     return;
                 }
                 KeyCode::BackTab => {
@@ -9989,10 +10163,10 @@ impl App {
                 Page::Files => self.refresh_file(),
                 Page::Network => self.open_selected_network_profile(),
                 Page::Home => {
-                    if self.pinned_list().is_empty() {
+                    if self.home_items_len() == 0 {
                         self.navigate(Page::Search);
                     } else {
-                        self.open_pin(self.home_selected);
+                        self.open_home_item(self.home_selected);
                     }
                 }
                 _ => self.open_repo_page(),
@@ -10051,7 +10225,7 @@ impl App {
             Page::Commits => self.move_commit_selection(1),
             Page::ReleaseDetail => self.move_release_asset_selection(1),
             Page::Notifications => self.move_notification_selection(1),
-            Page::Settings => self.settings_row = (self.settings_row + 1).min(12),
+            Page::Settings => self.settings_row = (self.settings_row + 1).min(13),
             Page::Home => self.move_home_selection(1),
             Page::IssueDetail => self.issue_scroll_by(1),
             Page::Gists => self.move_gist_selection(1),
@@ -10087,7 +10261,7 @@ impl App {
     fn key_end(&mut self) {
         match self.page {
             Page::Repo => self.set_repo_pane_scroll(u16::MAX),
-            Page::Settings => self.settings_row = 12,
+            Page::Settings => self.settings_row = 13,
             Page::Actions => {
                 self.select_action_run(self.action_runs.len().saturating_sub(1));
             }
@@ -10111,7 +10285,7 @@ impl App {
             }
             Page::Account => {}
             Page::Home => {
-                self.home_selected = self.pinned_list().len().saturating_sub(1);
+                self.home_selected = self.home_items_len().saturating_sub(1);
             }
             Page::IssueDetail => self.issue_scroll = self.issue_scroll_max,
             Page::Gists => self.select_gist(self.gists.len().saturating_sub(1)),
@@ -10164,7 +10338,7 @@ impl App {
             Page::Compare => self.compare_scroll_by(10),
             Page::Files => self.file_scroll_by(10),
             Page::Network => self.move_network_selection(5),
-            Page::Settings => self.settings_row = (self.settings_row + 3).min(12),
+            Page::Settings => self.settings_row = (self.settings_row + 3).min(13),
             Page::Account => {}
             _ => self.next_list_page(),
         }
@@ -10271,11 +10445,11 @@ impl App {
             1 => self.toggle_file_tree(),
             2 => self.toggle_readme(),
             3 => self.toggle_transparent(),
-            6 => self.adjust_ttl(TtlKind::Repositories, direction),
-            7 => self.adjust_ttl(TtlKind::Detail, direction),
-            8 => self.adjust_ttl(TtlKind::Search, direction),
-            9 => self.adjust_commit_limit(direction),
-            10 => self.cycle_default_page(direction),
+            7 => self.adjust_ttl(TtlKind::Repositories, direction),
+            8 => self.adjust_ttl(TtlKind::Detail, direction),
+            9 => self.adjust_ttl(TtlKind::Search, direction),
+            10 => self.adjust_commit_limit(direction),
+            11 => self.cycle_default_page(direction),
             _ => {}
         }
     }
@@ -10287,14 +10461,15 @@ impl App {
             2 => self.toggle_readme(),
             3 => self.toggle_transparent(),
             4 => self.start_download_dir_edit(),
-            5 => self.start_proxy_edit(),
-            6 => self.adjust_ttl(TtlKind::Repositories, 1),
-            7 => self.adjust_ttl(TtlKind::Detail, 1),
-            8 => self.adjust_ttl(TtlKind::Search, 1),
-            9 => self.adjust_commit_limit(1),
-            10 => self.cycle_default_page(1),
-            11 => self.clear_cache(),
-            12 => self.save_config(true),
+            5 => self.start_clone_dir_edit(),
+            6 => self.start_proxy_edit(),
+            7 => self.adjust_ttl(TtlKind::Repositories, 1),
+            8 => self.adjust_ttl(TtlKind::Detail, 1),
+            9 => self.adjust_ttl(TtlKind::Search, 1),
+            10 => self.adjust_commit_limit(1),
+            11 => self.cycle_default_page(1),
+            12 => self.clear_cache(),
+            13 => self.save_config(true),
             _ => {}
         }
     }
@@ -10309,7 +10484,7 @@ impl App {
         let page = Page::DEFAULT_PAGES[next];
         self.config.default_page = page.default_name().to_string();
         self.config_dirty = true;
-        self.settings_row = 10;
+        self.settings_row = 11;
         self.set_status(
             StatusKind::Info,
             &format!(
@@ -10361,13 +10536,19 @@ impl App {
     pub fn start_proxy_edit(&mut self) {
         self.editing_proxy = true;
         self.proxy_input = TextInput::new(self.config.proxy.clone());
-        self.settings_row = 5;
+        self.settings_row = 6;
     }
 
     pub fn start_download_dir_edit(&mut self) {
         self.editing_download_dir = true;
         self.download_input = TextInput::new(self.config.download_dir.clone());
         self.settings_row = 4;
+    }
+
+    pub fn start_clone_dir_edit(&mut self) {
+        self.editing_clone_dir = true;
+        self.clone_input = TextInput::new(self.config.clone_dir.clone());
+        self.settings_row = 5;
     }
 
     fn commit_download_dir_edit(&mut self) {
@@ -10399,6 +10580,39 @@ impl App {
             &format!(
                 "下载目录改成 {} 啦，记得保存哦喵~",
                 self.download_path_label()
+            ),
+        );
+    }
+
+    fn commit_clone_dir_edit(&mut self) {
+        let value = self.clone_input.value.trim().to_string();
+        if value.is_empty() {
+            self.set_status(StatusKind::Error, "克隆目录不能空着呀，给人家一个路径嘛喵~");
+            return;
+        }
+        let expanded = crate::config::expand_tilde(&value);
+        if !expanded.is_absolute() {
+            self.set_status(
+                StatusKind::Error,
+                "克隆目录最好写绝对路径，或者用 ~/ 开头的路径哦喵~",
+            );
+            return;
+        }
+        self.config.clone_dir = value;
+        self.editing_clone_dir = false;
+        self.config_dirty = true;
+        if let Err(error) = std::fs::create_dir_all(self.config.expanded_clone_dir()) {
+            self.set_status(
+                StatusKind::Error,
+                &format!("克隆目录建不出来：{error}，换一个路径试试嘛喵~"),
+            );
+            return;
+        }
+        self.set_status(
+            StatusKind::Info,
+            &format!(
+                "克隆目录改成 {} 啦，记得保存哦喵~",
+                format::display_path(&self.config.expanded_clone_dir())
             ),
         );
     }
@@ -10542,7 +10756,7 @@ impl App {
     }
 
     pub fn handle_settings_row(&mut self, row: usize) {
-        self.settings_row = row.min(12);
+        self.settings_row = row.min(13);
     }
 
     pub fn handle_paste(&mut self, text: &str) {
@@ -10745,13 +10959,14 @@ impl App {
             Action::OpenHelp => self.overlay = Some(Overlay::Help),
             Action::RandomRepo => self.random_repo(),
             Action::TogglePin => self.toggle_pin(),
-            Action::OpenPin(index) => self.open_pin(index),
+            Action::OpenPin(index) => self.open_home_item(index),
             Action::NavLeft => self.nav_offset = self.nav_offset.saturating_sub(1),
             Action::NavRight => self.nav_offset = (self.nav_offset + 1).min(7),
             Action::StartProxyEdit => self.start_proxy_edit(),
             Action::StartDownloadDirEdit => self.start_download_dir_edit(),
             Action::StartCloneDirEdit => self.start_clone_dir_edit(),
             Action::CloneRepo => self.clone_current_repo(),
+            Action::ConfirmClone => self.confirm_clone_repo(),
             Action::ToggleFileTree => self.toggle_file_tree(),
             Action::ToggleReadme => self.toggle_readme(),
             Action::ToggleTransparent => self.toggle_transparent(),
@@ -10761,7 +10976,7 @@ impl App {
             Action::OpenDownloadDir => self.open_download_dir(),
             Action::SetSettingsRow(row) => self.handle_settings_row(row),
             Action::CommitLimit(direction) => {
-                self.settings_row = 9;
+                self.settings_row = 10;
                 self.adjust_commit_limit(direction);
             }
             Action::OpenLanguages => self.open_languages(),
@@ -10807,6 +11022,7 @@ impl App {
                 self.release_draft = None;
                 self.fork_repo = None;
                 self.delete_repo = None;
+                self.clone_target = None;
                 self.cancel_run = None;
             }
             Action::PrevListPage => self.prev_list_page(),
@@ -10978,6 +11194,9 @@ impl App {
     pub fn quit(&mut self) {
         if self.editing_download_dir {
             self.commit_download_dir_edit();
+        }
+        if self.editing_clone_dir {
+            self.commit_clone_dir_edit();
         }
         if self.editing_proxy {
             self.commit_proxy_edit();
@@ -11191,6 +11410,25 @@ fn page_index(selected: usize, size: usize) -> usize {
 
 fn page_start(selected: usize, size: usize) -> usize {
     page_index(selected, size) * size.max(1)
+}
+
+fn run_git_clone(url: &str, destination: &std::path::Path) -> Result<(), String> {
+    let output = std::process::Command::new("git")
+        .arg("clone")
+        .arg("--")
+        .arg(url)
+        .arg(destination)
+        .output()
+        .map_err(|err| format!("跑不了 git 喵~：{err}"))?;
+    if output.status.success() {
+        return Ok(());
+    }
+    let detail = String::from_utf8_lossy(&output.stderr).trim().to_string();
+    Err(if detail.is_empty() {
+        "git clone 没有成功喵~".to_string()
+    } else {
+        detail
+    })
 }
 
 fn open_external(url: &str) -> Result<(), String> {
@@ -11598,7 +11836,7 @@ mod tests {
         app.config.default_page = "home".to_string();
         app.cycle_default_page(1);
         assert_eq!(app.config.default_page, "repositories");
-        assert_eq!(app.settings_row, 10);
+        assert_eq!(app.settings_row, 11);
         assert!(app.config_dirty);
         app.cycle_default_page(-1);
         assert_eq!(app.config.default_page, "home");

@@ -76,6 +76,7 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
         }
         Some(Overlay::NewIssue) => draw_new_issue_overlay(frame, app, &theme, area, &mut hits),
         Some(Overlay::EditRepo) => draw_repo_edit_overlay(frame, app, &theme, area, &mut hits),
+        Some(Overlay::CloneRepo) => draw_clone_overlay(frame, app, &theme, area, &mut hits),
         Some(Overlay::Cache) => draw_cache_overlay(frame, app, &theme, area, &mut hits),
         Some(Overlay::RunWorkflow) => draw_workflow_overlay(frame, app, &theme, area, &mut hits),
         Some(Overlay::Branches) => draw_branches_overlay(frame, app, &theme, area, &mut hits),
@@ -460,7 +461,9 @@ fn hints_for(app: &App) -> &'static str {
         return "j/k 滚动    g/G 首尾    PgUp/PgDn 翻页    F/Esc 退出全屏喵~";
     }
     match app.page {
-        Page::Home => "j/k 挑置顶  Enter 打开  P 置顶仓库  E 随机探索  T 主题  Ctrl+K 命令喵~",
+        Page::Home => {
+            "j/k 挑置顶或最近  Enter 打开  P 置顶仓库  E 随机探索  T 主题  Ctrl+K 命令喵~"
+        }
         Page::Insights => "r 刷新统计  E 随机探索  T 主题  Ctrl+K 命令  Esc 回仓库喵~",
         Page::Repositories => {
             "j/k 挑    [ ] 翻页    Enter 打开    / 筛选    e 编辑    f 收藏    l 语言喵~"
@@ -479,7 +482,7 @@ fn hints_for(app: &App) -> &'static str {
         }
         Page::Settings => "j/k 选    h/l 调    Enter 操作    Ctrl+S 保存    Esc 离开喵~",
         Page::Repo => {
-            "Esc 返回  Tab 换面板  ←/→ 翻按钮  b 分支  C 提交  v 标签  L 语言  a 工作流  i 议题  u SSH  N 全名喵~"
+            "Esc 返回  Tab 换面板  ←/→ 翻按钮  Ctrl+G 克隆  b 分支  C 提交  v 标签  L 语言  a 工作流  i 议题  u SSH  N 全名喵~"
         }
         Page::Actions => {
             "j/k 挑运行  Enter 浏览器  R 重跑  X 取消  x 运行工作流  PgUp/PgDn 滚任务  r 刷新喵~"
@@ -1382,13 +1385,35 @@ fn draw_home_page(
     } else {
         content.width
     };
-    draw_home_pins(
-        frame,
-        app,
-        theme,
-        hits,
-        Rect::new(content.x, below_y, left_width, below_height),
-    );
+    let recent = app.recent_list();
+    let has_pins = !app.pinned_list().is_empty();
+    let recent_height = if recent.is_empty() {
+        0
+    } else if has_pins {
+        below_height / 2
+    } else {
+        below_height
+    };
+    let pins_height = below_height.saturating_sub(recent_height);
+    if pins_height > 0 {
+        draw_home_pins(
+            frame,
+            app,
+            theme,
+            hits,
+            Rect::new(content.x, below_y, left_width, pins_height),
+        );
+    }
+    if recent_height > 0 {
+        draw_home_recent(
+            frame,
+            app,
+            theme,
+            hits,
+            Rect::new(content.x, below_y + pins_height, left_width, recent_height),
+            app.pinned_list().len(),
+        );
+    }
     if wide {
         let gap = 2;
         let right_col = Rect::new(
@@ -1527,7 +1552,9 @@ fn draw_home_pins(
         );
         return;
     }
-    app.home_selected = app.home_selected.min(pins.len().saturating_sub(1));
+    app.home_selected = app
+        .home_selected
+        .min(app.home_items_len().saturating_sub(1));
     let row_height = 2;
     let capacity = (list.height / row_height).max(1) as usize;
     let offset = app.home_selected.saturating_sub(capacity.saturating_sub(1));
@@ -1583,6 +1610,118 @@ fn draw_home_pins(
                 Span::styled(
                     format!("{} ", icons::PIN),
                     Style::default().fg(theme.color("mauve")),
+                ),
+                Span::styled(
+                    format::truncate(&title, inner.width.saturating_sub(right_width) as usize),
+                    Style::default()
+                        .fg(theme.color("text"))
+                        .add_modifier(Modifier::BOLD),
+                ),
+            ])),
+            Rect::new(inner.x, inner.y, inner.width.saturating_sub(right_width), 1),
+        );
+        frame.render_widget(
+            Paragraph::new(right)
+                .alignment(Alignment::Right)
+                .style(Style::default().fg(theme.color("overlay0"))),
+            Rect::new(inner.x, inner.y, inner.width, 1),
+        );
+        if rect.height > 1 {
+            let detail = if repo.description_text().is_empty() {
+                "这个仓库还没有简介喵~".to_string()
+            } else {
+                format::clean_text(repo.description_text())
+            };
+            frame.render_widget(
+                Paragraph::new(format::truncate(&detail, inner.width as usize))
+                    .style(Style::default().fg(theme.color("subtext0"))),
+                Rect::new(inner.x, inner.y + 1, inner.width, 1),
+            );
+        }
+        register(hits, rect, action);
+    }
+}
+
+fn draw_home_recent(
+    frame: &mut Frame,
+    app: &mut App,
+    theme: &Theme,
+    hits: &mut Vec<HitBox>,
+    area: Rect,
+    offset: usize,
+) {
+    if area.height < 2 {
+        return;
+    }
+    draw_section_header(
+        frame,
+        theme,
+        Rect::new(area.x, area.y, area.width, 1),
+        icons::CLOCK,
+        "最近访问喵~",
+        "Enter 回到仓库",
+    );
+    let list = Rect::new(
+        area.x,
+        area.y + 2,
+        area.width,
+        area.height.saturating_sub(2),
+    );
+    if list.height == 0 {
+        return;
+    }
+    let recents = app.recent_list();
+    let row_height = 2;
+    let capacity = (list.height / row_height).max(1) as usize;
+    let local_selected = app.home_selected.saturating_sub(offset);
+    let skip = local_selected.saturating_sub(capacity.saturating_sub(1));
+    for (slot, repo) in recents.iter().skip(skip).take(capacity).enumerate() {
+        let index = offset + skip + slot;
+        let rect = Rect::new(
+            list.x,
+            list.y + slot as u16 * row_height,
+            list.width,
+            row_height.min(list.height.saturating_sub(slot as u16 * row_height)),
+        );
+        if rect.height == 0 {
+            break;
+        }
+        let action = Action::OpenPin(index);
+        let selected = index == app.home_selected;
+        let hovered = app.hover.as_ref() == Some(&action);
+        if selected || hovered {
+            fill(frame, rect, theme.color("surface0"));
+        }
+        if selected {
+            fill(
+                frame,
+                Rect::new(rect.x, rect.y, 1, rect.height),
+                theme.color("mauve"),
+            );
+        }
+        let inner = Rect::new(rect.x + 2, rect.y, rect.width.saturating_sub(4), 1);
+        let right = if repo.id == 0 {
+            format!("{} 待取回", icons::CLOCK)
+        } else {
+            format!(
+                "{} {}   {} {}",
+                icons::STAR,
+                format::human_count(repo.stargazers_count),
+                icons::CODE,
+                repo.language_label()
+            )
+        };
+        let right_width = format::text_width(&right) as u16 + 1;
+        let title = if repo.id == 0 {
+            repo.display_full_name()
+        } else {
+            format!("{} / {}", repo.owner_name(), repo.name)
+        };
+        frame.render_widget(
+            Paragraph::new(Line::from(vec![
+                Span::styled(
+                    format!("{} ", icons::CLOCK),
+                    Style::default().fg(theme.color("overlay0")),
                 ),
                 Span::styled(
                     format::truncate(&title, inner.width.saturating_sub(right_width) as usize),
@@ -7109,6 +7248,145 @@ fn draw_fork_overlay(
     app.layout.overlay = rect;
 }
 
+fn draw_clone_overlay(
+    frame: &mut Frame,
+    app: &mut App,
+    theme: &Theme,
+    area: Rect,
+    hits: &mut Vec<HitBox>,
+) {
+    let width = area.width.saturating_sub(14).min(66);
+    let height = area.height.saturating_sub(10).min(13);
+    if width < 34 || height < 9 {
+        return;
+    }
+    let rect = Rect::new(
+        area.x + (area.width.saturating_sub(width)) / 2,
+        area.y + (area.height.saturating_sub(height)) / 2,
+        width,
+        height,
+    );
+    app.layout.overlay = rect;
+    frame.render_widget(Clear, rect);
+    fill(frame, rect, theme.color("mantle"));
+    frame.render_widget(
+        Block::new()
+            .borders(Borders::ALL)
+            .border_style(Style::default().fg(theme.color("blue"))),
+        rect,
+    );
+    let inner = Rect::new(
+        rect.x + 2,
+        rect.y + 1,
+        rect.width.saturating_sub(4),
+        rect.height.saturating_sub(2),
+    );
+    frame.render_widget(
+        Paragraph::new(icons::label(icons::TERMINAL, "克隆仓库喵~")).style(
+            Style::default()
+                .fg(theme.color("blue"))
+                .add_modifier(Modifier::BOLD),
+        ),
+        Rect::new(inner.x, inner.y, inner.width, 1),
+    );
+    let Some(repo) = app.clone_target.as_ref() else {
+        draw_center_message(
+            frame,
+            theme,
+            inner,
+            "没有选仓库喵~",
+            "关掉这个小窗口再挑一个嘛喵~",
+        );
+        return;
+    };
+    let full_name = repo.display_full_name();
+    let name = if repo.name.is_empty() {
+        full_name.rsplit('/').next().unwrap_or("repo").to_string()
+    } else {
+        repo.name.clone()
+    };
+    let directory = app.config.expanded_clone_dir();
+    let destination = directory.join(&name);
+    let mut y = inner.y + 2;
+    frame.render_widget(
+        Paragraph::new(format::truncate(
+            &format!("{} {full_name}", icons::REPO),
+            inner.width as usize,
+        ))
+        .style(
+            Style::default()
+                .fg(theme.color("text"))
+                .add_modifier(Modifier::BOLD),
+        ),
+        Rect::new(inner.x, y, inner.width, 1),
+    );
+    y += 2;
+    frame.render_widget(
+        Paragraph::new(format::truncate(
+            &format!(
+                "{} 放到 {} 喵~",
+                icons::DOWNLOAD_DIR,
+                format::display_path(&destination)
+            ),
+            inner.width as usize,
+        ))
+        .style(Style::default().fg(theme.color("subtext0"))),
+        Rect::new(inner.x, y, inner.width, 1),
+    );
+    y += 1;
+    let source = format!("{} 走加速通道 {} 喵~", icons::GLOBE, app.client.proxy());
+    frame.render_widget(
+        Paragraph::new(format::truncate(&source, inner.width as usize))
+            .style(Style::default().fg(theme.color("overlay0"))),
+        Rect::new(inner.x, y, inner.width, 1),
+    );
+    y += 1;
+    frame.render_widget(
+        Paragraph::new(format::truncate(
+            "克隆目录可以在设置页里改；同名目录会停下来，不会覆盖喵~",
+            inner.width as usize,
+        ))
+        .style(Style::default().fg(theme.color("overlay0"))),
+        Rect::new(inner.x, y, inner.width, 1),
+    );
+
+    let bottom = inner.y + inner.height.saturating_sub(1);
+    let mut x = inner.x;
+    let confirm = if app.clone_job.is_some() {
+        format!("{} 正在克隆喵~", app.spinner())
+    } else {
+        icons::label(icons::TERMINAL, "开始克隆喵~")
+    };
+    let confirm_width = format::text_width(&confirm) as u16 + 4;
+    if x + confirm_width <= inner.x + inner.width {
+        draw_button(
+            frame,
+            app,
+            theme,
+            hits,
+            Rect::new(x, bottom, confirm_width, 1),
+            &confirm,
+            Action::ConfirmClone,
+            true,
+        );
+        x += confirm_width + 1;
+    }
+    let cancel = "再想想喵~";
+    let cancel_width = format::text_width(cancel) as u16 + 4;
+    if x + cancel_width <= inner.x + inner.width {
+        draw_button(
+            frame,
+            app,
+            theme,
+            hits,
+            Rect::new(x, bottom, cancel_width, 1),
+            cancel,
+            Action::CloseOverlay,
+            false,
+        );
+    }
+}
+
 fn draw_delete_overlay(
     frame: &mut Frame,
     app: &mut App,
@@ -9344,18 +9622,7 @@ fn draw_settings_page(
         draw_download_dir_row(frame, app, theme, hits, row(3));
     }
     if y + 4 < actions_y {
-        let open_dir = icons::label(icons::DOWNLOAD_DIR, "打开下载目录喵~");
-        let open_width = format::text_width(&open_dir) as u16 + 4;
-        draw_button(
-            frame,
-            app,
-            theme,
-            hits,
-            Rect::new(right_column.x, y + 4, open_width, 1),
-            &open_dir,
-            Action::OpenDownloadDir,
-            false,
-        );
+        draw_clone_dir_row(frame, app, theme, hits, row(4));
     }
     if y + 5 < actions_y {
         draw_proxy_row(frame, app, theme, hits, row(5));
@@ -9370,7 +9637,7 @@ fn draw_settings_page(
     {
         let offset = 6 + index as u16;
         if y + offset < actions_y {
-            draw_ttl_row(frame, app, theme, hits, row(offset), label, kind, 6 + index);
+            draw_ttl_row(frame, app, theme, hits, row(offset), label, kind, 7 + index);
         }
     }
     if y + 9 < actions_y {
@@ -9666,7 +9933,7 @@ fn draw_theme_row(
 }
 
 fn draw_proxy_row(frame: &mut Frame, app: &App, theme: &Theme, hits: &mut Vec<HitBox>, rect: Rect) {
-    if app.settings_row == 5 {
+    if app.settings_row == 6 {
         fill(frame, rect, theme.color("surface0"));
     }
     frame.render_widget(
@@ -9706,7 +9973,7 @@ fn draw_proxy_row(frame: &mut Frame, app: &App, theme: &Theme, hits: &mut Vec<Hi
         Action::StartProxyEdit,
         false,
     );
-    register(hits, rect, Action::SetSettingsRow(5));
+    register(hits, rect, Action::SetSettingsRow(6));
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -9769,7 +10036,7 @@ fn draw_commit_limit_row(
     hits: &mut Vec<HitBox>,
     area: Rect,
 ) {
-    if app.settings_row == 9 {
+    if app.settings_row == 10 {
         fill(frame, area, theme.color("surface0"));
     }
     frame.render_widget(
@@ -9804,7 +10071,7 @@ fn draw_commit_limit_row(
         );
         register(hits, rect, action);
     }
-    register(hits, area, Action::SetSettingsRow(9));
+    register(hits, area, Action::SetSettingsRow(11));
 }
 
 fn draw_default_page_row(
@@ -9814,7 +10081,7 @@ fn draw_default_page_row(
     hits: &mut Vec<HitBox>,
     area: Rect,
 ) {
-    if app.settings_row == 10 {
+    if app.settings_row == 11 {
         fill(frame, area, theme.color("surface0"));
     }
     let page = Page::from_default_name(&app.config.default_page);
@@ -11351,6 +11618,10 @@ fn draw_help(frame: &mut Frame, app: &mut App, theme: &Theme, area: Rect, hits: 
         (
             "复制喵~",
             "y 克隆地址，u SSH，N 仓库全名；发行版详情里 y 复制文件链接喵~",
+        ),
+        (
+            "克隆喵~",
+            "仓库页 Ctrl+G 或点「克隆」按钮，走加速通道克隆到设置的克隆目录喵~",
         ),
         (
             "工作流喵~",
@@ -14389,6 +14660,7 @@ mod tests {
             "主题喵~",
             "文件树预览",
             "下载目录",
+            "克隆目录",
             "API代理",
             "默认页",
             "保存设置",
