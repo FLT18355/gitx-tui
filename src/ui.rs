@@ -3904,6 +3904,11 @@ fn draw_repo_page(
             false,
         ),
         (
+            icons::label(icons::TERMINAL, "克隆喵~"),
+            Action::CloneRepo,
+            false,
+        ),
+        (
             icons::label(icons::DOWNLOAD, "下载源码喵~"),
             Action::DownloadSource,
             false,
@@ -9506,11 +9511,11 @@ fn draw_download_dir_row(
     }
     let path = format::truncate(
         &app.download_path_label(),
-        rect.width.saturating_sub(22) as usize,
+        rect.width.saturating_sub(31) as usize,
     );
     frame.render_widget(
         Paragraph::new(path).style(Style::default().fg(theme.color("subtext0"))),
-        Rect::new(rect.x + 13, rect.y, rect.width.saturating_sub(23), 1),
+        Rect::new(rect.x + 13, rect.y, rect.width.saturating_sub(32), 1),
     );
     let edit_action = Action::StartDownloadDirEdit;
     let edit_width = 8;
@@ -9525,12 +9530,78 @@ fn draw_download_dir_row(
         app,
         theme,
         hits,
+        Rect::new(edit_rect.x.saturating_sub(9), rect.y, edit_width, 1),
+        "打开喵~",
+        Action::OpenDownloadDir,
+        false,
+    );
+    draw_button(
+        frame,
+        app,
+        theme,
+        hits,
         edit_rect,
         "编辑喵~",
         edit_action,
         false,
     );
     register(hits, rect, Action::SetSettingsRow(4));
+}
+
+fn draw_clone_dir_row(
+    frame: &mut Frame,
+    app: &App,
+    theme: &Theme,
+    hits: &mut Vec<HitBox>,
+    rect: Rect,
+) {
+    if app.settings_row == 5 {
+        fill(frame, rect, theme.color("surface0"));
+    }
+    frame.render_widget(
+        Paragraph::new("克隆目录喵~").style(Style::default().fg(theme.color("subtext1"))),
+        Rect::new(rect.x + 1, rect.y, 12, 1),
+    );
+    if app.editing_clone_dir {
+        let input_width = rect.width.saturating_sub(14);
+        let (visible, cursor_column) = visible_input(&app.clone_input, true, input_width);
+        frame.render_widget(
+            Paragraph::new(visible).style(Style::default().fg(theme.color("text"))),
+            Rect::new(rect.x + 13, rect.y, input_width, 1),
+        );
+        let x = rect
+            .x
+            .saturating_add(13)
+            .saturating_add(cursor_column.min(input_width.saturating_sub(1)));
+        frame.set_cursor_position(Position::new(x, rect.y));
+        return;
+    }
+    let path = format::truncate(
+        &format::display_path(&app.config.expanded_clone_dir()),
+        rect.width.saturating_sub(23) as usize,
+    );
+    frame.render_widget(
+        Paragraph::new(path).style(Style::default().fg(theme.color("subtext0"))),
+        Rect::new(rect.x + 13, rect.y, rect.width.saturating_sub(23), 1),
+    );
+    let edit_width = 8;
+    let edit_rect = Rect::new(
+        rect.x + rect.width.saturating_sub(edit_width),
+        rect.y,
+        edit_width,
+        1,
+    );
+    draw_button(
+        frame,
+        app,
+        theme,
+        hits,
+        edit_rect,
+        "编辑喵~",
+        Action::StartCloneDirEdit,
+        false,
+    );
+    register(hits, rect, Action::SetSettingsRow(5));
 }
 
 fn draw_theme_row(

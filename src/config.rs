@@ -9,6 +9,10 @@ pub fn default_download_dir() -> String {
     "~/Downloads/gitx-tui".to_string()
 }
 
+pub fn default_clone_dir() -> String {
+    "~/gitx-tui/clones".to_string()
+}
+
 pub fn expand_tilde(value: &str) -> PathBuf {
     let value = value.trim();
     if value == "~" {
@@ -37,8 +41,10 @@ pub struct Config {
     pub show_file_tree: bool,
     pub show_readme: bool,
     pub download_dir: String,
+    pub clone_dir: String,
     pub commit_limit: usize,
     pub pinned_repos: Vec<String>,
+    pub recent_repos: Vec<String>,
     pub default_page: String,
 }
 
@@ -55,8 +61,10 @@ impl Default for Config {
             show_file_tree: false,
             show_readme: false,
             download_dir: default_download_dir(),
+            clone_dir: default_clone_dir(),
             commit_limit: 50,
             pinned_repos: Vec::new(),
+            recent_repos: Vec::new(),
             default_page: "home".to_string(),
         }
     }
@@ -98,6 +106,19 @@ impl Config {
         if self.download_dir.is_empty() {
             self.download_dir = default_download_dir();
         }
+        self.clone_dir = self.clone_dir.trim().to_string();
+        if self.clone_dir.is_empty() {
+            self.clone_dir = default_clone_dir();
+        }
+        let mut recent: Vec<String> = Vec::new();
+        for name in self.recent_repos.drain(..) {
+            let name = name.trim().to_string();
+            if !name.is_empty() && !recent.iter().any(|item| item.eq_ignore_ascii_case(&name)) {
+                recent.push(name);
+            }
+        }
+        recent.truncate(8);
+        self.recent_repos = recent;
         let mut pinned: Vec<String> = Vec::new();
         for name in self.pinned_repos.drain(..) {
             let name = name.trim().to_string();
@@ -114,6 +135,10 @@ impl Config {
 
     pub fn expanded_download_dir(&self) -> PathBuf {
         expand_tilde(&self.download_dir)
+    }
+
+    pub fn expanded_clone_dir(&self) -> PathBuf {
+        expand_tilde(&self.clone_dir)
     }
 
     pub fn save(&self, paths: &Paths) -> std::io::Result<()> {

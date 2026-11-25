@@ -58,6 +58,10 @@ impl ApiClient {
         &self.proxy
     }
 
+    pub fn proxy_url(&self, github_url: &str) -> String {
+        join_proxy(&self.proxy, github_url)
+    }
+
     pub fn user(&self) -> Result<User, String> {
         self.get_json(&format!("{API}/user"), true)
     }

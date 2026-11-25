@@ -344,6 +344,8 @@ pub enum Action {
     NavRight,
     StartProxyEdit,
     StartDownloadDirEdit,
+    StartCloneDirEdit,
+    CloneRepo,
     ToggleFileTree,
     ToggleReadme,
     ToggleTransparent,
@@ -930,6 +932,14 @@ enum Msg {
         label: String,
         result: Result<std::path::PathBuf, String>,
     },
+    RepoCloned {
+        name: String,
+        result: Result<std::path::PathBuf, String>,
+    },
+    RecentRepo {
+        name: String,
+        result: Result<Repo, String>,
+    },
     RateLimit(Result<crate::model::RateLimit, String>),
     RepoUpdated(Result<Repo, String>),
     ReleasePublished {
@@ -1241,6 +1251,7 @@ pub struct App {
     pub home_selected: usize,
     pub nav_offset: usize,
     pub pin_cache: Vec<Repo>,
+    pub recent_cache: Vec<Repo>,
     pub pin_loading: Vec<String>,
     pub should_quit: bool,
     pub settings_only: bool,
@@ -1333,9 +1344,12 @@ pub struct App {
     pub proxy_input: TextInput,
     pub editing_download_dir: bool,
     pub download_input: TextInput,
+    pub editing_clone_dir: bool,
+    pub clone_input: TextInput,
     pub config_dirty: bool,
     pub cache_stats: CacheStats,
     pub download_job: Option<DownloadJob>,
+    pub clone_job: Option<String>,
     pub star_loading: Option<String>,
     pub language_selected: usize,
     pub language_offset: usize,
@@ -1407,6 +1421,7 @@ impl App {
         let cache = Cache::new(paths.cache_dir().to_path_buf());
         let cache_stats = cache.stats();
         let download_dir_initial = config.download_dir.clone();
+        let clone_dir_initial = config.clone_dir.clone();
         let start_page = if settings_only {
             Page::Settings
         } else {
@@ -1564,6 +1579,7 @@ impl App {
             home_selected: 0,
             nav_offset: start_page.nav_index().unwrap_or(0),
             pin_cache: Vec::new(),
+            recent_cache: Vec::new(),
             pin_loading: Vec::new(),
             should_quit: false,
             settings_only,
@@ -1650,9 +1666,12 @@ impl App {
             proxy_input: TextInput::new(""),
             editing_download_dir: false,
             download_input: TextInput::new(download_dir_initial),
+            editing_clone_dir: false,
+            clone_input: TextInput::new(clone_dir_initial),
             config_dirty: false,
             cache_stats,
             download_job: None,
+            clone_job: None,
             star_loading: None,
             language_selected: 0,
             language_offset: 0,
@@ -3306,6 +3325,27 @@ impl App {
                             format::display_path(&path)
                         ),
                     ),
+                    Err(error) => self.set_status(StatusKind::Error, &error),
+                }
+            }
+            Msg::RepoCloned { name, result } => {
+                self.clone_job = None;
+                match result {
+                    Ok(path) => self.set_status(
+                        StatusKind::Ok,
+                        &format!(
+                            "{name} 克隆好啦，人家放在 {} 啦喵~",
+                            format::display_path(&path)
+                        ),
+                    ),
+                    Err(error) => self.set_status(StatusKind::Error, &error),
+                }
+            }
+            Msg::RecentRepo { name, result } => {
+                self.pin_loading
+                    .retain(|item| !item.eq_ignore_ascii_case(&name));
+                match result {
+                    Ok(repo) => self.open_repo(repo),
                     Err(error) => self.set_status(StatusKind::Error, &error),
                 }
             }
@@ -6477,6 +6517,7 @@ impl App {
     }
 
     pub fn open_repo(&mut self, repo: Repo) {
+        self.remember_recent(&repo);
         self.return_page = return_page_when_opening(self.page, self.return_page);
         self.issue_repo = None;
         self.release_filter = TextInput::new("");
@@ -6541,6 +6582,46 @@ impl App {
             .map(|name| {
                 self.pin_cache
                     .iter()
+                    .chain(self.repos.iter())
+                    .chain(self.starred.iter())
+                    .chain(self.search_results.iter())
+                    .chain(self.trending.iter())
+                    .chain(self.profile_repos.iter())
+                    .find(|repo| repo.display_full_name().eq_ignore_ascii_case(name))
+                    .cloned()
+                    .unwrap_or_else(|| Repo {
+                        full_name: name.clone(),
+                        ..Repo::default()
+                    })
+            })
+            .collect()
+    }
+
+    fn remember_recent(&mut self, repo: &Repo) {
+        let name = repo.display_full_name();
+        if name.is_empty() || !name.contains('/') {
+            return;
+        }
+        self.recent_cache
+            .retain(|item| !item.display_full_name().eq_ignore_ascii_case(&name));
+        self.recent_cache.insert(0, repo.clone());
+        self.recent_cache.truncate(8);
+        self.config
+            .recent_repos
+            .retain(|item| !item.eq_ignore_ascii_case(&name));
+        self.config.recent_repos.insert(0, name);
+        self.config.recent_repos.truncate(8);
+        let _ = self.config.save(&self.paths);
+    }
+
+    pub fn recent_list(&self) -> Vec<Repo> {
+        self.config
+            .recent_repos
+            .iter()
+            .map(|name| {
+                self.recent_cache
+                    .iter()
+                    .chain(self.pin_cache.iter())
                     .chain(self.repos.iter())
                     .chain(self.starred.iter())
                     .chain(self.search_results.iter())
@@ -6625,7 +6706,13 @@ impl App {
                 self.fetch_pin(name);
             }
         }
-        self.home_selected = self.home_selected.min(pins.len().saturating_sub(1));
+        self.home_selected = self
+            .home_selected
+            .min(self.home_items_len().saturating_sub(1));
+    }
+
+    pub fn home_items_len(&self) -> usize {
+        self.pinned_list().len() + self.recent_list().len()
     }
 
     fn fetch_pin(&mut self, name: String) {
@@ -6645,23 +6732,53 @@ impl App {
         });
     }
 
-    pub fn open_pin(&mut self, index: usize) {
+    fn fetch_recent(&mut self, name: String) {
+        if self
+            .pin_loading
+            .iter()
+            .any(|item| item.eq_ignore_ascii_case(&name))
+        {
+            return;
+        }
+        self.pin_loading.push(name.clone());
+        let tx = self.tx.clone();
+        let client = self.client.clone();
+        std::thread::spawn(move || {
+            let result = client.repository(&name, false);
+            let _ = tx.send(Msg::RecentRepo { name, result });
+        });
+    }
+
+    pub fn open_home_item(&mut self, index: usize) {
         let pins = self.pinned_list();
-        let Some(repo) = pins.get(index).cloned() else {
+        if index < pins.len() {
+            let repo = pins[index].clone();
+            if repo.id != 0 {
+                self.open_repo(repo);
+                return;
+            }
+            if let Some(name) = self.config.pinned_repos.get(index).cloned() {
+                self.fetch_pin(name.clone());
+                self.set_status(StatusKind::Info, &format!("人家正在把 {name} 取回来喵~"));
+            }
+            return;
+        }
+        let recents = self.recent_list();
+        let Some(repo) = recents.get(index - pins.len()).cloned() else {
             return;
         };
         if repo.id != 0 {
             self.open_repo(repo);
             return;
         }
-        if let Some(name) = self.config.pinned_repos.get(index).cloned() {
-            self.fetch_pin(name.clone());
+        if let Some(name) = self.config.recent_repos.get(index - pins.len()).cloned() {
+            self.fetch_recent(name.clone());
             self.set_status(StatusKind::Info, &format!("人家正在把 {name} 取回来喵~"));
         }
     }
 
     pub fn move_home_selection(&mut self, delta: i32) {
-        let len = self.pinned_list().len();
+        let len = self.home_items_len();
         if len == 0 {
             self.home_selected = 0;
             return;
@@ -6821,6 +6938,11 @@ impl App {
                 action: Action::CopyAssetUrl {
                     asset: self.release_asset_selected,
                 },
+            },
+            PaletteItem {
+                label: "克隆当前仓库".to_string(),
+                hint: "Ctrl+G · 走加速通道，放到克隆目录".to_string(),
+                action: Action::CloneRepo,
             },
             PaletteItem {
                 label: "随机探索一个仓库".to_string(),
@@ -9473,6 +9595,25 @@ impl App {
             return;
         }
 
+        if self.editing_clone_dir {
+            match key.code {
+                KeyCode::Enter => self.commit_clone_dir_edit(),
+                KeyCode::Esc => {
+                    self.editing_clone_dir = false;
+                    self.clone_input = TextInput::new(self.config.clone_dir.clone());
+                }
+                KeyCode::Backspace => self.clone_input.backspace(),
+                KeyCode::Delete => self.clone_input.delete(),
+                KeyCode::Left => self.clone_input.left(),
+                KeyCode::Right => self.clone_input.right(),
+                KeyCode::Home => self.clone_input.home(),
+                KeyCode::End => self.clone_input.end(),
+                KeyCode::Char(ch) => self.clone_input.insert(ch),
+                _ => {}
+            }
+            return;
+        }
+
         if self.search_focus {
             match key.code {
                 KeyCode::Enter => self.submit_search(),
@@ -9858,6 +9999,11 @@ impl App {
             },
             KeyCode::Up | KeyCode::Char('k') => self.key_up(),
             KeyCode::Down | KeyCode::Char('j') => self.key_down(),
+            KeyCode::Char('g')
+                if key.modifiers.contains(KeyModifiers::CONTROL) && self.page.is_repo_page() =>
+            {
+                self.clone_current_repo()
+            }
             KeyCode::Char('g') | KeyCode::Home => self.key_home(),
             KeyCode::Char('G') | KeyCode::End => self.key_end(),
             KeyCode::PageUp => self.key_page_up(),
@@ -10604,6 +10750,8 @@ impl App {
             Action::NavRight => self.nav_offset = (self.nav_offset + 1).min(7),
             Action::StartProxyEdit => self.start_proxy_edit(),
             Action::StartDownloadDirEdit => self.start_download_dir_edit(),
+            Action::StartCloneDirEdit => self.start_clone_dir_edit(),
+            Action::CloneRepo => self.clone_current_repo(),
             Action::ToggleFileTree => self.toggle_file_tree(),
             Action::ToggleReadme => self.toggle_readme(),
             Action::ToggleTransparent => self.toggle_transparent(),
@@ -11160,6 +11308,31 @@ mod tests {
         assert_eq!(payload["target_commitish"], "main");
         assert!(payload.get("generate_release_notes").is_none());
         assert_eq!(draft.assets_list(), vec!["/tmp/a.zip", "/tmp/b.tar.gz"]);
+    }
+
+    #[test]
+    fn recent_repos_dedupe_and_cap_at_eight() {
+        let dir = std::env::temp_dir().join(format!("gxt-recent-test-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        let paths = Paths::for_test(dir.join("config"), dir.join("cache"));
+        let mut app = App::settings(paths, None);
+        for index in 0..10 {
+            app.remember_recent(&Repo {
+                name: format!("repo{index}"),
+                full_name: format!("me/repo{index}"),
+                ..Default::default()
+            });
+        }
+        app.remember_recent(&Repo {
+            name: "repo5".to_string(),
+            full_name: "me/repo5".to_string(),
+            ..Default::default()
+        });
+        assert_eq!(app.config.recent_repos.len(), 8);
+        assert_eq!(app.config.recent_repos[0], "me/repo5");
+        assert_eq!(app.recent_list()[0].display_full_name(), "me/repo5");
+        assert_eq!(app.home_items_len(), app.recent_list().len());
+        let _ = std::fs::remove_dir_all(dir);
     }
 
     #[test]
