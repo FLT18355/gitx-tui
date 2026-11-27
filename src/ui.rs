@@ -4936,9 +4936,10 @@ fn draw_release_page(
         ),
         Rect::new(right.x, right.y, right.width, 1),
     );
+    let asset_indices = app.release_asset_indices();
     let copy_label = icons::label(icons::COPY, "复制链接 y");
     let copy_width = format::text_width(&copy_label) as u16 + 4;
-    if !release.assets.is_empty() && right.width > copy_width + 14 {
+    if !asset_indices.is_empty() && right.width > copy_width + 14 {
         draw_button(
             frame,
             app,
@@ -4957,11 +4958,22 @@ fn draw_release_page(
             false,
         );
     }
+    draw_filter_line(
+        frame,
+        theme,
+        Rect::new(right.x, right.y + 1, right.width, 1),
+        hits,
+        &app.release_asset_filter,
+        app.release_asset_filter_focus,
+        app.hover.as_ref() == Some(&Action::ReleaseAssetFilterFocus),
+        Action::ReleaseAssetFilterFocus,
+        "搜附件名喵~",
+    );
     let assets_rect = Rect::new(
         right.x,
-        right.y + 2,
+        right.y + 3,
         right.width,
-        right.height.saturating_sub(3),
+        right.height.saturating_sub(4),
     );
     app.layout.page_releases = assets_rect;
     if release.assets.is_empty() {
@@ -4974,14 +4986,26 @@ fn draw_release_page(
         );
         return;
     }
+    if asset_indices.is_empty() {
+        draw_center_message(
+            frame,
+            theme,
+            assets_rect,
+            "没有匹配的附件喵~",
+            "按 / 改改关键词，Ctrl+U 清空筛选喵~",
+        );
+        return;
+    }
     let rows = assets_rect.height as usize;
-    let max_start = release.assets.len().saturating_sub(rows);
-    let start = app
-        .release_asset_selected
-        .saturating_sub(rows.saturating_sub(1));
-    let start = start.min(max_start);
-    let end = (start + rows).min(release.assets.len());
-    for (offset, index) in (start..end).enumerate() {
+    let selected_pos = asset_indices
+        .iter()
+        .position(|index| *index == app.release_asset_selected)
+        .unwrap_or(0);
+    let start = selected_pos
+        .saturating_sub(rows.saturating_sub(1))
+        .min(asset_indices.len().saturating_sub(rows));
+    let end = (start + rows).min(asset_indices.len());
+    for (offset, index) in asset_indices[start..end].iter().copied().enumerate() {
         let asset = &release.assets[index];
         let y = assets_rect.y + offset as u16;
         let rect = Rect::new(assets_rect.x, y, assets_rect.width, 1);
@@ -5023,8 +5047,17 @@ fn draw_release_page(
         );
         register(hits, rect, action);
     }
+    let footer = if app.release_asset_filter.value.trim().is_empty() {
+        "Enter 或点文件下载到上面目录喵~".to_string()
+    } else {
+        format!(
+            "筛选后 {} / {} 个 · Enter 下载 · / 改搜索喵~",
+            asset_indices.len(),
+            release.assets.len()
+        )
+    };
     frame.render_widget(
-        Paragraph::new("Enter 或点文件下载到上面目录喵~")
+        Paragraph::new(format::truncate(&footer, right.width as usize))
             .style(Style::default().fg(theme.color("overlay0"))),
         Rect::new(
             right.x,
@@ -15012,6 +15045,52 @@ mod tests {
             .max()
             .expect("action row");
         assert_eq!(right, 218, "buttons should reach the right edge");
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn release_page_filters_assets_by_name() {
+        let dir =
+            std::env::temp_dir().join(format!("gitx-release-filter-ui-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        let paths = crate::config::Paths::for_test(dir.join("config"), dir.join("cache"));
+        let mut app = App::settings(paths, None);
+        app.settings_only = false;
+        app.page = Page::ReleaseDetail;
+        app.page_repo = Some(Repo {
+            name: "demo".to_string(),
+            full_name: "me/demo".to_string(),
+            ..Default::default()
+        });
+        app.releases = vec![crate::model::Release {
+            tag_name: "v1".to_string(),
+            assets: vec![
+                crate::model::ReleaseAsset {
+                    name: "gxt-linux.tar.gz".to_string(),
+                    ..Default::default()
+                },
+                crate::model::ReleaseAsset {
+                    name: "gxt-windows.zip".to_string(),
+                    ..Default::default()
+                },
+            ],
+            ..Default::default()
+        }];
+        app.release_asset_filter = TextInput::new("zip");
+        let mut terminal = ratatui::Terminal::new(ratatui::backend::TestBackend::new(120, 40))
+            .expect("test terminal");
+        terminal
+            .draw(|frame| draw(frame, &mut app))
+            .expect("render release detail");
+        assert!(
+            app.hitboxes
+                .iter()
+                .any(|hit| hit.action == Action::ReleaseAssetFilterFocus)
+        );
+        let text = buffer_text(terminal.backend().buffer());
+        let compact = text.split_whitespace().collect::<String>();
+        assert!(compact.contains("gxt-windows.zip"));
+        assert!(!compact.contains("gxt-linux.tar.gz"));
         let _ = std::fs::remove_dir_all(dir);
     }
 

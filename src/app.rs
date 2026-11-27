@@ -6,8 +6,8 @@ use crate::icons;
 use crate::model::{
     Branch, Commit, CommitDetail, CompareResult, FileContent, Gist, Issue, IssueComment,
     IssueState, LanguageStat, Notification, Org, PullFile, PullRequestLink, RateLimit,
-    ReadmeContent, Release, Repo, RepoSort, SearchResponse, SearchSort, StarSort, Tag,
-    TreeResponse, TrendingPeriod, User, Workflow, WorkflowRun, key_part,
+    ReadmeContent, Release, ReleaseAsset, Repo, RepoSort, SearchResponse, SearchSort, StarSort,
+    Tag, TreeResponse, TrendingPeriod, User, Workflow, WorkflowRun, key_part,
 };
 use crate::theme::Theme;
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers, MouseButton, MouseEvent, MouseEventKind};
@@ -325,6 +325,7 @@ pub enum Action {
     SearchFocus,
     ListFilterFocus,
     ReleaseFilterFocus,
+    ReleaseAssetFilterFocus,
     SearchHistory(String),
     SubmitSearch,
     OpenPage,
@@ -1281,6 +1282,8 @@ pub struct App {
     pub list_filter_focus: bool,
     pub release_filter: TextInput,
     pub release_filter_focus: bool,
+    pub release_asset_filter: TextInput,
+    pub release_asset_filter_focus: bool,
     pub search_sort: SearchSort,
     pub repo_sort: RepoSort,
     pub star_sort: StarSort,
@@ -1612,6 +1615,8 @@ impl App {
             list_filter_focus: false,
             release_filter: TextInput::new(""),
             release_filter_focus: false,
+            release_asset_filter: TextInput::new(""),
+            release_asset_filter_focus: false,
             search_sort: SearchSort::BestMatch,
             repo_sort: RepoSort::Updated,
             star_sort: StarSort::Starred,
@@ -5359,6 +5364,17 @@ impl App {
         self.search_focus = false;
         self.list_filter_focus = false;
         self.release_filter_focus = true;
+        self.release_asset_filter_focus = false;
+    }
+
+    pub fn focus_release_asset_filter(&mut self) {
+        if self.page != Page::ReleaseDetail {
+            return;
+        }
+        self.search_focus = false;
+        self.list_filter_focus = false;
+        self.release_filter_focus = false;
+        self.release_asset_filter_focus = true;
     }
 
     fn release_matches_filter(release: &Release, query: &str) -> bool {
@@ -6622,6 +6638,7 @@ impl App {
         self.search_focus = page == Page::Search;
         self.list_filter_focus = false;
         self.release_filter_focus = false;
+        self.release_asset_filter_focus = false;
         self.readme_fullscreen = false;
         self.list_offset = 0;
         self.pending_detail = None;
@@ -6677,6 +6694,8 @@ impl App {
         self.issue_repo = None;
         self.release_filter = TextInput::new("");
         self.release_filter_focus = false;
+        self.release_asset_filter = TextInput::new("");
+        self.release_asset_filter_focus = false;
         self.page_repo = Some(repo.clone());
         self.page = Page::Repo;
         if let Some(index) = self.return_page.nav_index() {
@@ -7207,6 +7226,7 @@ impl App {
     }
 
     pub fn go_back(&mut self) {
+        self.release_asset_filter_focus = false;
         if self.page == Page::Profile {
             self.close_profile();
             return;
@@ -7527,12 +7547,8 @@ impl App {
             self.set_status(StatusKind::Info, "先打开一个发行版详情页嘛喵~");
             return;
         }
-        let Some(release) = self.selected_release() else {
-            self.set_status(StatusKind::Info, "先挑一个发行版嘛喵~");
-            return;
-        };
-        let Some(asset) = release.assets.get(self.release_asset_selected) else {
-            self.set_status(StatusKind::Info, "这个发行版没有附带文件喵~");
+        let Some(asset) = self.selected_release_asset() else {
+            self.set_status(StatusKind::Info, "筛选后没有可复制的附件喵~");
             return;
         };
         self.copy_text(&asset.browser_download_url, "文件下载地址喵~");
@@ -7575,6 +7591,11 @@ impl App {
     }
 
     pub fn download_asset(&mut self, release_index: usize, asset_index: usize) {
+        if release_index != self.release_selected
+            || !self.release_asset_indices().contains(&asset_index)
+        {
+            return;
+        }
         let Some(asset) = self
             .releases
             .get(release_index)
@@ -7615,12 +7636,48 @@ impl App {
         }
         self.release_selected = index;
         self.release_asset_selected = 0;
+        self.release_asset_filter = TextInput::new("");
+        self.release_asset_filter_focus = false;
         self.release_scroll = 0;
         self.release_scroll_max = 0;
         self.search_focus = false;
         self.list_filter_focus = false;
         self.return_page = return_page_when_opening(self.page, self.return_page);
         self.page = Page::ReleaseDetail;
+    }
+
+    pub fn release_asset_indices(&self) -> Vec<usize> {
+        let Some(release) = self.releases.get(self.release_selected) else {
+            return Vec::new();
+        };
+        let query = self.release_asset_filter.value.trim().to_lowercase();
+        release
+            .assets
+            .iter()
+            .enumerate()
+            .filter(|(_, asset)| query.is_empty() || asset.name.to_lowercase().contains(&query))
+            .map(|(index, _)| index)
+            .collect()
+    }
+
+    pub fn selected_release_asset(&self) -> Option<ReleaseAsset> {
+        let release = self.releases.get(self.release_selected)?;
+        if !self
+            .release_asset_indices()
+            .contains(&self.release_asset_selected)
+        {
+            return None;
+        }
+        release.assets.get(self.release_asset_selected).cloned()
+    }
+
+    fn clamp_release_asset_selection(&mut self) {
+        let indices = self.release_asset_indices();
+        if indices.is_empty() {
+            self.release_asset_selected = 0;
+        } else if !indices.contains(&self.release_asset_selected) {
+            self.release_asset_selected = indices[0];
+        }
     }
 
     fn clamp_release_selection(&mut self) {
@@ -7635,32 +7692,28 @@ impl App {
             self.release_asset_selected = 0;
         } else {
             self.release_asset_selected = self.release_asset_selected.min(assets - 1);
+            self.clamp_release_asset_selection();
         }
     }
 
     pub fn move_release_asset_selection(&mut self, delta: i32) {
-        let Some(release) = self.selected_release() else {
-            return;
-        };
-        if release.assets.is_empty() {
+        let indices = self.release_asset_indices();
+        if indices.is_empty() {
             return;
         }
-        self.release_asset_selected = (self.release_asset_selected as i32 + delta)
-            .clamp(0, release.assets.len() as i32 - 1)
-            as usize;
-    }
-
-    pub fn select_release_asset(&mut self, index: usize) {
-        let Some(release) = self.selected_release() else {
-            return;
-        };
-        if release.assets.is_empty() {
-            return;
-        }
-        self.release_asset_selected = index.min(release.assets.len() - 1);
+        let current = indices
+            .iter()
+            .position(|index| *index == self.release_asset_selected)
+            .unwrap_or(0);
+        let next = (current as i32 + delta).clamp(0, indices.len() as i32 - 1) as usize;
+        self.release_asset_selected = indices[next];
     }
 
     pub fn download_selected_release_asset(&mut self) {
+        if self.selected_release_asset().is_none() {
+            self.set_status(StatusKind::Info, "筛选后没有可下载的附件喵~");
+            return;
+        }
         let selected = self.release_asset_selected;
         self.download_asset(self.release_selected, selected);
     }
@@ -9951,6 +10004,27 @@ impl App {
             return;
         }
 
+        if self.release_asset_filter_focus {
+            match key.code {
+                KeyCode::Enter | KeyCode::Esc => {
+                    self.release_asset_filter_focus = false;
+                }
+                KeyCode::Backspace => self.release_asset_filter.backspace(),
+                KeyCode::Delete => self.release_asset_filter.delete(),
+                KeyCode::Left => self.release_asset_filter.left(),
+                KeyCode::Right => self.release_asset_filter.right(),
+                KeyCode::Home => self.release_asset_filter.home(),
+                KeyCode::End => self.release_asset_filter.end(),
+                KeyCode::Char('u') if key.modifiers.contains(KeyModifiers::CONTROL) => {
+                    self.release_asset_filter = TextInput::new("");
+                }
+                KeyCode::Char(ch) => self.release_asset_filter.insert(ch),
+                _ => {}
+            }
+            self.clamp_release_asset_selection();
+            return;
+        }
+
         if self.issue_filter_focus {
             match key.code {
                 KeyCode::Enter | KeyCode::Esc => self.issue_filter_focus = false,
@@ -10173,6 +10247,9 @@ impl App {
             {
                 self.focus_release_filter()
             }
+            KeyCode::Char('/') | KeyCode::Char('s') if self.page == Page::ReleaseDetail => {
+                self.focus_release_asset_filter()
+            }
             KeyCode::Char('/') | KeyCode::Char('s') => self.focus_search(),
             KeyCode::Char('1') => self.navigate(Page::Repositories),
             KeyCode::Char('0') => self.navigate(Page::Home),
@@ -10343,7 +10420,11 @@ impl App {
             Page::Actions => self.select_action_run(0),
             Page::Issues => self.select_issue(0),
             Page::Commits => self.select_commit(0),
-            Page::ReleaseDetail => self.select_release_asset(0),
+            Page::ReleaseDetail => {
+                if let Some(first) = self.release_asset_indices().first().copied() {
+                    self.release_asset_selected = first;
+                }
+            }
             Page::Notifications => self.notification_selected = 0,
             Page::Account => {}
             Page::Home => self.home_selected = 0,
@@ -10373,11 +10454,9 @@ impl App {
                 self.select_commit(last);
             }
             Page::ReleaseDetail => {
-                let last = self
-                    .selected_release()
-                    .map(|release| release.assets.len().saturating_sub(1))
-                    .unwrap_or(0);
-                self.select_release_asset(last);
+                if let Some(last) = self.release_asset_indices().last().copied() {
+                    self.release_asset_selected = last;
+                }
             }
             Page::Notifications => {
                 self.notification_selected = self.notifications.len().saturating_sub(1);
@@ -10923,6 +11002,11 @@ impl App {
                 self.release_filter.insert(ch);
             }
             self.page_scroll = 0;
+        } else if self.release_asset_filter_focus {
+            for ch in text.chars().filter(|ch| *ch != '\n' && *ch != '\r') {
+                self.release_asset_filter.insert(ch);
+            }
+            self.clamp_release_asset_selection();
         } else if self.list_filter_focus {
             let page = self.page;
             for ch in text.chars().filter(|ch| *ch != '\n' && *ch != '\r') {
@@ -11040,6 +11124,7 @@ impl App {
             Action::SearchFocus => self.focus_search(),
             Action::ListFilterFocus => self.focus_list_filter(),
             Action::ReleaseFilterFocus => self.focus_release_filter(),
+            Action::ReleaseAssetFilterFocus => self.focus_release_asset_filter(),
             Action::SearchHistory(query) => self.select_search_history(query),
             Action::SubmitSearch => self.submit_search(),
             Action::OpenPage => self.open_repo_page(),
@@ -11771,6 +11856,44 @@ mod tests {
         assert!(App::release_matches_filter(&release, "0.1.4"));
         assert!(App::release_matches_filter(&release, "发行版"));
         assert!(!App::release_matches_filter(&release, "compare"));
+    }
+
+    #[test]
+    fn release_asset_filter_narrows_and_clamps_selection() {
+        let dir = std::env::temp_dir().join(format!("gxt-release-assets-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        let paths = Paths::for_test(dir.join("config"), dir.join("cache"));
+        let mut app = App::settings(paths, None);
+        app.releases = vec![Release {
+            tag_name: "v1".to_string(),
+            assets: vec![
+                ReleaseAsset {
+                    name: "gxt-linux.tar.gz".to_string(),
+                    ..Default::default()
+                },
+                ReleaseAsset {
+                    name: "gxt-windows.zip".to_string(),
+                    ..Default::default()
+                },
+                ReleaseAsset {
+                    name: "notes.txt".to_string(),
+                    ..Default::default()
+                },
+            ],
+            ..Default::default()
+        }];
+        app.release_asset_filter = TextInput::new("zip");
+        assert_eq!(app.release_asset_indices(), vec![1]);
+        assert_eq!(app.release_asset_selected, 0);
+        assert!(app.selected_release_asset().is_none());
+        app.clamp_release_asset_selection();
+        assert_eq!(app.release_asset_selected, 1);
+        app.move_release_asset_selection(1);
+        assert_eq!(app.release_asset_selected, 1);
+        app.release_asset_filter = TextInput::new("missing");
+        app.clamp_release_asset_selection();
+        assert!(app.selected_release_asset().is_none());
+        let _ = std::fs::remove_dir_all(dir);
     }
 
     #[test]
