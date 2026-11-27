@@ -5,9 +5,9 @@ use crate::format::{self, base64};
 use crate::icons;
 use crate::model::{
     Branch, Commit, CommitDetail, CompareResult, FileContent, Gist, Issue, IssueComment,
-    IssueState, LanguageStat, Notification, Org, PullFile, RateLimit, ReadmeContent, Release, Repo,
-    RepoSort, SearchResponse, SearchSort, StarSort, Tag, TreeResponse, TrendingPeriod, User,
-    Workflow, WorkflowRun, key_part,
+    IssueState, LanguageStat, Notification, Org, PullFile, PullRequestLink, RateLimit,
+    ReadmeContent, Release, Repo, RepoSort, SearchResponse, SearchSort, StarSort, Tag,
+    TreeResponse, TrendingPeriod, User, Workflow, WorkflowRun, key_part,
 };
 use crate::theme::Theme;
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers, MouseButton, MouseEvent, MouseEventKind};
@@ -4171,6 +4171,20 @@ impl App {
         self.open_url(&url);
     }
 
+    pub fn open_selected_notification_detail(&mut self) {
+        let Some(item) = self.selected_notification() else {
+            self.set_status(StatusKind::Info, "先挑一条通知嘛喵~");
+            return;
+        };
+        let Some((repo, issue)) = notification_issue(&item) else {
+            self.open_selected_notification();
+            return;
+        };
+        self.issue_repo = Some(repo);
+        self.return_page = Page::Notifications;
+        self.open_issue_detail_at(issue);
+    }
+
     pub fn mark_selected_notification_read(&mut self) {
         let Some(item) = self.selected_notification() else {
             self.set_status(StatusKind::Info, "先挑一条通知嘛喵~");
@@ -5382,7 +5396,10 @@ impl App {
 
     fn visible_indices_for(&self, page: Page) -> Vec<usize> {
         let raw = self.raw_list(page);
-        let language = if matches!(page, Page::Repositories | Page::Search | Page::Trending) {
+        let language = if matches!(
+            page,
+            Page::Repositories | Page::Starred | Page::Search | Page::Trending
+        ) {
             self.language_filter.as_deref()
         } else {
             None
@@ -7196,7 +7213,11 @@ impl App {
         }
         if self.page == Page::IssueDetail {
             self.issue_comment_focus = false;
-            self.page = Page::Issues;
+            self.page = if self.return_page == Page::Notifications {
+                Page::Notifications
+            } else {
+                Page::Issues
+            };
             self.issue_open = None;
             self.issue_open_number = None;
             return;
@@ -9123,6 +9144,10 @@ impl App {
             self.set_status(StatusKind::Info, "先打开一个仓库的议题页嘛喵~");
             return;
         }
+        self.open_issue_detail_at(issue);
+    }
+
+    fn open_issue_detail_at(&mut self, issue: Issue) {
         self.return_page = if self.page == Page::Issues {
             Page::Issues
         } else {
@@ -10216,7 +10241,7 @@ impl App {
             KeyCode::Char('l') => {
                 if matches!(
                     self.page,
-                    Page::Repositories | Page::Search | Page::Trending
+                    Page::Repositories | Page::Starred | Page::Search | Page::Trending
                 ) {
                     self.open_languages();
                 }
@@ -10230,7 +10255,7 @@ impl App {
                 Page::Issues => self.open_selected_issue(),
                 Page::Commits => self.open_selected_commit(),
                 Page::ReleaseDetail => self.download_selected_release_asset(),
-                Page::Notifications => self.open_selected_notification(),
+                Page::Notifications => self.open_selected_notification_detail(),
                 Page::IssueDetail => self.start_issue_comment(),
                 Page::Gists => self.open_gist_browser(),
                 Page::Compare => self.fetch_compare(),
@@ -11172,7 +11197,7 @@ impl App {
                 self.last_click = Some((now, key));
                 self.select_notification(index);
                 if double {
-                    self.open_selected_notification();
+                    self.open_selected_notification_detail();
                 }
             }
             Action::SetNotificationFilter(all) => self.set_notification_filter(all),
@@ -11301,6 +11326,28 @@ fn return_page_when_opening(current: Page, return_page: Page) -> Page {
     } else {
         current
     }
+}
+
+fn notification_issue(item: &Notification) -> Option<(Repo, Issue)> {
+    if !item.is_thread_subject() {
+        return None;
+    }
+    let number = item.subject_number()?;
+    let mut repo = item.repository.clone();
+    if repo.display_full_name().trim().is_empty() {
+        let full_name = item.subject_repo_full_name()?;
+        repo.name = full_name.rsplit('/').next()?.to_string();
+        repo.full_name = full_name;
+    }
+    let issue = Issue {
+        number,
+        title: item.subject.title.clone(),
+        state: "open".to_string(),
+        html_url: item.html_url(),
+        pull_request: (item.subject.subject_type == "PullRequest").then(PullRequestLink::default),
+        ..Default::default()
+    };
+    Some((repo, issue))
 }
 
 fn back_target(page: Page, return_page: Page, has_repo: bool) -> Option<Page> {
@@ -11646,6 +11693,58 @@ mod tests {
         assert_eq!(app.config.recent_repos[0], "me/repo5");
         assert_eq!(app.recent_list()[0].display_full_name(), "me/repo5");
         assert_eq!(app.home_items_len(), app.recent_list().len());
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn notification_thread_maps_to_issue_detail() {
+        let item = Notification {
+            subject: crate::model::NotificationSubject {
+                title: "修一下导航喵~".to_string(),
+                url: Some("https://api.github.com/repos/me/demo/issues/7".to_string()),
+                subject_type: "Issue".to_string(),
+                ..Default::default()
+            },
+            repository: Repo {
+                name: "demo".to_string(),
+                full_name: "me/demo".to_string(),
+                ..Default::default()
+            },
+            ..Default::default()
+        };
+        let (repo, issue) = notification_issue(&item).expect("issue notification");
+        assert_eq!(repo.full_name, "me/demo");
+        assert_eq!(issue.number, 7);
+        assert!(!issue.is_pull_request());
+
+        let mut release = item;
+        release.subject.subject_type = "Release".to_string();
+        assert!(notification_issue(&release).is_none());
+    }
+
+    #[test]
+    fn starred_language_filter_narrows_list() {
+        let dir = std::env::temp_dir().join(format!("gxt-star-lang-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        let paths = Paths::for_test(dir.join("config"), dir.join("cache"));
+        let mut app = App::settings(paths, None);
+        app.starred = vec![
+            Repo {
+                full_name: "me/rust".to_string(),
+                language: Some("Rust".to_string()),
+                ..Default::default()
+            },
+            Repo {
+                full_name: "me/go".to_string(),
+                language: Some("Go".to_string()),
+                ..Default::default()
+            },
+        ];
+        app.page = Page::Starred;
+        app.language_filter = Some("Rust".to_string());
+        let indices = app.visible_indices();
+        assert_eq!(indices.len(), 1);
+        assert_eq!(app.raw_repo(indices[0]).language.as_deref(), Some("Rust"));
         let _ = std::fs::remove_dir_all(dir);
     }
 

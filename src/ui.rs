@@ -948,9 +948,14 @@ fn draw_starred_main(
         hits,
     );
     let (count, _, _) = app.starred_stats();
+    let visible = app.visible_indices().len();
+    let count_line = if app.language_filter.is_some() {
+        format!("人家这里收着 {count} 个仓库 · 筛选后 {visible} 个喵~")
+    } else {
+        format!("人家这里收着 {count} 个仓库呢喵~")
+    };
     frame.render_widget(
-        Paragraph::new(format!("人家这里收着 {} 个仓库呢喵~", count))
-            .style(Style::default().fg(theme.color("subtext0"))),
+        Paragraph::new(count_line).style(Style::default().fg(theme.color("subtext0"))),
         Rect::new(inner.x, inner.y + 2, inner.width, 1),
     );
     draw_sort_chips(
@@ -983,11 +988,24 @@ fn draw_starred_main(
             ),
         ],
     );
+    let language = app.language_filter.as_deref().unwrap_or("全部");
+    let language_label = format!("{} 语言：{language}喵~", icons::CODE);
+    let language_width = format::text_width(&language_label) as u16 + 4;
+    draw_button(
+        frame,
+        app,
+        theme,
+        hits,
+        Rect::new(inner.x, inner.y + 4, language_width.min(inner.width), 1),
+        &language_label,
+        Action::OpenLanguages,
+        app.language_filter.is_some(),
+    );
     draw_list_filter(
         frame,
         app,
         theme,
-        Rect::new(inner.x, inner.y + 4, inner.width, 1),
+        Rect::new(inner.x, inner.y + 5, inner.width, 1),
         hits,
     );
     draw_list_pagination(
@@ -995,13 +1013,13 @@ fn draw_starred_main(
         app,
         theme,
         hits,
-        Rect::new(inner.x, inner.y + 5, inner.width, 1),
+        Rect::new(inner.x, inner.y + 6, inner.width, 1),
     );
     let list = Rect::new(
         inner.x,
-        inner.y + 7,
+        inner.y + 8,
         inner.width,
-        inner.height.saturating_sub(7),
+        inner.height.saturating_sub(8),
     );
     app.layout.list = list;
     draw_cards(frame, app, theme, list, hits, EmptyKind::Starred);
@@ -5048,7 +5066,7 @@ fn draw_notifications_page(
         theme,
         inner,
         &icons::label(icons::BELL, "通知喵~"),
-        "GitHub 的通知都收在这里喵~",
+        "Enter 看详情，o 去 GitHub 喵~",
         "刷新喵~",
         Action::Refresh,
         hits,
@@ -5344,9 +5362,13 @@ fn draw_notification_detail(
             true,
         );
     }
+    let hint = if item.is_thread_subject() {
+        "Enter 看详情 · o 去 GitHub喵~"
+    } else {
+        "Enter / o 去 GitHub喵~"
+    };
     frame.render_widget(
-        Paragraph::new("Enter / o 去 GitHub 看完整内容喵~")
-            .style(Style::default().fg(theme.color("overlay0"))),
+        Paragraph::new(hint).style(Style::default().fg(theme.color("overlay0"))),
         Rect::new(
             inner.x,
             inner.y + inner.height.saturating_sub(2),
@@ -14990,6 +15012,80 @@ mod tests {
             .max()
             .expect("action row");
         assert_eq!(right, 218, "buttons should reach the right edge");
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn notification_page_shows_tui_detail_hint_for_threads() {
+        let dir = std::env::temp_dir().join(format!("gitx-notify-ui-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        let paths = crate::config::Paths::for_test(dir.join("config"), dir.join("cache"));
+        let mut app = App::settings(paths, None);
+        app.settings_only = false;
+        app.page = Page::Notifications;
+        app.notifications = vec![crate::model::Notification {
+            subject: crate::model::NotificationSubject {
+                title: "修一下导航喵~".to_string(),
+                url: Some("https://api.github.com/repos/me/demo/issues/7".to_string()),
+                subject_type: "Issue".to_string(),
+                ..Default::default()
+            },
+            repository: Repo {
+                name: "demo".to_string(),
+                full_name: "me/demo".to_string(),
+                ..Default::default()
+            },
+            ..Default::default()
+        }];
+        let mut terminal = ratatui::Terminal::new(ratatui::backend::TestBackend::new(120, 40))
+            .expect("test terminal");
+        terminal
+            .draw(|frame| draw(frame, &mut app))
+            .expect("render notifications");
+        let text = buffer_text(terminal.backend().buffer());
+        let compact = text.split_whitespace().collect::<String>();
+        assert!(compact.contains("Enter看详情"));
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn starred_page_shows_language_filter_and_narrows_cards() {
+        let dir = std::env::temp_dir().join(format!("gitx-starred-lang-ui-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        let paths = crate::config::Paths::for_test(dir.join("config"), dir.join("cache"));
+        let mut app = App::settings(paths, None);
+        app.settings_only = false;
+        app.page = Page::Starred;
+        app.starred = vec![
+            Repo {
+                name: "rust".to_string(),
+                full_name: "me/rust".to_string(),
+                language: Some("Rust".to_string()),
+                ..Default::default()
+            },
+            Repo {
+                name: "go".to_string(),
+                full_name: "me/go".to_string(),
+                language: Some("Go".to_string()),
+                ..Default::default()
+            },
+        ];
+        app.language_filter = Some("Rust".to_string());
+        let mut terminal = ratatui::Terminal::new(ratatui::backend::TestBackend::new(120, 40))
+            .expect("test terminal");
+        terminal
+            .draw(|frame| draw(frame, &mut app))
+            .expect("render starred page");
+        assert!(
+            app.hitboxes
+                .iter()
+                .any(|hit| hit.action == Action::OpenLanguages)
+        );
+        let text = buffer_text(terminal.backend().buffer());
+        let compact = text.split_whitespace().collect::<String>();
+        assert!(compact.contains("语言：Rust"));
+        assert!(compact.contains("me/rust"));
+        assert!(!compact.contains("me/go"));
         let _ = std::fs::remove_dir_all(dir);
     }
 

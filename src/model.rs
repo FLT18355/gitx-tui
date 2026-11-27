@@ -934,6 +934,34 @@ impl Notification {
         }
     }
 
+    pub fn subject_number(&self) -> Option<u64> {
+        let url = self.subject.url.as_deref()?.trim().trim_end_matches('/');
+        url.rsplit('/')
+            .next()?
+            .split(['?', '#'])
+            .next()?
+            .parse()
+            .ok()
+    }
+
+    pub fn subject_repo_full_name(&self) -> Option<String> {
+        let path = self
+            .subject
+            .url
+            .as_deref()?
+            .trim()
+            .strip_prefix("https://api.github.com/repos/")?;
+        let mut parts = path.split('/');
+        let owner = parts.next()?.trim();
+        let repo = parts.next()?.trim();
+        (!owner.is_empty() && !repo.is_empty()).then(|| format!("{owner}/{repo}"))
+    }
+
+    pub fn is_thread_subject(&self) -> bool {
+        matches!(self.subject.subject_type.as_str(), "Issue" | "PullRequest")
+            && self.subject_number().is_some()
+    }
+
     pub fn html_url(&self) -> String {
         let repo = if self.repository.html_url.trim().is_empty() {
             format!("https://github.com/{}", self.repo_label())
@@ -1418,6 +1446,12 @@ mod tests {
         assert_eq!(notification.reason_label(), "提到了你");
         assert_eq!(notification.repo_label(), "me/demo");
         assert_eq!(notification.html_url(), "https://github.com/me/demo/pull/7");
+        assert_eq!(notification.subject_number(), Some(7));
+        assert_eq!(
+            notification.subject_repo_full_name().as_deref(),
+            Some("me/demo")
+        );
+        assert!(notification.is_thread_subject());
     }
 
     #[test]
