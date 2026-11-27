@@ -6,6 +6,7 @@ pub enum CacheAction {
     Stats,
     Path,
     Clear,
+    Prune,
 }
 
 pub enum ConfigAction {
@@ -174,13 +175,18 @@ where
             "clear" => Ok(Command::Cache {
                 action: CacheAction::Clear,
             }),
+            "prune" => Ok(Command::Cache {
+                action: CacheAction::Prune,
+            }),
             "path" => Ok(Command::Cache {
                 action: CacheAction::Path,
             }),
             "stats" => Ok(Command::Cache {
                 action: CacheAction::Stats,
             }),
-            _ => Err(format!("cache 只支持 stats / path / clear 喵~：{two}")),
+            _ => Err(format!(
+                "cache 只支持 stats / path / clear / prune 喵~：{two}"
+            )),
         },
         [one] if one == "doctor" => Ok(Command::Doctor),
         [one] if matches!(one.as_str(), "commits" | "branches" | "switch") => Err(format!(
@@ -218,7 +224,7 @@ pub fn print_help() {
   gxt commits <仓库> [-n <条数>]    打印远端仓库提交喵~\n\
   gxt branches <仓库>              打印远端仓库分支喵~\n\
   gxt switch <分支> [路径]         切换本地分支喵~\n\
-  gxt cache [stats|path|clear]     查看或清理缓存喵~\n\
+  gxt cache [stats|path|clear|prune]  查看、清理或清旧缓存喵~\n\
   gxt doctor                       环境自检喵~\n\n\
 选项：\n\
   -n, --limit <条数>                log 显示条数，默认 20 喵~\n\
@@ -283,6 +289,12 @@ mod tests {
             parse(args(&["cache", "clear"])).unwrap(),
             Command::Cache {
                 action: CacheAction::Clear
+            }
+        ));
+        assert!(matches!(
+            parse(args(&["cache", "prune"])).unwrap(),
+            Command::Cache {
+                action: CacheAction::Prune
             }
         ));
         assert!(matches!(

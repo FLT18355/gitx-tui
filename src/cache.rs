@@ -4,6 +4,9 @@ use std::fs;
 use std::path::PathBuf;
 use std::time::{SystemTime, UNIX_EPOCH};
 
+/// 超过这个时间的缓存文件会被手动清理，单位秒喵~
+pub const STALE_CACHE_SECS: u64 = 7 * 86_400;
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Cached<T> {
     pub fetched_at: i64,
@@ -97,6 +100,42 @@ impl Cache {
         Ok(removed)
     }
 
+    pub fn prune_prefixes(
+        &self,
+        prefixes: &[&str],
+        max_age_secs: u64,
+    ) -> std::io::Result<CacheStats> {
+        let mut removed = CacheStats::default();
+        let Ok(entries) = fs::read_dir(&self.dir) else {
+            return Ok(removed);
+        };
+        let now = now_epoch();
+        for entry in entries.flatten() {
+            let path = entry.path();
+            if path.extension().and_then(|ext| ext.to_str()) != Some("json") {
+                continue;
+            }
+            let stem = entry.file_name();
+            let stem = stem.to_string_lossy();
+            if !prefixes.iter().any(|prefix| stem.starts_with(prefix)) {
+                continue;
+            }
+            let stale = fs::read(&path)
+                .ok()
+                .and_then(|raw| serde_json::from_slice::<Cached<serde_json::Value>>(&raw).ok())
+                .is_none_or(|cached| now - cached.fetched_at > max_age_secs as i64);
+            if !stale {
+                continue;
+            }
+            let size = entry.metadata().map(|meta| meta.len()).unwrap_or(0);
+            if fs::remove_file(&path).is_ok() {
+                removed.files += 1;
+                removed.bytes += size;
+            }
+        }
+        Ok(removed)
+    }
+
     pub fn stats_prefixes(&self, prefixes: &[&str]) -> CacheStats {
         let mut stats = CacheStats::default();
         let Ok(entries) = fs::read_dir(&self.dir) else {
@@ -178,7 +217,7 @@ pub fn search_key(query: &str, sort: &str) -> String {
 mod tests {
     use super::*;
 
-    #[derive(Debug, Serialize, Deserialize, PartialEq)]
+    #[derive(Debug, Serialize, Deserialize, PartialEq, Clone)]
     struct Item {
         value: String,
     }
@@ -213,6 +252,46 @@ mod tests {
         }
         cache.clear().unwrap();
         assert_eq!(cache.stats().files, 0);
+        let _ = fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn prunes_only_old_matching_entries() {
+        let dir = std::env::temp_dir().join(format!("gitx-tui-cache-prune-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&dir);
+        let cache = Cache::new(dir.clone());
+        let item = Item {
+            value: "ok".to_string(),
+        };
+        cache.save("fresh", &item).unwrap();
+        cache
+            .save_cached(
+                "repo_old",
+                &Cached {
+                    fetched_at: 0,
+                    data: item.clone(),
+                },
+            )
+            .unwrap();
+        cache
+            .save_cached(
+                "search_old",
+                &Cached {
+                    fetched_at: 0,
+                    data: item,
+                },
+            )
+            .unwrap();
+
+        let removed = cache.prune_prefixes(&["repo_"], STALE_CACHE_SECS).unwrap();
+        assert_eq!(removed.files, 1);
+        assert!(cache.load::<Item>("repo_old").is_none());
+        assert!(cache.load::<Item>("search_old").is_some());
+        assert!(cache.load::<Item>("fresh").is_some());
+
+        let removed = cache.prune_prefixes(&[""], STALE_CACHE_SECS).unwrap();
+        assert_eq!(removed.files, 1);
+        assert_eq!(cache.stats().files, 1);
         let _ = fs::remove_dir_all(dir);
     }
 

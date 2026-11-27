@@ -92,6 +92,7 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
         Some(Overlay::PublishRelease) => {
             draw_publish_release_overlay(frame, app, &theme, area, &mut hits)
         }
+        Some(Overlay::CommitFile) => draw_commit_file_overlay(frame, app, &theme, area, &mut hits),
         None => app.layout.overlay = Rect::default(),
     }
 
@@ -1517,6 +1518,15 @@ fn draw_home_stats(
     }
 }
 
+fn list_window_offset(selected: usize, len: usize, capacity: usize) -> usize {
+    if len == 0 {
+        return 0;
+    }
+    selected
+        .min(len - 1)
+        .saturating_sub(capacity.max(1).saturating_sub(1))
+}
+
 fn draw_home_pins(
     frame: &mut Frame,
     app: &mut App,
@@ -1557,7 +1567,8 @@ fn draw_home_pins(
         .min(app.home_items_len().saturating_sub(1));
     let row_height = 2;
     let capacity = (list.height / row_height).max(1) as usize;
-    let offset = app.home_selected.saturating_sub(capacity.saturating_sub(1));
+    // 选中最近访问时，置顶列表不要再跟着往下滚喵~
+    let offset = list_window_offset(app.home_selected, pins.len(), capacity);
     for (slot, (index, repo)) in pins
         .iter()
         .enumerate()
@@ -5843,7 +5854,7 @@ fn draw_commits_page(
     );
     frame.render_widget(
         Paragraph::new(format!(
-            "{} 个提交 · b 换分支 · Enter 去 GitHub 看详情喵~",
+            "{} 个提交 · b 换分支 · 点右侧文件看 diff · Enter 去 GitHub 看详情喵~",
             app.commits.len()
         ))
         .style(Style::default().fg(theme.color("subtext0"))),
@@ -6084,7 +6095,7 @@ fn draw_commit_detail(
             }
             let rows = button_y.saturating_sub(y) as usize;
             let mut shown = 0;
-            for file in detail.files.iter().take(rows) {
+            for (index, file) in detail.files.iter().take(rows).enumerate() {
                 let (marker, color) = match file.status.as_str() {
                     "added" => ("A", "green"),
                     "removed" => ("D", "red"),
@@ -6094,6 +6105,10 @@ fn draw_commit_detail(
                 let diff = format!("+{} -{}", file.additions, file.deletions);
                 let diff_width = format::text_width(&diff) as u16;
                 let name_width = inner.width.saturating_sub(diff_width + 3);
+                let row = Rect::new(inner.x, y, inner.width, 1);
+                if app.hover.as_ref() == Some(&Action::OpenCommitFile(index)) {
+                    fill(frame, row, theme.color("surface1"));
+                }
                 frame.render_widget(
                     Paragraph::new(Line::from(vec![
                         Span::styled(
@@ -6118,13 +6133,14 @@ fn draw_commit_detail(
                         .style(Style::default().fg(theme.color("overlay0"))),
                     Rect::new(inner.x, y, inner.width, 1),
                 );
+                register(hits, row, Action::OpenCommitFile(index));
                 y += 1;
                 shown += 1;
             }
             if shown < detail.files.len() && y < button_y {
                 frame.render_widget(
                     Paragraph::new(format!(
-                        "还有 {} 个文件，o 去 GitHub 看全部喵~",
+                        "点文件看 diff · 还有 {} 个文件，o 去 GitHub 看全部喵~",
                         detail.files.len() - shown
                     ))
                     .style(Style::default().fg(theme.color("overlay0"))),
@@ -6155,6 +6171,161 @@ fn draw_commit_detail(
         &open,
         Action::OpenExternal(commit.html_url.clone()),
         true,
+    );
+}
+
+fn draw_commit_file_overlay(
+    frame: &mut Frame,
+    app: &mut App,
+    theme: &Theme,
+    area: Rect,
+    hits: &mut Vec<HitBox>,
+) {
+    let width = area.width.saturating_sub(8).min(120);
+    let height = area.height.saturating_sub(6).min(42);
+    if width < 30 || height < 8 {
+        return;
+    }
+    let rect = Rect::new(
+        area.x + (area.width.saturating_sub(width)) / 2,
+        area.y + (area.height.saturating_sub(height)) / 2,
+        width,
+        height,
+    );
+    app.layout.overlay = rect;
+    frame.render_widget(Clear, rect);
+    fill(frame, rect, theme.color("mantle"));
+    frame.render_widget(
+        Block::new()
+            .borders(Borders::ALL)
+            .border_style(Style::default().fg(theme.color("blue"))),
+        rect,
+    );
+    let inner = Rect::new(
+        rect.x + 2,
+        rect.y + 1,
+        rect.width.saturating_sub(4),
+        rect.height.saturating_sub(2),
+    );
+    let (Some(index), Some(detail)) = (app.commit_file, app.commit_detail.as_ref()) else {
+        return;
+    };
+    let Some(file) = detail.files.get(index) else {
+        return;
+    };
+    let total = detail.files.len();
+    let filename = format::clean_text(&file.filename);
+    let status = match file.status.as_str() {
+        "added" => ("新增", "green"),
+        "removed" => ("删除", "red"),
+        "renamed" => ("重命名", "blue"),
+        _ => ("修改", "peach"),
+    };
+    let additions = file.additions;
+    let deletions = file.deletions;
+    let patch = file.patch.clone();
+
+    frame.render_widget(
+        Paragraph::new(Line::from(vec![
+            Span::styled(
+                format!("{} ", icons::FILE),
+                Style::default().fg(theme.color("blue")),
+            ),
+            Span::styled(
+                format::truncate(&filename, inner.width.saturating_sub(2) as usize),
+                Style::default()
+                    .fg(theme.color("text"))
+                    .add_modifier(Modifier::BOLD),
+            ),
+        ])),
+        Rect::new(inner.x, inner.y, inner.width, 1),
+    );
+    frame.render_widget(
+        Paragraph::new(Line::from(vec![
+            Span::styled(
+                format!("{} · ", status.0),
+                Style::default().fg(theme.color(status.1)),
+            ),
+            Span::styled(
+                format!("+{additions}"),
+                Style::default().fg(theme.color("green")),
+            ),
+            Span::raw(" "),
+            Span::styled(
+                format!("-{deletions}"),
+                Style::default().fg(theme.color("red")),
+            ),
+            Span::styled(
+                format!(" · 第 {}/{} 个文件喵~", index + 1, total),
+                Style::default().fg(theme.color("overlay0")),
+            ),
+        ])),
+        Rect::new(inner.x, inner.y + 1, inner.width, 1),
+    );
+
+    let footer_y = inner.y + inner.height.saturating_sub(1);
+    let body = Rect::new(
+        inner.x,
+        inner.y + 3,
+        inner.width,
+        footer_y.saturating_sub(inner.y + 3),
+    );
+    let mut lines: Vec<Line> = Vec::new();
+    match patch.as_deref().filter(|patch| !patch.is_empty()) {
+        Some(patch) => {
+            for line in patch.lines() {
+                let color = if line.starts_with("+++") || line.starts_with("---") {
+                    theme.color("overlay0")
+                } else if line.starts_with('+') {
+                    theme.color("green")
+                } else if line.starts_with('-') {
+                    theme.color("red")
+                } else if line.starts_with("@@") {
+                    theme.color("blue")
+                } else {
+                    theme.color("subtext0")
+                };
+                lines.push(Line::from(Span::styled(
+                    format::truncate(line, body.width as usize),
+                    Style::default().fg(color),
+                )));
+            }
+        }
+        None => lines.push(Line::from(Span::styled(
+            "这个文件没有可显示的 diff 喵~可能是二进制、太大，或者被 GitHub 省略了。按 o 去网页看喵~",
+            Style::default().fg(theme.color("overlay0")),
+        ))),
+    }
+    app.commit_file_scroll_max = lines.len().saturating_sub(body.height as usize) as u16;
+    app.commit_file_scroll = app.commit_file_scroll.min(app.commit_file_scroll_max);
+    frame.render_widget(
+        Paragraph::new(Text::from(lines)).scroll((app.commit_file_scroll, 0)),
+        body,
+    );
+
+    let open_label = icons::label(icons::EXTERNAL, "去 GitHub 看喵~");
+    let open_width = format::text_width(&open_label) as u16 + 4;
+    let commit_url = app
+        .selected_commit()
+        .map(|commit| commit.html_url)
+        .unwrap_or_default();
+    if !commit_url.is_empty() && open_width + 20 < inner.width {
+        draw_button(
+            frame,
+            app,
+            theme,
+            hits,
+            Rect::new(inner.x, footer_y, open_width, 1),
+            &open_label,
+            Action::OpenExternal(commit_url),
+            true,
+        );
+    }
+    frame.render_widget(
+        Paragraph::new("j/k 滚动 · g/G 首尾 · Esc 关闭喵~")
+            .alignment(Alignment::Right)
+            .style(Style::default().fg(theme.color("overlay0"))),
+        Rect::new(inner.x, footer_y, inner.width, 1),
     );
 }
 
@@ -6749,7 +6920,7 @@ fn draw_cache_overlay(
     );
     frame.render_widget(
         Paragraph::new(format!(
-            "共 {} 个文件 · {}喵~",
+            "共 {} 个文件 · {} · p 清 7 天前旧缓存喵~",
             app.cache_stats.files,
             format::format_size(app.cache_stats.bytes)
         ))
@@ -6791,7 +6962,7 @@ fn draw_cache_overlay(
     }
 
     let mut x = inner.x;
-    let clear_label = icons::label(icons::TRASH, "清掉选中喵~");
+    let clear_label = icons::label(icons::TRASH, "清选中喵~");
     let clear_width = format::text_width(&clear_label) as u16 + 4;
     if x + clear_width <= inner.x + inner.width {
         draw_button(
@@ -6805,6 +6976,21 @@ fn draw_cache_overlay(
             false,
         );
         x += clear_width + 1;
+    }
+    let prune_label = icons::label(icons::CLOCK, "清旧缓存喵~");
+    let prune_width = format::text_width(&prune_label) as u16 + 4;
+    if x + prune_width <= inner.x + inner.width {
+        draw_button(
+            frame,
+            app,
+            theme,
+            hits,
+            Rect::new(x, bottom, prune_width, 1),
+            &prune_label,
+            Action::PruneCacheGroup(app.cache_row),
+            false,
+        );
+        x += prune_width + 1;
     }
     let open_label = icons::label(icons::FOLDER_OPEN, "缓存目录喵~");
     let open_width = format::text_width(&open_label) as u16 + 4;
@@ -14317,6 +14503,16 @@ mod tests {
     use super::*;
 
     #[test]
+    fn home_pin_window_stops_scrolling_after_selection_leaves() {
+        assert_eq!(list_window_offset(0, 5, 3), 0);
+        assert_eq!(list_window_offset(2, 5, 3), 0);
+        assert_eq!(list_window_offset(4, 5, 3), 2);
+        // 选中已经落到最近访问时，置顶列表停在最后一屏喵~
+        assert_eq!(list_window_offset(9, 5, 3), 2);
+        assert_eq!(list_window_offset(9, 0, 3), 0);
+    }
+
+    #[test]
     fn strips_nested_markdown_images() {
         let line = "[![GitHub last commit](https://img.example/a)](https://github.com/x)";
         assert_eq!(strip_markdown_inline(line), "");
@@ -14794,6 +14990,69 @@ mod tests {
             .max()
             .expect("action row");
         assert_eq!(right, 218, "buttons should reach the right edge");
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn commit_file_click_opens_diff_overlay() {
+        let dir = std::env::temp_dir().join(format!("gitx-commit-diff-ui-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        let paths = crate::config::Paths::for_test(dir.join("config"), dir.join("cache"));
+        let mut app = App::settings(paths, None);
+        app.settings_only = false;
+        app.page = Page::Commits;
+        app.commit_repo = Some(Repo {
+            name: "demo".to_string(),
+            full_name: "me/demo".to_string(),
+            default_branch: "main".to_string(),
+            ..Default::default()
+        });
+        app.commits = vec![crate::model::Commit {
+            sha: "abcdef1234567890".to_string(),
+            html_url: "https://github.com/me/demo/commit/abcdef1234567890".to_string(),
+            commit: crate::model::CommitInfo {
+                message: "改一下文件喵~".to_string(),
+                ..Default::default()
+            },
+            ..Default::default()
+        }];
+        app.commit_detail = Some(crate::model::CommitDetail {
+            sha: "abcdef1234567890".to_string(),
+            files: vec![crate::model::CommitFile {
+                filename: "src/main.rs".to_string(),
+                status: "modified".to_string(),
+                additions: 1,
+                deletions: 1,
+                patch: Some("@@ -1 +1 @@\n-old\n+new".to_string()),
+                ..Default::default()
+            }],
+            ..Default::default()
+        });
+        app.commit_detail_for = Some("abcdef1234567890".to_string());
+        let mut terminal = ratatui::Terminal::new(ratatui::backend::TestBackend::new(120, 40))
+            .expect("test terminal");
+        terminal
+            .draw(|frame| draw(frame, &mut app))
+            .expect("render commits page");
+        let hit = app
+            .hitboxes
+            .iter()
+            .find(|hit| hit.action == Action::OpenCommitFile(0))
+            .cloned()
+            .expect("changed file should be clickable");
+        app.handle_action(hit.action);
+        assert_eq!(app.overlay, Some(Overlay::CommitFile));
+        terminal
+            .draw(|frame| draw(frame, &mut app))
+            .expect("render diff overlay");
+        let text = buffer_text(terminal.backend().buffer());
+        assert!(text.contains("src/main.rs"));
+        assert!(text.contains("+new"));
+        app.handle_key(crossterm::event::KeyEvent::new(
+            crossterm::event::KeyCode::Esc,
+            crossterm::event::KeyModifiers::NONE,
+        ));
+        assert_eq!(app.overlay, None);
         let _ = std::fs::remove_dir_all(dir);
     }
 

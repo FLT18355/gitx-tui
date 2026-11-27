@@ -1,5 +1,5 @@
 use crate::api::ApiClient;
-use crate::cache::{Cache, CacheStats, now_epoch, search_key};
+use crate::cache::{Cache, CacheStats, STALE_CACHE_SECS, now_epoch, search_key};
 use crate::config::{Config, Paths};
 use crate::format::{self, base64};
 use crate::icons;
@@ -199,6 +199,7 @@ pub enum Overlay {
     NewPull,
     MergePr,
     PublishRelease,
+    CommitFile,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -421,6 +422,8 @@ pub enum Action {
     OpenPullRequests,
     SelectIssue(usize),
     SelectCommit(usize),
+    OpenCommitFile(usize),
+    PruneCacheGroup(usize),
     SetIssueKind(IssueKind),
     SetIssueState(IssueState),
     SelectNotification(usize),
@@ -1339,6 +1342,9 @@ pub struct App {
     pub commit_detail: Option<CommitDetail>,
     pub commit_detail_for: Option<String>,
     pub commit_detail_loading: Option<String>,
+    pub commit_file: Option<usize>,
+    pub commit_file_scroll: u16,
+    pub commit_file_scroll_max: u16,
     pending_commit_detail: Option<PendingCommitDetail>,
 
     pub repo_edit: Option<RepoEdit>,
@@ -1663,6 +1669,9 @@ impl App {
             commit_detail: None,
             commit_detail_for: None,
             commit_detail_loading: None,
+            commit_file: None,
+            commit_file_scroll: 0,
+            commit_file_scroll_max: 0,
             pending_commit_detail: None,
             repo_edit: None,
             release_draft: None,
@@ -3984,10 +3993,8 @@ impl App {
             return;
         };
         let result = if group.prefixes.contains(&"") {
-            self.cache.clear().map(|()| CacheStats {
-                files: self.cache_stats.files,
-                bytes: self.cache_stats.bytes,
-            })
+            let stats = self.cache.stats();
+            self.cache.clear().map(|()| stats)
         } else {
             self.cache.clear_prefixes(group.prefixes)
         };
@@ -4005,6 +4012,30 @@ impl App {
                 );
             }
             Err(error) => self.set_status(StatusKind::Error, &format!("缓存没清掉呢：{error}喵~")),
+        }
+    }
+
+    pub fn prune_cache_group(&mut self, index: usize) {
+        let groups = cache_groups();
+        let Some(group) = groups.get(index) else {
+            return;
+        };
+        match self.cache.prune_prefixes(group.prefixes, STALE_CACHE_SECS) {
+            Ok(removed) => {
+                self.refresh_cache_stats();
+                self.set_status(
+                    StatusKind::Ok,
+                    &format!(
+                        "{}里 7 天前的旧缓存删了 {} 个文件、{} 喵~",
+                        group.label,
+                        removed.files,
+                        format::format_size(removed.bytes)
+                    ),
+                );
+            }
+            Err(error) => {
+                self.set_status(StatusKind::Error, &format!("旧缓存没清掉呢：{error}喵~"))
+            }
         }
     }
 
@@ -5087,6 +5118,7 @@ impl App {
                 self.cache_row = cache_groups().len().saturating_sub(1);
             }
             KeyCode::Enter => self.clear_cache_group(self.cache_row),
+            KeyCode::Char('p') => self.prune_cache_group(self.cache_row),
             KeyCode::Char('o') => self.open_cache_dir(),
             _ => {}
         }
@@ -6436,6 +6468,25 @@ impl App {
         self.commit_selected = index.min(len - 1);
         self.commit_scroll = 0;
         self.schedule_commit_detail(false);
+    }
+
+    pub fn open_commit_file(&mut self, index: usize) {
+        let available = self
+            .commit_detail
+            .as_ref()
+            .is_some_and(|detail| index < detail.files.len());
+        if !available {
+            return;
+        }
+        self.commit_file = Some(index);
+        self.commit_file_scroll = 0;
+        self.commit_file_scroll_max = 0;
+        self.overlay = Some(Overlay::CommitFile);
+    }
+
+    pub fn commit_file_scroll_by(&mut self, delta: i32) {
+        let max = self.commit_file_scroll_max as i32;
+        self.commit_file_scroll = (self.commit_file_scroll as i32 + delta).clamp(0, max) as u16;
     }
 
     pub fn open_selected_commit(&mut self) {
@@ -7966,6 +8017,10 @@ impl App {
     }
 
     pub fn scroll(&mut self, x: u16, y: u16, delta: i32) {
+        if self.overlay == Some(Overlay::CommitFile) {
+            self.commit_file_scroll_by(3 * delta);
+            return;
+        }
         if self.overlay == Some(Overlay::RepoLanguages) {
             let viewport = self.repo_language_viewport.max(1);
             let max = self.repo_languages.len().saturating_sub(viewport);
@@ -9433,6 +9488,25 @@ impl App {
         }
         if self.overlay == Some(Overlay::Cache) {
             self.handle_cache_key(key);
+            return;
+        }
+        if self.overlay == Some(Overlay::CommitFile) {
+            match key.code {
+                KeyCode::Esc | KeyCode::Char('q') => {
+                    self.overlay = None;
+                    self.commit_file = None;
+                }
+                KeyCode::Up | KeyCode::Char('k') => self.commit_file_scroll_by(-1),
+                KeyCode::Down | KeyCode::Char('j') => self.commit_file_scroll_by(1),
+                KeyCode::PageUp => self.commit_file_scroll_by(-10),
+                KeyCode::PageDown => self.commit_file_scroll_by(10),
+                KeyCode::Home | KeyCode::Char('g') => self.commit_file_scroll = 0,
+                KeyCode::End | KeyCode::Char('G') => {
+                    self.commit_file_scroll = self.commit_file_scroll_max;
+                }
+                KeyCode::Char('o') => self.open_selected_commit(),
+                _ => {}
+            }
             return;
         }
         if self.overlay == Some(Overlay::RunWorkflow) {
@@ -11084,6 +11158,7 @@ impl App {
                 }
             }
             Action::SelectCommit(index) => self.select_commit(index),
+            Action::OpenCommitFile(index) => self.open_commit_file(index),
             Action::SetIssueKind(kind) => self.set_issue_kind(kind),
             Action::SetIssueState(state) => self.set_issue_state(state),
             Action::SelectNotification(index) => {
@@ -11141,6 +11216,7 @@ impl App {
             Action::DownloadFile => self.download_file(),
             Action::OpenCacheManager => self.open_cache_manager(),
             Action::ClearCacheGroup(index) => self.clear_cache_group(index),
+            Action::PruneCacheGroup(index) => self.prune_cache_group(index),
             Action::SelectCacheRow(index) => {
                 let last = cache_groups().len().saturating_sub(1);
                 self.cache_row = index.min(last);

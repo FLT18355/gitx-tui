@@ -99,7 +99,7 @@ https://v4.gh-proxy.org/https://github.com/...
 ~/.cache/gitx-tui
 ```
 
-数据按更新时间保存为 JSON。`gxt cache` 可以查看统计，`gxt cache clear` 或 `gxt settings` 里的缓存管理可以清理。缓存键包括：
+数据按更新时间保存为 JSON。`gxt cache` 可以查看统计，`gxt cache clear` 或 `gxt settings` 里的缓存管理可以清理；`gxt cache prune` 只删 7 天前的旧缓存，TUI 缓存管理里选中分组后按 `p` 也能清旧缓存。缓存键包括：
 
 - `repos_*`、`starred_*`
 - `search_*`

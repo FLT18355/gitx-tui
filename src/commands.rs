@@ -1,5 +1,5 @@
 use crate::api::ApiClient;
-use crate::cache::Cache;
+use crate::cache::{Cache, STALE_CACHE_SECS};
 use crate::cli::{CacheAction, ConfigAction};
 use crate::config::{Config, Paths};
 use crate::format;
@@ -256,6 +256,16 @@ pub fn cache(action: CacheAction) -> Result<(), String> {
                 .clear()
                 .map_err(|err| format!("缓存没清掉喵~：{err}"))?;
             println!("缓存清掉啦喵~");
+        }
+        CacheAction::Prune => {
+            let removed = cache
+                .prune_prefixes(&[""], STALE_CACHE_SECS)
+                .map_err(|err| format!("旧缓存没清掉喵~：{err}"))?;
+            println!(
+                "7 天前的旧缓存清掉啦：{} 个文件 · {}喵~",
+                removed.files,
+                format::format_size(removed.bytes)
+            );
         }
     }
     Ok(())

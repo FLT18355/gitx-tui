@@ -17,7 +17,7 @@
 | `gxt commits <owner/repo> [-n <条数>]` | 打印远端仓库提交 |
 | `gxt branches <owner/repo>` | 打印远端仓库分支 |
 | `gxt switch <分支> [路径]` | 切换本地分支 |
-| `gxt cache [stats\|path\|clear]` | 查看或清理缓存 |
+| `gxt cache [stats\|path\|clear\|prune]` | 查看、清理或清掉 7 天前的旧缓存 |
 | `gxt doctor` | 检查 git、GitHub 登录、配置和缓存 |
 
 路径参数省略时使用当前目录。
@@ -50,6 +50,7 @@ gxt commits ratatui/ratatui -n 10
 gxt branches ratatui/ratatui
 gxt switch main .
 gxt cache clear
+gxt cache prune
 gxt doctor
 ```
 
