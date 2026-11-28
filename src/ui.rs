@@ -4,6 +4,7 @@ use crate::app::{
 };
 use crate::format;
 use crate::icons;
+use crate::local;
 use crate::model::{
     Issue, IssueState, Repo, RepoSort, SearchSort, StarSort, TreeEntry, TreeResponse,
     TrendingPeriod,
@@ -62,6 +63,7 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
         Page::Compare => draw_compare_page(frame, app, &theme, chunks[1], &mut hits),
         Page::Files => draw_file_page(frame, app, &theme, chunks[1], &mut hits),
         Page::Network => draw_network_page(frame, app, &theme, chunks[1], &mut hits),
+        Page::LocalClones => draw_local_clones_page(frame, app, &theme, chunks[1], &mut hits),
     }
     draw_footer(frame, app, &theme, chunks[2], &hits);
 
@@ -77,6 +79,10 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
         Some(Overlay::NewIssue) => draw_new_issue_overlay(frame, app, &theme, area, &mut hits),
         Some(Overlay::EditRepo) => draw_repo_edit_overlay(frame, app, &theme, area, &mut hits),
         Some(Overlay::CloneRepo) => draw_clone_overlay(frame, app, &theme, area, &mut hits),
+        Some(Overlay::LocalClone) => draw_local_clone_overlay(frame, app, &theme, area, &mut hits),
+        Some(Overlay::DeleteLocalClone) => {
+            draw_delete_local_clone_overlay(frame, app, &theme, area, &mut hits)
+        }
         Some(Overlay::Cache) => draw_cache_overlay(frame, app, &theme, area, &mut hits),
         Some(Overlay::RunWorkflow) => draw_workflow_overlay(frame, app, &theme, area, &mut hits),
         Some(Overlay::Branches) => draw_branches_overlay(frame, app, &theme, area, &mut hits),
@@ -204,6 +210,7 @@ fn draw_header(
         },
         icons::label(icons::FLAME, "热门喵~"),
         icons::label(icons::CODE, "Gist喵~"),
+        icons::label(icons::FOLDER_OPEN, "本地喵~"),
     ];
     let pages = [
         Page::Home,
@@ -214,6 +221,7 @@ fn draw_header(
         Page::Notifications,
         Page::Trending,
         Page::Gists,
+        Page::LocalClones,
     ];
     let width_list: Vec<u16> = labels
         .iter()
@@ -501,6 +509,9 @@ fn hints_for(app: &App) -> &'static str {
         Page::Compare => "j/k 挑  Tab 换 base/head  b 选分支  v 提交/文件  n 建 PR  r 对比喵~",
         Page::Files => "j/k 滚动  h/l 横移  w 换行  y 复制路径  d 下载  o 浏览器  r 重读喵~",
         Page::Network => "j/k 挑  Tab 换页  Enter 主页  f 关注/取关  o 浏览器  r 刷新  Esc 返回喵~",
+        Page::LocalClones => {
+            "j/k 挑  Enter 进入  p Pull  u 检查更新  d 删除  o 目录  n 克隆  e 改目录喵~"
+        }
     }
 }
 
@@ -4074,6 +4085,11 @@ fn draw_repo_page(
         (
             icons::label(icons::TERMINAL, "克隆喵~"),
             Action::CloneRepo,
+            false,
+        ),
+        (
+            icons::label(icons::FOLDER_OPEN, "本地克隆喵~"),
+            Action::CloneLocalRepo,
             false,
         ),
         (
@@ -11783,7 +11799,7 @@ fn draw_help(frame: &mut Frame, app: &mut App, theme: &Theme, area: Rect, hits: 
     let lines = [
         (
             "换页喵~",
-            "0 首页  1 仓库  2 收藏  3 搜索  4 账号  5 通知  6 热门  7 Gist  9 洞察  Tab 切页喵~",
+            "0 首页  1 仓库  2 收藏  3 搜索  4 账号  5 通知  6 热门  7 Gist  8 本地  9 洞察喵~",
         ),
         (
             "命令喵~",
@@ -11862,7 +11878,7 @@ fn draw_help(frame: &mut Frame, app: &mut App, theme: &Theme, area: Rect, hits: 
         ),
         (
             "克隆喵~",
-            "仓库页 Ctrl+G 或点「克隆」按钮，走加速通道克隆到设置的克隆目录喵~",
+            "Ctrl+G 普通克隆；仓库页「本地克隆」或 8 进本地页，可 Pull / 检查更新 / 删除喵~",
         ),
         (
             "工作流喵~",
@@ -12384,6 +12400,1086 @@ fn draw_issue_composer(
         Action::SubmitIssueComment,
         true,
     );
+}
+
+fn draw_local_clone_summary(frame: &mut Frame, app: &App, theme: &Theme, area: Rect) {
+    fill(frame, area, theme.color("mantle"));
+    frame.render_widget(
+        Block::new()
+            .borders(Borders::RIGHT)
+            .border_style(Style::default().fg(theme.color("surface0"))),
+        area,
+    );
+    let inner = Rect::new(
+        area.x + 2,
+        area.y + 1,
+        area.width.saturating_sub(4),
+        area.height.saturating_sub(2),
+    );
+    if inner.width < 10 || inner.height < 10 {
+        return;
+    }
+    frame.render_widget(
+        Paragraph::new(icons::label(icons::FOLDER_OPEN, "本地小账本喵~"))
+            .style(Style::default().fg(theme.color("overlay0"))),
+        Rect::new(inner.x, inner.y, inner.width, 1),
+    );
+    frame.render_widget(
+        Paragraph::new(app.local_clones.len().to_string()).style(
+            Style::default()
+                .fg(theme.color("blue"))
+                .add_modifier(Modifier::BOLD),
+        ),
+        Rect::new(inner.x, inner.y + 2, inner.width, 1),
+    );
+    frame.render_widget(
+        Paragraph::new("个仓库在专用目录里喵~").style(Style::default().fg(theme.color("subtext0"))),
+        Rect::new(inner.x, inner.y + 3, inner.width, 1),
+    );
+    let clean = app
+        .local_clones
+        .iter()
+        .filter(|clone| clone.dirty == 0)
+        .count();
+    let dirty = app
+        .local_clones
+        .iter()
+        .filter(|clone| clone.dirty > 0)
+        .count();
+    let behind = app
+        .local_clones
+        .iter()
+        .filter(|clone| clone.behind > 0)
+        .count();
+    let checked = app
+        .local_clones
+        .iter()
+        .filter(|clone| clone.checked)
+        .count();
+    let stats = [
+        (format!("{} 干净喵~", clean), theme.color("green")),
+        (format!("{} 有改动喵~", dirty), theme.color("peach")),
+        (format!("{} 待拉取喵~", behind), theme.color("blue")),
+        (format!("{} 已检查喵~", checked), theme.color("overlay0")),
+    ];
+    let mut y = inner.y + 5;
+    for (text, color) in stats {
+        frame.render_widget(
+            Paragraph::new(text).style(Style::default().fg(color)),
+            Rect::new(inner.x, y, inner.width, 1),
+        );
+        y += 1;
+    }
+    y += 1;
+    if y < inner.y + inner.height {
+        frame.render_widget(
+            Paragraph::new(icons::label(icons::FOLDER_OPEN, "目录喵~"))
+                .style(Style::default().fg(theme.color("overlay0"))),
+            Rect::new(inner.x, y, inner.width, 1),
+        );
+        y += 1;
+        for line in format::wrap_text(
+            &format::display_path(&app.config.expanded_local_clone_dir()),
+            inner.width as usize,
+            3,
+        ) {
+            if y >= inner.y + inner.height {
+                break;
+            }
+            frame.render_widget(
+                Paragraph::new(line).style(Style::default().fg(theme.color("subtext0"))),
+                Rect::new(inner.x, y, inner.width, 1),
+            );
+            y += 1;
+        }
+    }
+    let tips_y = inner.y + inner.height.saturating_sub(4);
+    if tips_y > y {
+        let tips = [
+            "n 克隆 · Enter 进入",
+            "p Pull · u 检查更新",
+            "d 删除 · o 打开目录",
+        ];
+        for (index, line) in tips.into_iter().enumerate() {
+            frame.render_widget(
+                Paragraph::new(line).style(Style::default().fg(theme.color("overlay0"))),
+                Rect::new(inner.x, tips_y + index as u16, inner.width, 1),
+            );
+        }
+    }
+}
+
+fn draw_local_clones_page(
+    frame: &mut Frame,
+    app: &mut App,
+    theme: &Theme,
+    area: Rect,
+    hits: &mut Vec<HitBox>,
+) {
+    fill(frame, area, theme.color("base"));
+    let summary_width = if area.width >= 118 { 24 } else { 0 };
+    let columns =
+        Layout::horizontal([Constraint::Length(summary_width), Constraint::Min(34)]).split(area);
+    if summary_width > 0 {
+        draw_local_clone_summary(frame, app, theme, columns[0]);
+    }
+    let main = columns[1];
+    let inner = Rect::new(
+        main.x + 2,
+        main.y + 1,
+        main.width.saturating_sub(4),
+        main.height.saturating_sub(2),
+    );
+    if inner.height < 10 || inner.width < 34 {
+        draw_center_message(
+            frame,
+            theme,
+            inner,
+            "这里有点挤喵~",
+            "把终端拉大一点，人家才摆得下本地克隆页喵~",
+        );
+        return;
+    }
+
+    draw_page_title(
+        frame,
+        app,
+        theme,
+        inner,
+        &icons::label(icons::FOLDER_OPEN, "本地克隆喵~"),
+        "clone 到专用目录的仓库，Pull / 检查更新都在这喵~",
+        "刷新一下喵~",
+        Action::RefreshLocalClones,
+        hits,
+    );
+    let clean = app
+        .local_clones
+        .iter()
+        .filter(|clone| clone.dirty == 0)
+        .count();
+    let dirty = app
+        .local_clones
+        .iter()
+        .filter(|clone| clone.dirty > 0)
+        .count();
+    let behind = app
+        .local_clones
+        .iter()
+        .filter(|clone| clone.behind > 0)
+        .count();
+    let checked = app
+        .local_clones
+        .iter()
+        .filter(|clone| clone.checked)
+        .count();
+    frame.render_widget(
+        Paragraph::new(Line::from(vec![
+            Span::styled(
+                format!("{} 个仓库", app.local_clones.len()),
+                Style::default()
+                    .fg(theme.color("blue"))
+                    .add_modifier(Modifier::BOLD),
+            ),
+            Span::styled("   ·   ", Style::default().fg(theme.color("overlay0"))),
+            Span::styled(
+                format!("{} 干净", clean),
+                Style::default().fg(theme.color("green")),
+            ),
+            Span::styled("   ·   ", Style::default().fg(theme.color("overlay0"))),
+            Span::styled(
+                format!("{} 有改动", dirty),
+                Style::default().fg(theme.color("peach")),
+            ),
+            Span::styled("   ·   ", Style::default().fg(theme.color("overlay0"))),
+            Span::styled(
+                format!("{} 待拉取", behind),
+                Style::default().fg(theme.color("blue")),
+            ),
+            Span::styled("   ·   ", Style::default().fg(theme.color("overlay0"))),
+            Span::styled(
+                format!("{} 已检查", checked),
+                Style::default().fg(theme.color("overlay0")),
+            ),
+        ])),
+        Rect::new(inner.x, inner.y + 2, inner.width, 1),
+    );
+
+    let clone_label = icons::label(icons::DOWNLOAD_DIR, "克隆喵~");
+    let clone_width = format::text_width(&clone_label) as u16 + 4;
+    let root_label = icons::label(icons::FOLDER_OPEN, "根目录喵~");
+    let root_width = format::text_width(&root_label) as u16 + 4;
+    let edit_label = "编辑目录喵~";
+    let edit_width = format::text_width(edit_label) as u16 + 4;
+    let mut x = inner.x;
+    for (label, width, action, primary) in [
+        (clone_label, clone_width, Action::StartLocalClone, true),
+        (root_label, root_width, Action::OpenLocalClonesDir, false),
+        (
+            edit_label.to_string(),
+            edit_width,
+            Action::StartLocalCloneDirEdit,
+            false,
+        ),
+    ] {
+        if x + width > inner.x + inner.width {
+            break;
+        }
+        draw_button(
+            frame,
+            app,
+            theme,
+            hits,
+            Rect::new(x, inner.y + 3, width, 1),
+            &label,
+            action,
+            primary,
+        );
+        x += width + 1;
+    }
+
+    if app.editing_local_clone_dir {
+        let label = icons::label(icons::FOLDER_OPEN, "目录喵~ ");
+        let label_width = format::text_width(&label) as u16;
+        frame.render_widget(
+            Paragraph::new(label).style(Style::default().fg(theme.color("blue"))),
+            Rect::new(inner.x, inner.y + 4, label_width, 1),
+        );
+        let input_x = inner.x + label_width + 1;
+        let input_width = inner.width.saturating_sub(label_width + 1);
+        let (visible, cursor_column) = visible_input(&app.local_clone_dir_input, true, input_width);
+        frame.render_widget(
+            Paragraph::new(visible).style(Style::default().fg(theme.color("text"))),
+            Rect::new(input_x, inner.y + 4, input_width, 1),
+        );
+        let x = input_x.saturating_add(cursor_column.min(input_width.saturating_sub(1)));
+        frame.set_cursor_position(Position::new(x, inner.y + 4));
+    } else {
+        let path_label = format!(
+            "{} 目录喵~  {}",
+            icons::FOLDER_OPEN,
+            format::display_path(&app.config.expanded_local_clone_dir())
+        );
+        frame.render_widget(
+            Paragraph::new(format::truncate(&path_label, inner.width as usize))
+                .style(Style::default().fg(theme.color("subtext0"))),
+            Rect::new(inner.x, inner.y + 4, inner.width, 1),
+        );
+    }
+
+    let detail_width = if inner.height >= 22 && inner.width >= 104 {
+        38
+    } else if inner.height >= 22 && inner.width >= 86 {
+        33
+    } else {
+        0
+    };
+    let action_rows = if detail_width == 0 { 2 } else { 0 };
+    let content_bottom = inner.y + inner.height.saturating_sub(action_rows);
+    let content = Rect::new(
+        inner.x,
+        inner.y + 6,
+        inner.width,
+        content_bottom.saturating_sub(inner.y + 6),
+    );
+    if content.height < CARD_HEIGHT {
+        return;
+    }
+    let columns =
+        Layout::horizontal([Constraint::Min(30), Constraint::Length(detail_width)]).split(content);
+    app.layout.list = columns[0];
+    draw_local_clone_list(frame, app, theme, columns[0], hits);
+    if detail_width > 0 {
+        app.layout.detail = columns[1];
+        draw_local_clone_detail(frame, app, theme, columns[1], hits);
+    } else {
+        app.layout.detail = Rect::default();
+        draw_local_narrow_actions(
+            frame,
+            app,
+            theme,
+            hits,
+            Rect::new(
+                inner.x,
+                inner.y + inner.height.saturating_sub(2),
+                inner.width,
+                2,
+            ),
+        );
+    }
+}
+
+fn draw_local_narrow_actions(
+    frame: &mut Frame,
+    app: &mut App,
+    theme: &Theme,
+    hits: &mut Vec<HitBox>,
+    area: Rect,
+) {
+    let first = [
+        (
+            icons::label(icons::PLAY, "进入喵~"),
+            Action::EnterLocalClone,
+            true,
+        ),
+        (
+            icons::label(icons::DOWNLOAD, "Pull 喵~"),
+            Action::PullLocalClone,
+            false,
+        ),
+        (
+            icons::label(icons::REFRESH, "检查更新喵~"),
+            Action::CheckLocalClone,
+            false,
+        ),
+    ];
+    let mut x = area.x;
+    for (label, action, primary) in first {
+        let width = format::text_width(&label) as u16 + 4;
+        if x + width > area.x + area.width {
+            break;
+        }
+        draw_button(
+            frame,
+            app,
+            theme,
+            hits,
+            Rect::new(x, area.y, width, 1),
+            &label,
+            action,
+            primary,
+        );
+        x += width + 1;
+    }
+    let dir_label = icons::label(icons::FOLDER_OPEN, "目录喵~");
+    let dir_width = format::text_width(&dir_label) as u16 + 4;
+    if area.x + dir_width <= area.x + area.width {
+        draw_button(
+            frame,
+            app,
+            theme,
+            hits,
+            Rect::new(area.x, area.y + 1, dir_width, 1),
+            &dir_label,
+            Action::OpenLocalCloneDir,
+            false,
+        );
+    }
+    let delete_label = icons::label(icons::TRASH, "删除喵~");
+    let delete_width = format::text_width(&delete_label) as u16 + 4;
+    let delete_rect = Rect::new(area.x + dir_width + 1, area.y + 1, delete_width, 1);
+    if delete_rect.x + delete_rect.width <= area.x + area.width {
+        draw_local_delete_button(frame, app, theme, hits, delete_rect);
+    }
+}
+
+fn draw_local_delete_button(
+    frame: &mut Frame,
+    app: &App,
+    theme: &Theme,
+    hits: &mut Vec<HitBox>,
+    rect: Rect,
+) {
+    let hovered = app.hover.as_ref() == Some(&Action::DeleteLocalClone);
+    fill(
+        frame,
+        rect,
+        if hovered {
+            theme.color("surface1")
+        } else {
+            theme.color("surface0")
+        },
+    );
+    frame.render_widget(
+        Paragraph::new(icons::label(icons::TRASH, "删除喵~"))
+            .alignment(Alignment::Center)
+            .style(
+                Style::default()
+                    .fg(if hovered {
+                        theme.color("red")
+                    } else {
+                        theme.color("peach")
+                    })
+                    .add_modifier(Modifier::BOLD),
+            ),
+        rect,
+    );
+    register(hits, rect, Action::DeleteLocalClone);
+}
+
+fn draw_local_clone_list(
+    frame: &mut Frame,
+    app: &mut App,
+    theme: &Theme,
+    area: Rect,
+    hits: &mut Vec<HitBox>,
+) {
+    if area.width < 8 || area.height < CARD_HEIGHT {
+        return;
+    }
+    fill(frame, area, theme.color("base"));
+    frame.render_widget(
+        Paragraph::new(icons::label(icons::FOLDER_OPEN, "本地仓库喵~")).style(
+            Style::default()
+                .fg(theme.color("text"))
+                .add_modifier(Modifier::BOLD),
+        ),
+        Rect::new(area.x, area.y, area.width.saturating_sub(12), 1),
+    );
+    frame.render_widget(
+        Paragraph::new(format!("{} 个喵~", app.local_clones.len()))
+            .alignment(Alignment::Right)
+            .style(Style::default().fg(theme.color("overlay0"))),
+        Rect::new(area.x, area.y, area.width, 1),
+    );
+    fill(
+        frame,
+        Rect::new(area.x, area.y + 1, area.width, 1),
+        theme.color("surface0"),
+    );
+    let body = Rect::new(
+        area.x,
+        area.y + 2,
+        area.width.saturating_sub(1),
+        area.height.saturating_sub(2),
+    );
+    if app.local_clones.is_empty() {
+        let (title, detail) = if app.local_clone_loading {
+            ("人家正在找本地克隆喵~...", "第一次扫描要一小会儿喵~")
+        } else {
+            (
+                "还没有本地克隆喵~",
+                "按 n 或点「克隆」把仓库放进专用目录嘛喵~",
+            )
+        };
+        draw_center_message(frame, theme, body, title, detail);
+        return;
+    }
+    let viewport = (body.height / CARD_STEP).max(1) as usize;
+    let selected = app.local_clone_selected.min(app.local_clones.len() - 1);
+    let start = list_window_offset(selected, app.local_clones.len(), viewport);
+    let end = (start + viewport).min(app.local_clones.len());
+    for (offset, index) in (start..end).enumerate() {
+        let y = body.y + offset as u16 * CARD_STEP;
+        if y + CARD_HEIGHT > body.y + body.height {
+            break;
+        }
+        let clone = &app.local_clones[index];
+        let action = Action::SelectLocalClone(index);
+        let hovered = app.hover.as_ref() == Some(&action);
+        let rect = Rect::new(body.x, y, body.width, CARD_HEIGHT);
+        draw_local_clone_card(frame, theme, rect, clone, index == selected, hovered);
+        register(hits, rect, action);
+    }
+    if app.local_clones.len() > viewport {
+        let scroll_rect = Rect::new(
+            area.x + area.width.saturating_sub(1),
+            body.y,
+            1,
+            body.height,
+        );
+        for y in 0..scroll_rect.height {
+            frame.render_widget(
+                Paragraph::new("|").style(Style::default().fg(theme.color("surface0"))),
+                Rect::new(scroll_rect.x, scroll_rect.y + y, 1, 1),
+            );
+        }
+        let ratio = viewport as f32 / app.local_clones.len() as f32;
+        let thumb_height = (body.height as f32 * ratio).max(1.0) as u16;
+        let max_offset = app.local_clones.len().saturating_sub(viewport).max(1);
+        let offset = (start as f32 / max_offset as f32
+            * (body.height.saturating_sub(thumb_height)) as f32) as u16;
+        for y in 0..thumb_height {
+            frame.render_widget(
+                Paragraph::new("|").style(Style::default().fg(theme.color("overlay0"))),
+                Rect::new(scroll_rect.x, scroll_rect.y + offset + y, 1, 1),
+            );
+        }
+    }
+}
+
+fn draw_local_clone_card(
+    frame: &mut Frame,
+    theme: &Theme,
+    area: Rect,
+    clone: &crate::local::LocalClone,
+    selected: bool,
+    hovered: bool,
+) {
+    let bg = if selected || hovered {
+        theme.color("surface0")
+    } else {
+        theme.color("mantle")
+    };
+    fill(frame, area, bg);
+    if selected {
+        fill(
+            frame,
+            Rect::new(area.x, area.y, 1, area.height),
+            theme.color("blue"),
+        );
+    } else if hovered {
+        fill(
+            frame,
+            Rect::new(area.x, area.y, 1, area.height),
+            theme.color("surface2"),
+        );
+    }
+    let left = area.x + 2;
+    let width = area.width.saturating_sub(4);
+    let (badge, badge_color) = if clone.behind > 0 {
+        (
+            format!("{} 落后 {} 个", icons::DOWNLOAD, clone.behind),
+            theme.color("blue"),
+        )
+    } else if clone.ahead > 0 {
+        (
+            format!("{} 领先 {} 个", icons::COMMIT, clone.ahead),
+            theme.color("green"),
+        )
+    } else {
+        (format!("{} 同步喵~", icons::CHECK), theme.color("overlay0"))
+    };
+    let badge_width = format::text_width(&badge) as u16 + 1;
+    let title_width = width.saturating_sub(badge_width);
+    frame.render_widget(
+        Paragraph::new(Line::from(vec![
+            Span::styled(
+                format!("{} ", icons::FOLDER_OPEN),
+                Style::default().fg(theme.color("blue")),
+            ),
+            Span::styled(
+                format::truncate(&clone.name, title_width.saturating_sub(2) as usize),
+                Style::default()
+                    .fg(theme.color("text"))
+                    .add_modifier(Modifier::BOLD),
+            ),
+            Span::styled(
+                format!(
+                    "  {}",
+                    format::truncate(
+                        clone.full_name.as_deref().unwrap_or(""),
+                        title_width.saturating_sub(format::text_width(&clone.name) as u16 + 2)
+                            as usize
+                    )
+                ),
+                Style::default().fg(theme.color("overlay0")),
+            ),
+        ])),
+        Rect::new(left, area.y, title_width, 1),
+    );
+    frame.render_widget(
+        Paragraph::new(badge)
+            .alignment(Alignment::Right)
+            .style(Style::default().fg(badge_color)),
+        Rect::new(left, area.y, width, 1),
+    );
+
+    let path = format!(
+        "{} {}",
+        icons::FOLDER_OPEN,
+        format::display_path(&clone.path)
+    );
+    frame.render_widget(
+        Paragraph::new(format::truncate(&path, width as usize))
+            .style(Style::default().fg(theme.color("subtext0"))),
+        Rect::new(left, area.y + 1, width, 1),
+    );
+
+    let branch = if clone.branch.is_empty() {
+        "HEAD"
+    } else {
+        clone.branch.as_str()
+    };
+    let dirty = if clone.dirty == 0 {
+        format!("{} 干净喵~", icons::CHECK)
+    } else {
+        format!("{} {} 个改动", icons::WARNING, clone.dirty)
+    };
+    let checked = if clone.checked {
+        format!("{} 已检查", icons::CHECK_CIRCLE)
+    } else {
+        format!("{} 未检查", icons::CLOCK)
+    };
+    frame.render_widget(
+        Paragraph::new(Line::from(vec![
+            Span::styled(
+                format!("{} {}", icons::BRANCH, branch),
+                Style::default().fg(theme.color("lavender")),
+            ),
+            Span::styled("   ", Style::default().fg(theme.color("overlay0"))),
+            Span::styled(
+                dirty,
+                Style::default().fg(if clone.dirty == 0 {
+                    theme.color("green")
+                } else {
+                    theme.color("peach")
+                }),
+            ),
+            Span::styled("   ", Style::default().fg(theme.color("overlay0"))),
+            Span::styled(checked, Style::default().fg(theme.color("overlay0"))),
+        ])),
+        Rect::new(left, area.y + 2, width, 1),
+    );
+
+    let remote = clone
+        .full_name
+        .clone()
+        .or_else(|| (!clone.remote.is_empty()).then(|| clone.remote.clone()))
+        .unwrap_or_else(|| "没有 GitHub 远端喵~".to_string());
+    frame.render_widget(
+        Paragraph::new(format::truncate(
+            &format!("{} {}", icons::GLOBE, remote),
+            width as usize,
+        ))
+        .style(Style::default().fg(theme.color("overlay0"))),
+        Rect::new(left, area.y + 3, width, 1),
+    );
+}
+
+fn draw_local_clone_detail(
+    frame: &mut Frame,
+    app: &mut App,
+    theme: &Theme,
+    area: Rect,
+    hits: &mut Vec<HitBox>,
+) {
+    fill(frame, area, theme.color("mantle"));
+    frame.render_widget(
+        Block::new()
+            .borders(Borders::LEFT)
+            .border_style(Style::default().fg(theme.color("surface0"))),
+        area,
+    );
+    let inner = Rect::new(
+        area.x + 2,
+        area.y + 1,
+        area.width.saturating_sub(4),
+        area.height.saturating_sub(2),
+    );
+    if inner.width < 12 || inner.height < 8 {
+        return;
+    }
+    let Some(clone) = app.selected_local_clone() else {
+        draw_center_message(
+            frame,
+            theme,
+            area,
+            "挑一个本地克隆看看喵~",
+            "右边会显示路径、分支和更新状态喵~",
+        );
+        return;
+    };
+    frame.render_widget(
+        Paragraph::new(icons::label(icons::FOLDER_OPEN, "本地小档案喵~"))
+            .style(Style::default().fg(theme.color("overlay0"))),
+        Rect::new(inner.x, inner.y, inner.width, 1),
+    );
+    frame.render_widget(
+        Paragraph::new(Line::from(vec![
+            Span::styled(
+                format!("{} ", icons::REPO),
+                Style::default().fg(theme.color("blue")),
+            ),
+            Span::styled(
+                format::truncate(&clone.name, inner.width.saturating_sub(2) as usize),
+                Style::default()
+                    .fg(theme.color("text"))
+                    .add_modifier(Modifier::BOLD),
+            ),
+        ])),
+        Rect::new(inner.x, inner.y + 1, inner.width, 1),
+    );
+    let remote = clone
+        .full_name
+        .clone()
+        .or_else(|| (!clone.remote.is_empty()).then(|| clone.remote.clone()))
+        .unwrap_or_else(|| "没有 GitHub 远端喵~".to_string());
+    frame.render_widget(
+        Paragraph::new(format::truncate(
+            &format!("{} {}", icons::GLOBE, remote),
+            inner.width as usize,
+        ))
+        .style(Style::default().fg(theme.color("overlay0"))),
+        Rect::new(inner.x, inner.y + 2, inner.width, 1),
+    );
+    let mut y = inner.y + 4;
+    let facts = [
+        (
+            "路径喵~",
+            format::display_path(&clone.path),
+            theme.color("subtext0"),
+        ),
+        (
+            "分支喵~",
+            if clone.branch.is_empty() {
+                "HEAD".to_string()
+            } else {
+                clone.branch.clone()
+            },
+            theme.color("lavender"),
+        ),
+        (
+            "状态喵~",
+            if clone.dirty == 0 {
+                "干净喵~".to_string()
+            } else {
+                format!("{} 个改动喵~", clone.dirty)
+            },
+            if clone.dirty == 0 {
+                theme.color("green")
+            } else {
+                theme.color("peach")
+            },
+        ),
+        (
+            "同步喵~",
+            match (clone.ahead, clone.behind) {
+                (0, 0) => "和远端一样喵~".to_string(),
+                (ahead, 0) => format!("领先 {ahead} 个提交喵~"),
+                (0, behind) => format!("落后 {behind} 个提交喵~"),
+                (ahead, behind) => format!("领先 {ahead} · 落后 {behind} 喵~"),
+            },
+            if clone.behind > 0 {
+                theme.color("blue")
+            } else {
+                theme.color("subtext0")
+            },
+        ),
+        (
+            "检查喵~",
+            if clone.checked {
+                "已经检查过喵~".to_string()
+            } else {
+                "还没检查喵~".to_string()
+            },
+            theme.color("overlay0"),
+        ),
+    ];
+    for (label, value, color) in facts {
+        let label_width = format::text_width(label) as u16 + 1;
+        let value_width = inner.width.saturating_sub(label_width);
+        frame.render_widget(
+            Paragraph::new(Line::from(vec![
+                Span::styled(
+                    format!("{label} "),
+                    Style::default().fg(theme.color("blue")),
+                ),
+                Span::styled(
+                    format::truncate(&value, value_width as usize),
+                    Style::default().fg(color),
+                ),
+            ])),
+            Rect::new(inner.x, y, inner.width, 1),
+        );
+        y += 1;
+    }
+    if y < inner.y + inner.height {
+        fill(
+            frame,
+            Rect::new(inner.x, y, inner.width, 1),
+            theme.color("surface1"),
+        );
+        y += 1;
+    }
+    let enter = icons::label(icons::PLAY, "进入仓库页喵~");
+    if y < inner.y + inner.height {
+        draw_button(
+            frame,
+            app,
+            theme,
+            hits,
+            Rect::new(inner.x, y, inner.width, 1),
+            &enter,
+            Action::EnterLocalClone,
+            true,
+        );
+        y += 1;
+    }
+    let check = icons::label(icons::REFRESH, "检查更新喵~");
+    if y < inner.y + inner.height {
+        draw_button(
+            frame,
+            app,
+            theme,
+            hits,
+            Rect::new(inner.x, y, inner.width, 1),
+            &check,
+            Action::CheckLocalClone,
+            false,
+        );
+        y += 1;
+    }
+    let pull = icons::label(icons::DOWNLOAD, "Pull喵~");
+    let pull_width = format::text_width(&pull) as u16 + 4;
+    let dir = icons::label(icons::FOLDER_OPEN, "目录喵~");
+    let dir_width = format::text_width(&dir) as u16 + 4;
+    if y < inner.y + inner.height {
+        draw_button(
+            frame,
+            app,
+            theme,
+            hits,
+            Rect::new(inner.x, y, pull_width.min(inner.width), 1),
+            &pull,
+            Action::PullLocalClone,
+            false,
+        );
+        if pull_width + 1 + dir_width <= inner.width {
+            draw_button(
+                frame,
+                app,
+                theme,
+                hits,
+                Rect::new(inner.x + pull_width + 1, y, dir_width, 1),
+                &dir,
+                Action::OpenLocalCloneDir,
+                false,
+            );
+        }
+        y += 1;
+    }
+    if y < inner.y + inner.height {
+        draw_local_delete_button(
+            frame,
+            app,
+            theme,
+            hits,
+            Rect::new(inner.x, y, inner.width, 1),
+        );
+    }
+}
+
+fn draw_local_clone_overlay(
+    frame: &mut Frame,
+    app: &mut App,
+    theme: &Theme,
+    area: Rect,
+    hits: &mut Vec<HitBox>,
+) {
+    let (rect, inner) = overlay_panel(
+        frame,
+        theme,
+        area,
+        72,
+        14,
+        &icons::label(icons::FOLDER_OPEN, "克隆到本地喵~"),
+    );
+    app.layout.overlay = rect;
+    frame.render_widget(
+        Paragraph::new("填 owner/name 或 GitHub 链接，人家会放到本地克隆专用目录喵~")
+            .style(Style::default().fg(theme.color("overlay0"))),
+        Rect::new(inner.x, inner.y + 1, inner.width, 1),
+    );
+    let input_rect = Rect::new(inner.x, inner.y + 3, inner.width, 1);
+    draw_overlay_input(
+        frame,
+        theme,
+        input_rect,
+        "仓库喵~",
+        &app.local_clone_input,
+        true,
+        "owner/name 或 https://github.com/owner/name",
+    );
+    let directory = app.config.expanded_local_clone_dir();
+    let target = local::parse_repo_ref(&app.local_clone_input.value)
+        .ok()
+        .map(|(_, name)| directory.join(name));
+    let target_line = match target {
+        Some(path) => format!(
+            "{} 会放到 {} 喵~",
+            icons::DOWNLOAD_DIR,
+            format::display_path(&path)
+        ),
+        None => format!(
+            "{} 本地克隆目录：{} 喵~",
+            icons::FOLDER_OPEN,
+            format::display_path(&directory)
+        ),
+    };
+    frame.render_widget(
+        Paragraph::new(format::truncate(&target_line, inner.width as usize))
+            .style(Style::default().fg(theme.color("subtext0"))),
+        Rect::new(inner.x, inner.y + 5, inner.width, 1),
+    );
+    frame.render_widget(
+        Paragraph::new(format::truncate(
+            "和普通克隆分开，同名目录会停下来，不会覆盖喵~",
+            inner.width as usize,
+        ))
+        .style(Style::default().fg(theme.color("overlay0"))),
+        Rect::new(inner.x, inner.y + 6, inner.width, 1),
+    );
+    if let Some(error) = app.local_clone_error.as_ref() {
+        frame.render_widget(
+            Paragraph::new(format::truncate(error, inner.width as usize))
+                .style(Style::default().fg(theme.color("red"))),
+            Rect::new(inner.x, inner.y + 8, inner.width, 1),
+        );
+    }
+    let bottom = inner.y + inner.height.saturating_sub(1);
+    let cancel = icons::label(icons::BACK, "取消喵~");
+    let cancel_width = format::text_width(&cancel) as u16 + 4;
+    draw_button(
+        frame,
+        app,
+        theme,
+        hits,
+        Rect::new(inner.x, bottom, cancel_width, 1),
+        &cancel,
+        Action::CloseOverlay,
+        false,
+    );
+    let confirm = if app.local_clone_busy.is_some() {
+        format!("{} 正在克隆喵~", app.spinner())
+    } else {
+        icons::label(icons::DOWNLOAD, "开始克隆喵~")
+    };
+    let confirm_width = format::text_width(&confirm) as u16 + 4;
+    draw_button(
+        frame,
+        app,
+        theme,
+        hits,
+        Rect::new(
+            inner.x + inner.width.saturating_sub(confirm_width),
+            bottom,
+            confirm_width,
+            1,
+        ),
+        &confirm,
+        Action::ConfirmLocalClone,
+        true,
+    );
+}
+
+fn draw_delete_local_clone_overlay(
+    frame: &mut Frame,
+    app: &mut App,
+    theme: &Theme,
+    area: Rect,
+    hits: &mut Vec<HitBox>,
+) {
+    let width = area.width.saturating_sub(14).min(62);
+    let height = area.height.saturating_sub(10).min(12);
+    if width < 34 || height < 9 {
+        return;
+    }
+    let rect = Rect::new(
+        area.x + (area.width.saturating_sub(width)) / 2,
+        area.y + (area.height.saturating_sub(height)) / 2,
+        width,
+        height,
+    );
+    frame.render_widget(Clear, rect);
+    fill(frame, rect, theme.color("mantle"));
+    frame.render_widget(
+        Block::new()
+            .borders(Borders::ALL)
+            .border_style(Style::default().fg(theme.color("red"))),
+        rect,
+    );
+    let inner = Rect::new(
+        rect.x + 2,
+        rect.y + 1,
+        rect.width.saturating_sub(4),
+        rect.height.saturating_sub(2),
+    );
+    frame.render_widget(
+        Paragraph::new(icons::label(icons::TRASH, "删除本地克隆喵~")).style(
+            Style::default()
+                .fg(theme.color("red"))
+                .add_modifier(Modifier::BOLD),
+        ),
+        Rect::new(inner.x, inner.y, inner.width, 1),
+    );
+    let Some(clone) = app.local_clone_delete.as_ref() else {
+        draw_center_message(
+            frame,
+            theme,
+            inner,
+            "没有选克隆喵~",
+            "关掉这个小窗口再挑一个嘛喵~",
+        );
+        app.layout.overlay = rect;
+        return;
+    };
+    let mut y = inner.y + 2;
+    frame.render_widget(
+        Paragraph::new(format::truncate(
+            &format!("{} {}", icons::FOLDER_OPEN, clone.name),
+            inner.width as usize,
+        ))
+        .style(
+            Style::default()
+                .fg(theme.color("text"))
+                .add_modifier(Modifier::BOLD),
+        ),
+        Rect::new(inner.x, y, inner.width, 1),
+    );
+    y += 1;
+    frame.render_widget(
+        Paragraph::new(format::truncate(
+            &format::display_path(&clone.path),
+            inner.width as usize,
+        ))
+        .style(Style::default().fg(theme.color("overlay0"))),
+        Rect::new(inner.x, y, inner.width, 1),
+    );
+    y += 2;
+    frame.render_widget(
+        Paragraph::new(format::truncate(
+            "会把整个目录从磁盘删掉，不能撤销喵！",
+            inner.width as usize,
+        ))
+        .style(Style::default().fg(theme.color("peach"))),
+        Rect::new(inner.x, y, inner.width, 1),
+    );
+    y += 1;
+    frame.render_widget(
+        Paragraph::new(format::truncate(
+            "确定要删掉这个本地克隆吗喵？",
+            inner.width as usize,
+        ))
+        .style(Style::default().fg(theme.color("red"))),
+        Rect::new(inner.x, y, inner.width, 1),
+    );
+
+    let bottom = inner.y + inner.height.saturating_sub(1);
+    let mut x = inner.x;
+    let confirm = if app.local_clone_busy.is_some() {
+        format!("{} 正在删除喵~", app.spinner())
+    } else {
+        icons::label(icons::TRASH, "确认删除喵~")
+    };
+    let confirm_width = format::text_width(&confirm) as u16 + 4;
+    if x + confirm_width <= inner.x + inner.width {
+        draw_button(
+            frame,
+            app,
+            theme,
+            hits,
+            Rect::new(x, bottom, confirm_width, 1),
+            &confirm,
+            Action::ConfirmDeleteLocalClone,
+            true,
+        );
+        x += confirm_width + 1;
+    }
+    let cancel = "取消喵~";
+    let cancel_width = format::text_width(cancel) as u16 + 4;
+    if x + cancel_width <= inner.x + inner.width {
+        draw_button(
+            frame,
+            app,
+            theme,
+            hits,
+            Rect::new(x, bottom, cancel_width, 1),
+            cancel,
+            Action::CloseOverlay,
+            false,
+        );
+    }
+    app.layout.overlay = rect;
 }
 
 fn draw_gists_page(
@@ -15302,6 +16398,45 @@ mod tests {
             .collect::<String>();
         assert!(compact.contains("Gist工作台"));
         assert!(compact.contains("hello.rs"));
+
+        app.local_clones = vec![crate::local::LocalClone {
+            name: "demo".to_string(),
+            path: dir.join("demo"),
+            branch: "main".to_string(),
+            remote: "https://github.com/octo/demo.git".to_string(),
+            full_name: Some("octo/demo".to_string()),
+            ..Default::default()
+        }];
+        app.local_clone_selected = 0;
+        app.page = Page::LocalClones;
+        terminal.clear().expect("clear terminal");
+        terminal
+            .draw(|frame| draw(frame, &mut app))
+            .expect("render local clones");
+        let compact = buffer_text(terminal.backend().buffer())
+            .split_whitespace()
+            .collect::<String>();
+        assert!(compact.contains("本地克隆"));
+        assert!(compact.contains("octo/demo"));
+        assert!(compact.contains("检查更新"));
+        let row = app
+            .hitboxes
+            .iter()
+            .find(|hit| matches!(hit.action, Action::SelectLocalClone(0)))
+            .map(|hit| hit.rect)
+            .expect("local clone row hitbox");
+        app.handle_mouse(crossterm::event::MouseEvent {
+            kind: crossterm::event::MouseEventKind::Moved,
+            column: row.x + 1,
+            row: row.y,
+            modifiers: crossterm::event::KeyModifiers::NONE,
+        });
+        assert_eq!(app.hover, Some(Action::SelectLocalClone(0)));
+        assert!(
+            app.hitboxes
+                .iter()
+                .any(|hit| hit.action == Action::CheckLocalClone)
+        );
 
         app.compare_repo = Some(repo.clone());
         app.compare_base = "main".to_string();

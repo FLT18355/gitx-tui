@@ -13,6 +13,10 @@ pub fn default_clone_dir() -> String {
     "~/gitx-tui/clones".to_string()
 }
 
+pub fn default_local_clone_dir() -> String {
+    "~/gitx-tui/local".to_string()
+}
+
 pub fn expand_tilde(value: &str) -> PathBuf {
     let value = value.trim();
     if value == "~" {
@@ -42,6 +46,7 @@ pub struct Config {
     pub show_readme: bool,
     pub download_dir: String,
     pub clone_dir: String,
+    pub local_clone_dir: String,
     pub commit_limit: usize,
     pub pinned_repos: Vec<String>,
     pub recent_repos: Vec<String>,
@@ -62,6 +67,7 @@ impl Default for Config {
             show_readme: false,
             download_dir: default_download_dir(),
             clone_dir: default_clone_dir(),
+            local_clone_dir: default_local_clone_dir(),
             commit_limit: 50,
             pinned_repos: Vec::new(),
             recent_repos: Vec::new(),
@@ -110,6 +116,10 @@ impl Config {
         if self.clone_dir.is_empty() {
             self.clone_dir = default_clone_dir();
         }
+        self.local_clone_dir = self.local_clone_dir.trim().to_string();
+        if self.local_clone_dir.is_empty() {
+            self.local_clone_dir = default_local_clone_dir();
+        }
         let mut recent: Vec<String> = Vec::new();
         for name in self.recent_repos.drain(..) {
             let name = name.trim().to_string();
@@ -139,6 +149,10 @@ impl Config {
 
     pub fn expanded_clone_dir(&self) -> PathBuf {
         expand_tilde(&self.clone_dir)
+    }
+
+    pub fn expanded_local_clone_dir(&self) -> PathBuf {
+        expand_tilde(&self.local_clone_dir)
     }
 
     pub fn save(&self, paths: &Paths) -> std::io::Result<()> {
@@ -280,6 +294,7 @@ mod tests {
         assert!(!config.show_readme);
         assert!(!config.transparent);
         assert_eq!(config.download_dir, default_download_dir());
+        assert_eq!(config.local_clone_dir, default_local_clone_dir());
     }
 
     #[test]

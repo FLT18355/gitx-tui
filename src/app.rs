@@ -3,6 +3,7 @@ use crate::cache::{Cache, CacheStats, STALE_CACHE_SECS, now_epoch, search_key};
 use crate::config::{Config, Paths};
 use crate::format::{self, base64};
 use crate::icons;
+use crate::local::{self, LocalClone};
 use crate::model::{
     Branch, Commit, CommitDetail, CompareResult, FileContent, Gist, Issue, IssueComment,
     IssueState, LanguageStat, Notification, Org, PullFile, PullRequestLink, RateLimit,
@@ -40,6 +41,7 @@ pub enum Page {
     Compare,
     Files,
     Network,
+    LocalClones,
 }
 
 impl Page {
@@ -53,6 +55,7 @@ impl Page {
             Self::Notifications => Some(5),
             Self::Trending => Some(6),
             Self::Gists => Some(7),
+            Self::LocalClones => Some(8),
             Self::Repo
             | Self::Profile
             | Self::Actions
@@ -78,6 +81,7 @@ impl Page {
             5 => Self::Notifications,
             6 => Self::Trending,
             7 => Self::Gists,
+            8 => Self::LocalClones,
             _ => Self::Home,
         }
     }
@@ -105,6 +109,7 @@ impl Page {
             Self::Compare => "分支对比喵~",
             Self::Files => "文件预览喵~",
             Self::Network => "社交网络喵~",
+            Self::LocalClones => "本地克隆喵~",
         }
     }
 
@@ -123,7 +128,7 @@ impl Page {
         )
     }
 
-    pub const DEFAULT_PAGES: [Page; 9] = [
+    pub const DEFAULT_PAGES: [Page; 10] = [
         Self::Home,
         Self::Repositories,
         Self::Starred,
@@ -132,6 +137,7 @@ impl Page {
         Self::Account,
         Self::Notifications,
         Self::Gists,
+        Self::LocalClones,
         Self::Insights,
     ];
 
@@ -144,6 +150,7 @@ impl Page {
             "account" => Self::Account,
             "notifications" => Self::Notifications,
             "gists" => Self::Gists,
+            "local" | "local_clones" | "clones" => Self::LocalClones,
             "insights" => Self::Insights,
             _ => Self::Home,
         }
@@ -158,6 +165,7 @@ impl Page {
             Self::Account => "account",
             Self::Notifications => "notifications",
             Self::Gists => "gists",
+            Self::LocalClones => "local",
             Self::Insights => "insights",
             _ => "home",
         }
@@ -172,6 +180,7 @@ impl Page {
             Self::Account => "账号喵~",
             Self::Notifications => "通知喵~",
             Self::Gists => "Gist 喵~",
+            Self::LocalClones => "本地喵~",
             Self::Insights => "洞察喵~",
             _ => "首页喵~",
         }
@@ -185,6 +194,8 @@ pub enum Overlay {
     RepoLanguages,
     EditRepo,
     CloneRepo,
+    LocalClone,
+    DeleteLocalClone,
     Cache,
     RunWorkflow,
     Branches,
@@ -350,6 +361,19 @@ pub enum Action {
     StartCloneDirEdit,
     CloneRepo,
     ConfirmClone,
+    CloneLocalRepo,
+    ConfirmLocalClone,
+    RefreshLocalClones,
+    SelectLocalClone(usize),
+    EnterLocalClone,
+    PullLocalClone,
+    CheckLocalClone,
+    DeleteLocalClone,
+    ConfirmDeleteLocalClone,
+    OpenLocalCloneDir,
+    OpenLocalClonesDir,
+    StartLocalClone,
+    StartLocalCloneDirEdit,
     ToggleFileTree,
     ToggleReadme,
     ToggleTransparent,
@@ -944,6 +968,17 @@ enum Msg {
         name: String,
         result: Result<std::path::PathBuf, String>,
     },
+    LocalClonesLoaded(Result<Vec<LocalClone>, String>),
+    LocalCloneCloned {
+        name: String,
+        result: Result<std::path::PathBuf, String>,
+    },
+    LocalCloneChecked(Result<LocalClone, String>),
+    LocalClonePulled(Result<LocalClone, String>),
+    LocalCloneDeleted {
+        path: std::path::PathBuf,
+        result: Result<(), String>,
+    },
     RecentRepo {
         name: String,
         result: Result<Repo, String>,
@@ -1262,6 +1297,7 @@ pub struct App {
     pub recent_cache: Vec<Repo>,
     pub pin_loading: Vec<String>,
     pub should_quit: bool,
+    pub exit_dir: Option<std::path::PathBuf>,
     pub settings_only: bool,
 
     pub repos: Vec<Repo>,
@@ -1364,6 +1400,15 @@ pub struct App {
     pub download_job: Option<DownloadJob>,
     pub clone_job: Option<String>,
     pub clone_target: Option<Repo>,
+    pub local_clones: Vec<LocalClone>,
+    pub local_clone_selected: usize,
+    pub local_clone_loading: bool,
+    pub local_clone_busy: Option<String>,
+    pub local_clone_delete: Option<LocalClone>,
+    pub editing_local_clone_dir: bool,
+    pub local_clone_dir_input: TextInput,
+    pub local_clone_input: TextInput,
+    pub local_clone_error: Option<String>,
     pub star_loading: Option<String>,
     pub language_selected: usize,
     pub language_offset: usize,
@@ -1436,6 +1481,7 @@ impl App {
         let cache_stats = cache.stats();
         let download_dir_initial = config.download_dir.clone();
         let clone_dir_initial = config.clone_dir.clone();
+        let local_clone_dir_initial = config.local_clone_dir.clone();
         let start_page = if settings_only {
             Page::Settings
         } else {
@@ -1596,6 +1642,7 @@ impl App {
             recent_cache: Vec::new(),
             pin_loading: Vec::new(),
             should_quit: false,
+            exit_dir: None,
             settings_only,
             repos: Vec::new(),
             starred: Vec::new(),
@@ -1692,6 +1739,15 @@ impl App {
             download_job: None,
             clone_job: None,
             clone_target: None,
+            local_clones: Vec::new(),
+            local_clone_selected: 0,
+            local_clone_loading: false,
+            local_clone_busy: None,
+            local_clone_delete: None,
+            editing_local_clone_dir: false,
+            local_clone_dir_input: TextInput::new(local_clone_dir_initial),
+            local_clone_input: TextInput::new(""),
+            local_clone_error: None,
             star_loading: None,
             language_selected: 0,
             language_offset: 0,
@@ -1788,6 +1844,9 @@ impl App {
         }
         if self.page == Page::Trending {
             self.fetch_trending(false);
+        }
+        if self.page == Page::LocalClones {
+            self.refresh_local_clones(true);
         }
         self.schedule_selected_detail();
         self.refresh_cache_stats();
@@ -3361,6 +3420,78 @@ impl App {
                     Err(error) => self.set_status(StatusKind::Error, &error),
                 }
             }
+            Msg::LocalClonesLoaded(result) => {
+                self.local_clone_loading = false;
+                match result {
+                    Ok(clones) => {
+                        self.local_clones = clones;
+                        self.clamp_local_clone_selection();
+                    }
+                    Err(error) => self.set_status(StatusKind::Error, &error),
+                }
+            }
+            Msg::LocalCloneCloned { name, result } => {
+                self.local_clone_busy = None;
+                match result {
+                    Ok(path) => {
+                        self.set_status(
+                            StatusKind::Ok,
+                            &format!(
+                                "{name} 克隆到本地啦，人家放在 {} 喵~",
+                                format::display_path(&path)
+                            ),
+                        );
+                        if self.page == Page::LocalClones {
+                            self.refresh_local_clones(true);
+                        }
+                    }
+                    Err(error) => self.set_status(StatusKind::Error, &error),
+                }
+            }
+            Msg::LocalCloneChecked(result) => {
+                self.local_clone_busy = None;
+                match result {
+                    Ok(clone) => {
+                        let name = clone.name.clone();
+                        let behind = clone.behind;
+                        let ahead = clone.ahead;
+                        self.replace_local_clone(clone);
+                        let text = if behind > 0 {
+                            format!("{name} 有 {behind} 个新提交可以拉取喵~")
+                        } else if ahead > 0 {
+                            format!("{name} 已经是最新的啦，本地领先 {ahead} 个提交喵~")
+                        } else {
+                            format!("{name} 已经是最新的啦喵~")
+                        };
+                        self.set_status(StatusKind::Ok, &text);
+                    }
+                    Err(error) => self.set_status(StatusKind::Error, &error),
+                }
+            }
+            Msg::LocalClonePulled(result) => {
+                self.local_clone_busy = None;
+                match result {
+                    Ok(clone) => {
+                        let name = clone.name.clone();
+                        self.replace_local_clone(clone);
+                        self.set_status(StatusKind::Ok, &format!("{name} Pull 好啦喵~"));
+                    }
+                    Err(error) => self.set_status(StatusKind::Error, &error),
+                }
+            }
+            Msg::LocalCloneDeleted { path, result } => {
+                self.local_clone_busy = None;
+                match result {
+                    Ok(()) => {
+                        self.local_clones.retain(|clone| clone.path != path);
+                        self.clamp_local_clone_selection();
+                        self.overlay = None;
+                        self.local_clone_delete = None;
+                        self.set_status(StatusKind::Ok, "本地克隆删掉啦喵~");
+                    }
+                    Err(error) => self.set_status(StatusKind::Error, &error),
+                }
+            }
             Msg::RecentRepo { name, result } => {
                 self.pin_loading
                     .retain(|item| !item.eq_ignore_ascii_case(&name));
@@ -3514,7 +3645,7 @@ impl App {
             Page::Commits => self.commit_repo.clone(),
             Page::Compare => self.compare_repo.clone(),
             Page::Files => self.file_repo.clone(),
-            Page::Gists | Page::Network => None,
+            Page::Gists | Page::Network | Page::LocalClones => None,
             Page::Notifications | Page::Settings | Page::Home | Page::Insights => None,
             _ => self
                 .detail
@@ -5209,6 +5340,12 @@ impl App {
         if self.delete_loading.is_some() {
             return Some("人家正在删除仓库喵~...");
         }
+        if self.local_clone_busy.is_some() {
+            return Some("人家正在本地仓库上忙活喵~...");
+        }
+        if self.page == Page::LocalClones && self.local_clone_loading {
+            return Some("人家正在数本地克隆喵~...");
+        }
         if self.search_loading && self.page == Page::Search {
             return Some("人家正在翻找仓库喵~...");
         }
@@ -6582,6 +6719,7 @@ impl App {
             Page::Compare => self.fetch_compare(),
             Page::Files => self.refresh_file(),
             Page::Network => self.fetch_network(true),
+            Page::LocalClones => self.refresh_local_clones(true),
             Page::Notifications => self.fetch_notifications(true),
             Page::Settings => self.refresh_cache_stats(),
             Page::Home => {
@@ -6610,6 +6748,10 @@ impl App {
             self.open_compare();
             return;
         }
+        if page == Page::LocalClones {
+            self.open_local_clones();
+            return;
+        }
         if page == Page::Repo || page == self.page {
             if page == Page::Search {
                 self.search_focus = true;
@@ -6621,6 +6763,9 @@ impl App {
         }
         if self.editing_clone_dir {
             self.commit_clone_dir_edit();
+        }
+        if self.editing_local_clone_dir {
+            self.commit_local_clone_dir_edit();
         }
         if self.editing_proxy {
             self.commit_proxy_edit();
@@ -7072,6 +7217,11 @@ impl App {
                 action: Action::Navigate(Page::Gists),
             },
             PaletteItem {
+                label: "本地克隆管理".to_string(),
+                hint: "8 · Pull · 检查更新 · 删除".to_string(),
+                action: Action::Navigate(Page::LocalClones),
+            },
+            PaletteItem {
                 label: "分支对比 / 建合并请求".to_string(),
                 hint: "m · 比较分支，开 PR".to_string(),
                 action: Action::Navigate(Page::Compare),
@@ -7117,6 +7267,11 @@ impl App {
                 label: "克隆当前仓库".to_string(),
                 hint: "Ctrl+G · 走加速通道，放到克隆目录".to_string(),
                 action: Action::CloneRepo,
+            },
+            PaletteItem {
+                label: "克隆当前仓库到本地管理目录".to_string(),
+                hint: "本地克隆页专用目录，独立管理".to_string(),
+                action: Action::CloneLocalRepo,
             },
             PaletteItem {
                 label: "随机探索一个仓库".to_string(),
@@ -7875,6 +8030,339 @@ impl App {
         });
     }
 
+    // ---- 本地克隆管理 ----
+    pub fn open_local_clones(&mut self) {
+        if self.page == Page::LocalClones {
+            if self.editing_local_clone_dir {
+                self.commit_local_clone_dir_edit();
+            }
+            self.refresh_local_clones(true);
+            return;
+        }
+        self.return_page = return_page_when_opening(self.page, self.return_page);
+        self.page = Page::LocalClones;
+        if let Some(index) = Page::LocalClones.nav_index() {
+            self.nav_offset = index;
+        }
+        self.search_focus = false;
+        self.list_filter_focus = false;
+        self.release_filter_focus = false;
+        self.readme_fullscreen = false;
+        self.local_clone_error = None;
+        self.refresh_local_clones(true);
+    }
+
+    pub fn refresh_local_clones(&mut self, force: bool) {
+        if self.local_clone_loading {
+            return;
+        }
+        if !force && !self.local_clones.is_empty() {
+            return;
+        }
+        self.local_clone_loading = true;
+        let directory = self.config.expanded_local_clone_dir();
+        let tx = self.tx.clone();
+        std::thread::spawn(move || {
+            let result = local::scan_clones(&directory);
+            let _ = tx.send(Msg::LocalClonesLoaded(result));
+        });
+    }
+
+    pub fn selected_local_clone(&self) -> Option<LocalClone> {
+        self.local_clones.get(self.local_clone_selected).cloned()
+    }
+
+    fn clamp_local_clone_selection(&mut self) {
+        self.local_clone_selected = self
+            .local_clone_selected
+            .min(self.local_clones.len().saturating_sub(1));
+    }
+
+    pub fn select_local_clone(&mut self, index: usize) {
+        self.local_clone_selected = index.min(self.local_clones.len().saturating_sub(1));
+    }
+
+    pub fn move_local_clone_selection(&mut self, delta: i32) {
+        if self.local_clones.is_empty() {
+            self.local_clone_selected = 0;
+            return;
+        }
+        let last = self.local_clones.len() - 1;
+        self.local_clone_selected =
+            (self.local_clone_selected as i32 + delta).clamp(0, last as i32) as usize;
+    }
+
+    pub fn enter_selected_local_clone(&mut self) {
+        let Some(clone) = self.selected_local_clone() else {
+            self.set_status(StatusKind::Info, "先挑一个本地克隆嘛喵~");
+            return;
+        };
+        let Some(full_name) = clone.full_name.clone() else {
+            self.set_status(
+                StatusKind::Info,
+                &format!("{} 没有 GitHub 远端，人家帮你打开目录喵~", clone.name),
+            );
+            self.open_local_clone_path(&clone.path);
+            return;
+        };
+        let repo = self.repo_by_name(&full_name).unwrap_or_else(|| Repo {
+            name: full_name.rsplit('/').next().unwrap_or("repo").to_string(),
+            full_name: full_name.clone(),
+            html_url: format!("https://github.com/{full_name}"),
+            clone_url: format!("https://github.com/{full_name}.git"),
+            default_branch: if clone.branch.is_empty() {
+                "main".to_string()
+            } else {
+                clone.branch.clone()
+            },
+            ..Default::default()
+        });
+        self.open_repo(repo);
+    }
+
+    pub fn open_local_clone_dir(&mut self) {
+        let Some(clone) = self.selected_local_clone() else {
+            self.set_status(StatusKind::Info, "先挑一个本地克隆嘛喵~");
+            return;
+        };
+        self.open_local_clone_path(&clone.path);
+    }
+
+    pub fn open_local_clones_root(&mut self) {
+        let directory = self.config.expanded_local_clone_dir();
+        if let Err(error) = std::fs::create_dir_all(&directory) {
+            self.set_status(
+                StatusKind::Error,
+                &format!("本地克隆目录建不出来：{error}喵~"),
+            );
+            return;
+        }
+        self.open_local_clone_path(&directory);
+    }
+
+    fn open_local_clone_path(&mut self, path: &std::path::Path) {
+        if !path.is_dir() {
+            self.set_status(
+                StatusKind::Error,
+                &format!("目录不存在喵~：{}", format::display_path(path)),
+            );
+            return;
+        }
+        let target = path.canonicalize().unwrap_or_else(|_| path.to_path_buf());
+        self.exit_dir = Some(target);
+        self.quit();
+    }
+
+    pub fn start_local_clone(&mut self) {
+        if self.local_clone_busy.is_some() {
+            self.set_status(StatusKind::Info, "人家还在忙上一个本地操作喵~");
+            return;
+        }
+        self.local_clone_input = TextInput::new("");
+        self.local_clone_error = None;
+        self.overlay = Some(Overlay::LocalClone);
+    }
+
+    pub fn start_local_clone_for_repo(&mut self) {
+        let Some(repo) = self.effective_repo() else {
+            self.set_status(StatusKind::Info, "先挑一个仓库嘛喵~");
+            return;
+        };
+        if self.local_clone_busy.is_some() {
+            self.set_status(StatusKind::Info, "人家还在忙上一个本地操作喵~");
+            return;
+        }
+        self.local_clone_input = TextInput::new(repo.display_full_name());
+        self.local_clone_error = None;
+        self.overlay = Some(Overlay::LocalClone);
+    }
+
+    pub fn confirm_local_clone(&mut self) {
+        if self.local_clone_busy.is_some() {
+            return;
+        }
+        let (full_name, name) = match local::parse_repo_ref(&self.local_clone_input.value) {
+            Ok(parsed) => parsed,
+            Err(error) => {
+                self.local_clone_error = Some(error);
+                return;
+            }
+        };
+        let directory = self.config.expanded_local_clone_dir();
+        if let Err(error) = std::fs::create_dir_all(&directory) {
+            self.local_clone_error = Some(format!("本地克隆目录建不出来：{error}喵~"));
+            return;
+        }
+        let destination = directory.join(&name);
+        if destination.exists() {
+            self.local_clone_error = Some(format!(
+                "{} 已经有同名目录啦喵~",
+                format::display_path(&destination)
+            ));
+            return;
+        }
+        let https = format!("https://github.com/{full_name}.git");
+        let url = self.client.proxy_url(&https);
+        self.local_clone_error = None;
+        self.overlay = None;
+        self.local_clone_busy = Some(format!("正在克隆 {full_name} 喵~"));
+        self.set_status(
+            StatusKind::Info,
+            &format!(
+                "开始把 {full_name} 克隆到 {} 喵~",
+                format::display_path(&directory)
+            ),
+        );
+        let tx = self.tx.clone();
+        std::thread::spawn(move || {
+            let result = run_git_clone(&url, &destination).map(|()| destination);
+            let _ = tx.send(Msg::LocalCloneCloned { name, result });
+        });
+    }
+
+    pub fn pull_selected_local_clone(&mut self) {
+        if self.local_clone_busy.is_some() {
+            self.set_status(StatusKind::Info, "人家还在忙上一个本地操作喵~");
+            return;
+        }
+        let Some(clone) = self.selected_local_clone() else {
+            self.set_status(StatusKind::Info, "先挑一个本地克隆嘛喵~");
+            return;
+        };
+        self.local_clone_busy = Some(format!("正在 Pull {} 喵~", clone.name));
+        self.set_status(
+            StatusKind::Info,
+            &format!("正在给 {} 做 fast-forward Pull 喵~", clone.name),
+        );
+        let path = clone.path;
+        let tx = self.tx.clone();
+        std::thread::spawn(move || {
+            let result = local::pull_clone(&path);
+            let _ = tx.send(Msg::LocalClonePulled(result));
+        });
+    }
+
+    pub fn check_selected_local_clone(&mut self) {
+        if self.local_clone_busy.is_some() {
+            self.set_status(StatusKind::Info, "人家还在忙上一个本地操作喵~");
+            return;
+        }
+        let Some(clone) = self.selected_local_clone() else {
+            self.set_status(StatusKind::Info, "先挑一个本地克隆嘛喵~");
+            return;
+        };
+        self.local_clone_busy = Some(format!("正在检查 {} 喵~", clone.name));
+        self.set_status(
+            StatusKind::Info,
+            &format!("正在问远端 {} 有没有新提交喵~", clone.name),
+        );
+        let path = clone.path;
+        let tx = self.tx.clone();
+        std::thread::spawn(move || {
+            let result = local::check_clone(&path);
+            let _ = tx.send(Msg::LocalCloneChecked(result));
+        });
+    }
+
+    pub fn open_delete_local_clone(&mut self) {
+        if self.local_clone_busy.is_some() {
+            self.set_status(StatusKind::Info, "人家还在忙上一个本地操作喵~");
+            return;
+        }
+        let Some(clone) = self.selected_local_clone() else {
+            self.set_status(StatusKind::Info, "先挑一个本地克隆嘛喵~");
+            return;
+        };
+        self.local_clone_delete = Some(clone);
+        self.overlay = Some(Overlay::DeleteLocalClone);
+    }
+
+    pub fn confirm_delete_local_clone(&mut self) {
+        if self.local_clone_busy.is_some() {
+            return;
+        }
+        let Some(clone) = self.local_clone_delete.clone() else {
+            return;
+        };
+        let root = self.config.expanded_local_clone_dir();
+        self.local_clone_busy = Some(format!("正在删除 {} 喵~", clone.name));
+        self.set_status(
+            StatusKind::Error,
+            &format!("正在删掉 {}，这个操作不能撤销喵~", clone.name),
+        );
+        let path = clone.path;
+        let tx = self.tx.clone();
+        std::thread::spawn(move || {
+            let result = local::delete_clone(&root, &path);
+            let _ = tx.send(Msg::LocalCloneDeleted { path, result });
+        });
+    }
+
+    pub fn start_local_clone_dir_edit(&mut self) {
+        self.editing_local_clone_dir = true;
+        self.local_clone_dir_input = TextInput::new(self.config.local_clone_dir.clone());
+    }
+
+    fn commit_local_clone_dir_edit(&mut self) {
+        let value = self.local_clone_dir_input.value.trim().to_string();
+        if value.is_empty() {
+            self.set_status(
+                StatusKind::Error,
+                "本地克隆目录不能空着呀，给人家一个路径嘛喵~",
+            );
+            return;
+        }
+        let expanded = crate::config::expand_tilde(&value);
+        if !expanded.is_absolute() {
+            self.set_status(
+                StatusKind::Error,
+                "本地克隆目录最好写绝对路径，或者用 ~/ 开头的路径哦喵~",
+            );
+            return;
+        }
+        if let Err(error) = std::fs::create_dir_all(&expanded) {
+            self.set_status(
+                StatusKind::Error,
+                &format!("本地克隆目录建不出来：{error}，换一个路径试试嘛喵~"),
+            );
+            return;
+        }
+        self.config.local_clone_dir = value;
+        self.editing_local_clone_dir = false;
+        self.config_dirty = true;
+        self.save_config(false);
+        self.local_clones.clear();
+        self.local_clone_selected = 0;
+        self.refresh_local_clones(true);
+        if !self.config_dirty {
+            self.set_status(
+                StatusKind::Ok,
+                &format!(
+                    "本地克隆目录改成 {} 啦喵~",
+                    format::display_path(&self.config.expanded_local_clone_dir())
+                ),
+            );
+        }
+    }
+
+    fn replace_local_clone(&mut self, clone: LocalClone) {
+        if let Some(slot) = self
+            .local_clones
+            .iter_mut()
+            .find(|item| item.path == clone.path)
+        {
+            *slot = clone;
+        } else {
+            self.local_clones.push(clone);
+            self.local_clones.sort_by(|left, right| {
+                left.name
+                    .to_ascii_lowercase()
+                    .cmp(&right.name.to_ascii_lowercase())
+            });
+        }
+        self.clamp_local_clone_selection();
+    }
+
     pub fn is_current_starred(&self) -> bool {
         let Some(repo) = self.effective_repo() else {
             return false;
@@ -8203,6 +8691,12 @@ impl App {
         if self.page == Page::Network {
             if delta != 0 {
                 self.move_network_selection(delta.signum());
+            }
+            return;
+        }
+        if self.page == Page::LocalClones {
+            if delta != 0 {
+                self.move_local_clone_selection(delta.signum());
             }
             return;
         }
@@ -9455,6 +9949,8 @@ impl App {
                 self.save_repo_edit();
             } else if self.overlay == Some(Overlay::PublishRelease) {
                 self.submit_release();
+            } else if self.overlay == Some(Overlay::LocalClone) {
+                self.confirm_local_clone();
             } else if self.overlay == Some(Overlay::RepoLanguages) {
                 return;
             } else if self.page == Page::IssueDetail && self.issue_comment_focus {
@@ -9468,6 +9964,9 @@ impl App {
                 }
                 if self.editing_clone_dir {
                     self.commit_clone_dir_edit();
+                }
+                if self.editing_local_clone_dir {
+                    self.commit_local_clone_dir_edit();
                 }
                 self.save_config(true);
             }
@@ -9636,6 +10135,40 @@ impl App {
             }
             return;
         }
+        if self.overlay == Some(Overlay::LocalClone) {
+            if self.local_clone_busy.is_some() {
+                return;
+            }
+            match key.code {
+                KeyCode::Esc => {
+                    self.overlay = None;
+                    self.local_clone_error = None;
+                }
+                KeyCode::Enter => self.confirm_local_clone(),
+                KeyCode::Backspace => self.local_clone_input.backspace(),
+                KeyCode::Delete => self.local_clone_input.delete(),
+                KeyCode::Left => self.local_clone_input.left(),
+                KeyCode::Right => self.local_clone_input.right(),
+                KeyCode::Home => self.local_clone_input.home(),
+                KeyCode::End => self.local_clone_input.end(),
+                KeyCode::Char(ch) if !ch.is_control() => self.local_clone_input.insert(ch),
+                _ => {}
+            }
+            return;
+        }
+        if self.overlay == Some(Overlay::DeleteLocalClone) {
+            match key.code {
+                KeyCode::Esc | KeyCode::Char('q') => {
+                    if self.local_clone_busy.is_none() {
+                        self.overlay = None;
+                        self.local_clone_delete = None;
+                    }
+                }
+                KeyCode::Enter => self.confirm_delete_local_clone(),
+                _ => {}
+            }
+            return;
+        }
         if self.overlay == Some(Overlay::Languages) {
             match key.code {
                 KeyCode::Esc | KeyCode::Char('q') => self.overlay = None,
@@ -9767,6 +10300,35 @@ impl App {
                 | KeyCode::Char('o')
                 | KeyCode::Char('r') => {
                     self.handle_issue_key(key);
+                    return;
+                }
+                _ => {}
+            }
+        }
+        if self.page == Page::LocalClones {
+            match key.code {
+                KeyCode::Char('n') => {
+                    self.start_local_clone();
+                    return;
+                }
+                KeyCode::Char('p') => {
+                    self.pull_selected_local_clone();
+                    return;
+                }
+                KeyCode::Char('u') => {
+                    self.check_selected_local_clone();
+                    return;
+                }
+                KeyCode::Char('d') => {
+                    self.open_delete_local_clone();
+                    return;
+                }
+                KeyCode::Char('o') => {
+                    self.open_local_clone_dir();
+                    return;
+                }
+                KeyCode::Char('e') => {
+                    self.start_local_clone_dir_edit();
                     return;
                 }
                 _ => {}
@@ -9935,6 +10497,26 @@ impl App {
                 KeyCode::Home => self.clone_input.home(),
                 KeyCode::End => self.clone_input.end(),
                 KeyCode::Char(ch) => self.clone_input.insert(ch),
+                _ => {}
+            }
+            return;
+        }
+
+        if self.editing_local_clone_dir {
+            match key.code {
+                KeyCode::Enter => self.commit_local_clone_dir_edit(),
+                KeyCode::Esc => {
+                    self.editing_local_clone_dir = false;
+                    self.local_clone_dir_input =
+                        TextInput::new(self.config.local_clone_dir.clone());
+                }
+                KeyCode::Backspace => self.local_clone_dir_input.backspace(),
+                KeyCode::Delete => self.local_clone_dir_input.delete(),
+                KeyCode::Left => self.local_clone_dir_input.left(),
+                KeyCode::Right => self.local_clone_dir_input.right(),
+                KeyCode::Home => self.local_clone_dir_input.home(),
+                KeyCode::End => self.local_clone_dir_input.end(),
+                KeyCode::Char(ch) => self.local_clone_dir_input.insert(ch),
                 _ => {}
             }
             return;
@@ -10259,6 +10841,7 @@ impl App {
             KeyCode::Char('5') => self.navigate(Page::Notifications),
             KeyCode::Char('6') => self.navigate(Page::Trending),
             KeyCode::Char('7') => self.navigate(Page::Gists),
+            KeyCode::Char('8') => self.navigate(Page::LocalClones),
             KeyCode::Char('9') | KeyCode::Char('I') => self.navigate(Page::Insights),
             KeyCode::Char('E') => self.random_repo(),
             KeyCode::Char('P') => self.toggle_pin(),
@@ -10284,7 +10867,8 @@ impl App {
                 | Page::Account
                 | Page::Notifications
                 | Page::Home
-                | Page::Insights => self.navigate(Page::Repositories),
+                | Page::Insights
+                | Page::LocalClones => self.navigate(Page::Repositories),
                 _ => {}
             },
             KeyCode::Char('r') => self.refresh_current(),
@@ -10338,6 +10922,7 @@ impl App {
                 Page::Compare => self.fetch_compare(),
                 Page::Files => self.refresh_file(),
                 Page::Network => self.open_selected_network_profile(),
+                Page::LocalClones => self.enter_selected_local_clone(),
                 Page::Home => {
                     if self.home_items_len() == 0 {
                         self.navigate(Page::Search);
@@ -10369,7 +10954,7 @@ impl App {
             .page
             .nav_index()
             .unwrap_or_else(|| self.return_page.nav_index().unwrap_or(0));
-        let next = (current + 1) % 8;
+        let next = (current + 1) % 9;
         self.navigate(Page::from_nav(next));
     }
 
@@ -10388,6 +10973,7 @@ impl App {
             Page::Compare => self.move_compare_selection(-1),
             Page::Files => self.file_scroll_by(-1),
             Page::Network => self.move_network_selection(-1),
+            Page::LocalClones => self.move_local_clone_selection(-1),
             Page::Insights => {}
             _ => self.move_selection(-1),
         }
@@ -10408,6 +10994,7 @@ impl App {
             Page::Compare => self.move_compare_selection(1),
             Page::Files => self.file_scroll_by(1),
             Page::Network => self.move_network_selection(1),
+            Page::LocalClones => self.move_local_clone_selection(1),
             Page::Insights => {}
             _ => self.move_selection(1),
         }
@@ -10433,6 +11020,7 @@ impl App {
             Page::Compare => self.select_compare_row(0),
             Page::Files => self.file_scroll = 0,
             Page::Network => self.select_network_row(0),
+            Page::LocalClones => self.select_local_clone(0),
             Page::Insights => {}
             _ => self.first_list_page(),
         }
@@ -10470,6 +11058,7 @@ impl App {
             Page::Compare => self.select_compare_row(self.compare_row_count().saturating_sub(1)),
             Page::Files => self.file_scroll = self.file_scroll_max,
             Page::Network => self.select_network_row(self.network_row_count().saturating_sub(1)),
+            Page::LocalClones => self.select_local_clone(self.local_clones.len().saturating_sub(1)),
             Page::Insights => {}
             _ => self.last_list_page(),
         }
@@ -10492,6 +11081,7 @@ impl App {
             Page::Compare => self.compare_scroll_by(-10),
             Page::Files => self.file_scroll_by(-10),
             Page::Network => self.move_network_selection(-5),
+            Page::LocalClones => self.move_local_clone_selection(-5),
             Page::Settings => self.settings_row = self.settings_row.saturating_sub(3),
             Page::Account => {}
             _ => self.prev_list_page(),
@@ -10516,6 +11106,7 @@ impl App {
             Page::Compare => self.compare_scroll_by(10),
             Page::Files => self.file_scroll_by(10),
             Page::Network => self.move_network_selection(5),
+            Page::LocalClones => self.move_local_clone_selection(5),
             Page::Settings => self.settings_row = (self.settings_row + 3).min(13),
             Page::Account => {}
             _ => self.next_list_page(),
@@ -10911,6 +11502,7 @@ impl App {
         }
         self.client.set_proxy(&self.config.proxy);
         let _ = std::fs::create_dir_all(self.config.expanded_download_dir());
+        let _ = std::fs::create_dir_all(self.config.expanded_local_clone_dir());
         self.config_dirty = false;
         if announce {
             self.set_status(
@@ -10954,6 +11546,14 @@ impl App {
             }
             return;
         }
+        if self.overlay == Some(Overlay::LocalClone) {
+            if self.local_clone_busy.is_none() {
+                for ch in text.chars().filter(|ch| *ch != '\n' && *ch != '\r') {
+                    self.local_clone_input.insert(ch);
+                }
+            }
+            return;
+        }
         if self.overlay == Some(Overlay::RunWorkflow) {
             if self.workflow_ref_editing {
                 for ch in text.chars().filter(|ch| *ch != '\n' && *ch != '\r') {
@@ -10992,6 +11592,10 @@ impl App {
         if self.editing_download_dir {
             for ch in text.chars().filter(|ch| *ch != '\n' && *ch != '\r') {
                 self.download_input.insert(ch);
+            }
+        } else if self.editing_local_clone_dir {
+            for ch in text.chars().filter(|ch| *ch != '\n' && *ch != '\r') {
+                self.local_clone_dir_input.insert(ch);
             }
         } else if self.editing_proxy {
             for ch in text.chars().filter(|ch| *ch != '\n' && *ch != '\r') {
@@ -11145,12 +11749,38 @@ impl App {
             Action::TogglePin => self.toggle_pin(),
             Action::OpenPin(index) => self.open_home_item(index),
             Action::NavLeft => self.nav_offset = self.nav_offset.saturating_sub(1),
-            Action::NavRight => self.nav_offset = (self.nav_offset + 1).min(7),
+            Action::NavRight => self.nav_offset = (self.nav_offset + 1).min(8),
             Action::StartProxyEdit => self.start_proxy_edit(),
             Action::StartDownloadDirEdit => self.start_download_dir_edit(),
             Action::StartCloneDirEdit => self.start_clone_dir_edit(),
             Action::CloneRepo => self.clone_current_repo(),
             Action::ConfirmClone => self.confirm_clone_repo(),
+            Action::CloneLocalRepo => self.start_local_clone_for_repo(),
+            Action::ConfirmLocalClone => self.confirm_local_clone(),
+            Action::RefreshLocalClones => self.refresh_local_clones(true),
+            Action::SelectLocalClone(index) => {
+                let key = format!("{}:{}", self.page.title(), index);
+                let now = Instant::now();
+                let double = self
+                    .last_click
+                    .as_ref()
+                    .map(|(at, last)| at.elapsed() < Duration::from_millis(420) && last == &key)
+                    .unwrap_or(false);
+                self.last_click = Some((now, key));
+                self.select_local_clone(index);
+                if double {
+                    self.enter_selected_local_clone();
+                }
+            }
+            Action::EnterLocalClone => self.enter_selected_local_clone(),
+            Action::PullLocalClone => self.pull_selected_local_clone(),
+            Action::CheckLocalClone => self.check_selected_local_clone(),
+            Action::DeleteLocalClone => self.open_delete_local_clone(),
+            Action::ConfirmDeleteLocalClone => self.confirm_delete_local_clone(),
+            Action::OpenLocalCloneDir => self.open_local_clone_dir(),
+            Action::OpenLocalClonesDir => self.open_local_clones_root(),
+            Action::StartLocalClone => self.start_local_clone(),
+            Action::StartLocalCloneDirEdit => self.start_local_clone_dir_edit(),
             Action::ToggleFileTree => self.toggle_file_tree(),
             Action::ToggleReadme => self.toggle_readme(),
             Action::ToggleTransparent => self.toggle_transparent(),
@@ -11190,6 +11820,11 @@ impl App {
                 if self.overlay == Some(Overlay::DeleteGist) && self.gist_deleting {
                     return;
                 }
+                if self.overlay == Some(Overlay::DeleteLocalClone)
+                    && self.local_clone_busy.is_some()
+                {
+                    return;
+                }
                 if self.overlay == Some(Overlay::MergePr) && self.issue_action_loading {
                     return;
                 }
@@ -11207,6 +11842,8 @@ impl App {
                 self.fork_repo = None;
                 self.delete_repo = None;
                 self.clone_target = None;
+                self.local_clone_delete = None;
+                self.local_clone_error = None;
                 self.cancel_run = None;
             }
             Action::PrevListPage => self.prev_list_page(),
@@ -11383,6 +12020,9 @@ impl App {
         }
         if self.editing_clone_dir {
             self.commit_clone_dir_edit();
+        }
+        if self.editing_local_clone_dir {
+            self.commit_local_clone_dir_edit();
         }
         if self.editing_proxy {
             self.commit_proxy_edit();
@@ -12207,6 +12847,16 @@ mod tests {
         assert_eq!(app.page, Page::IssueDetail);
         assert_eq!(app.issue_open_number, Some(3));
         let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn local_clone_page_joins_navigation_and_names() {
+        assert_eq!(Page::LocalClones.nav_index(), Some(8));
+        assert_eq!(Page::from_nav(8), Page::LocalClones);
+        assert_eq!(Page::from_default_name("local"), Page::LocalClones);
+        assert_eq!(Page::LocalClones.default_name(), "local");
+        assert!(Page::DEFAULT_PAGES.contains(&Page::LocalClones));
+        assert!(!Page::LocalClones.is_repo_page());
     }
 
     #[test]

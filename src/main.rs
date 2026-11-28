@@ -70,22 +70,40 @@ fn main() -> Result<()> {
     let _ = execute!(io::stdout(), EnableMouseCapture, EnableBracketedPaste);
     install_panic_hook();
 
+    let mut exit_dir = None;
     let result = match command {
         Command::Github { theme } => {
             let mut app = App::new(paths, theme);
-            run(&mut terminal, &mut app)
+            let result = run(&mut terminal, &mut app);
+            exit_dir = app.exit_dir.take();
+            result
         }
         Command::Md { path, theme } => md_app::run(&mut terminal, &path, theme),
         Command::Settings { theme } => {
             let mut app = App::settings(paths, theme);
-            run(&mut terminal, &mut app)
+            let result = run(&mut terminal, &mut app);
+            exit_dir = app.exit_dir.take();
+            result
         }
         _ => unreachable!(),
     };
 
     let _ = execute!(io::stdout(), DisableMouseCapture, DisableBracketedPaste);
     ratatui::restore();
+    if let Some(dir) = exit_dir {
+        enter_directory(&dir);
+    }
     result
+}
+
+fn enter_directory(dir: &std::path::Path) {
+    let shell = std::env::var_os("SHELL")
+        .filter(|value| !value.is_empty())
+        .or_else(|| std::env::var_os("COMSPEC"))
+        .unwrap_or_else(|| if cfg!(windows) { "cmd.exe" } else { "sh" }.into());
+    if let Err(error) = std::process::Command::new(shell).current_dir(dir).status() {
+        eprintln!("进不去目录 {}：{error}", dir.display());
+    }
 }
 
 fn finish(result: Result<(), String>) -> Result<()> {
